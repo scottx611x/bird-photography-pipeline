@@ -1,0 +1,66 @@
+#!/bin/bash
+# birb — start/stop the full birb workflow stack
+# Usage: birb [up|down|status|logs]
+
+set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+PID_FILE="$HOME/.birb_host.pid"
+PYTHON="$HOME/.pyenv/versions/3.12.11/bin/python3"
+
+_start_host() {
+  # Kill any stale lr_host.py
+  if [ -f "$PID_FILE" ]; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+  "$PYTHON" "$DIR/lr_host.py" >> "$HOME/.birb_host.log" 2>&1 &
+  echo $! > "$PID_FILE"
+  echo "  lr_host.py  →  pid $(cat "$PID_FILE")  (log: ~/.birb_host.log)"
+}
+
+_stop_host() {
+  if [ -f "$PID_FILE" ]; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null && echo "  lr_host.py stopped" || true
+    rm -f "$PID_FILE"
+  fi
+}
+
+cmd_up() {
+  echo "Starting birb workflow…"
+  cd "$DIR"
+  BUFFER_TOKEN="${BUFFER_TOKEN:-}" docker compose up -d --build
+  _start_host
+  echo ""
+  echo "Open → http://localhost:8765"
+}
+
+cmd_down() {
+  echo "Stopping birb workflow…"
+  cd "$DIR"
+  docker compose down
+  _stop_host
+}
+
+cmd_status() {
+  cd "$DIR"
+  docker compose ps
+  echo ""
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    echo "lr_host.py   running  (pid $(cat "$PID_FILE"))"
+  else
+    echo "lr_host.py   stopped"
+  fi
+}
+
+cmd_logs() {
+  cd "$DIR"
+  docker compose logs -f
+}
+
+case "${1:-up}" in
+  up)     cmd_up ;;
+  down)   cmd_down ;;
+  status) cmd_status ;;
+  logs)   cmd_logs ;;
+  *)      echo "Usage: birb [up|down|status|logs]" ;;
+esac

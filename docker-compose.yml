@@ -1,0 +1,16 @@
+services:
+  birb-workflow:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ~/Downloads:/downloads
+      - ~/Desktop/birb_staging:/staging
+      - ~/Desktop/birbs:/birbs
+      - "~/Library/Application Support/Google/Chrome/Default/Cookies:/chrome-cookies/Cookies:ro"
+
+    environment:
+      - BUFFER_TOKEN=${BUFFER_TOKEN}
+      - BUFFER_COOKIES=${BUFFER_COOKIES}
+      - MAC_HOME=/Users/scott
+    restart: unless-stopped

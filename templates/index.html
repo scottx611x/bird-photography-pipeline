@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>birb workflow</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:      #08080f;
+      --surf:    #0f0f1c;
+      --surf2:   #16162a;
+      --border:  #1c1c32;
+      --border2: #2a2a48;
+      --blue:    #5b9aff;
+      --green:   #34d399;
+      --red:     #f87171;
+      --yellow:  #fbbf24;
+      --text:    #eeeeff;
+      --muted:   #6060a0;
+      --dim:     #222240;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text);
+      font-family: 'Inter', -apple-system, sans-serif; font-size: 14px;
+      -webkit-font-smoothing: antialiased; }
+
+    /* ── Nav ── */
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; height: 52px;
+      border-bottom: 1px solid rgba(255,255,255,.05); flex-shrink: 0;
+      position: sticky; top: 0;
+      background: rgba(8,8,15,.88);
+      backdrop-filter: blur(20px) saturate(1.6);
+      z-index: 10;
+    }
+    .logo { font-size: 15px; font-weight: 800; letter-spacing: -.5px; display: flex; align-items: center; gap: 9px; }
+    .nav-right { display: flex; align-items: center; gap: 10px; }
+    .host-pill { display: flex; align-items: center; gap: 6px; font-size: 11px;
+      color: var(--muted); background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
+      border-radius: 20px; padding: 4px 12px; position: relative; cursor: default; }
+    .host-pill .tip {
+      display: none; position: fixed; top: 50px; right: 14px;
+      background: var(--surf2); border: 1px solid var(--border2); border-radius: 10px;
+      padding: 10px 14px; font-size: 12px; color: var(--text); line-height: 1.6;
+      width: 230px; z-index: 100; box-shadow: 0 12px 40px rgba(0,0,0,.7);
+    }
+    .host-pill:hover .tip { display: block; }
+    .host-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+    .host-dot.ok  { background: var(--green); box-shadow: 0 0 8px rgba(52,211,153,.6); }
+    .host-dot.err { background: var(--red); }
+    .btn-log { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); color: var(--muted);
+      border-radius: 8px; font-size: 11px; font-weight: 600; padding: 5px 13px; cursor: pointer;
+      font-family: inherit; transition: all .15s; }
+    .btn-log:hover { background: rgba(255,255,255,.1); color: var(--text); }
+
+    /* ── Layout ── */
+    .shell { display: flex; flex-direction: column; height: 100vh; }
+    .body  { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+    /* ── Batch column ── */
+    .batch-col {
+      flex: 1; min-width: 0; overflow-y: auto;
+      padding: 20px 20px 80px;
+    }
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .filter-bar { display: flex; gap: 5px; }
+    .chip { background: none; border: 1px solid var(--border2); color: var(--muted);
+      border-radius: 20px; font-size: 11px; font-weight: 600; padding: 4px 13px;
+      cursor: pointer; font-family: inherit; transition: all .15s; }
+    .chip:hover { border-color: var(--muted); color: var(--text); }
+    .chip.active { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 0 16px rgba(91,154,255,.3); }
+    .btn-sm-action { background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); color: var(--muted);
+      border-radius: 8px; font-size: 11px; font-weight: 500; padding: 4px 12px; cursor: pointer;
+      font-family: inherit; transition: all .15s; white-space: nowrap; }
+    .btn-sm-action:hover { color: var(--text); background: rgba(255,255,255,.09); }
+
+    /* ── Batch card ── */
+    .batch-card {
+      background: var(--surf); border: 1px solid var(--border); border-radius: 18px;
+      padding: 18px 22px; margin-bottom: 10px;
+      transition: all .25s;
+      box-shadow: 0 2px 12px rgba(0,0,0,.35);
+    }
+    .batch-card:not(.done):not(.active):hover {
+      border-color: var(--border2);
+      box-shadow: 0 6px 24px rgba(0,0,0,.5);
+      transform: translateY(-1px);
+    }
+    .batch-card.active {
+      background: linear-gradient(150deg, #060d22 0%, #0a1632 60%, #07101e 100%);
+      border: 1px solid rgba(91,154,255,.5);
+      box-shadow:
+        0 0 0 1px rgba(91,154,255,.12),
+        0 28px 70px rgba(0,0,0,.65),
+        0 0 140px rgba(91,154,255,.07),
+        inset 0 1px 0 rgba(255,255,255,.05);
+      transform: none;
+    }
+    .batch-card.done { opacity: 0.52; }
+    .batch-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .batch-name { font-size: 20px; font-weight: 900; letter-spacing: -.6px; line-height: 1.1; }
+    .batch-sub  { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .status-badge { font-size: 10px; font-weight: 700; border-radius: 8px; padding: 4px 11px;
+      flex-shrink: 0; letter-spacing: .5px; text-transform: uppercase; margin-top: 2px; }
+    .badge-pending    { background: rgba(255,255,255,.07); color: var(--muted); }
+    .badge-processing { background: rgba(91,154,255,.2); color: var(--blue); }
+    .badge-done       { background: rgba(52,211,153,.15); color: var(--green); }
+    .meta-row { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+    .meta-pill { font-size: 11px; color: var(--muted);
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+      border-radius: 7px; padding: 3px 10px; }
+    .card-actions { display: flex; gap: 6px; margin-top: 13px; flex-wrap: wrap; }
+
+    /* ── Step card ── */
+    .step-card { margin-top: 16px;
+      background: rgba(0,0,0,.3); border: 1px solid rgba(91,154,255,.18);
+      border-radius: 14px; padding: 16px 18px; }
+    .post-card { margin-top: 16px;
+      background: rgba(52,211,153,.04); border: 1px solid rgba(52,211,153,.2);
+      border-radius: 14px; padding: 16px 18px; }
+    .step-lbl { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;
+      color: var(--blue); margin-bottom: 8px; }
+    .post-card .step-lbl { color: var(--green); }
+    .step-msg { font-size: 13px; color: rgba(180,200,255,.85); line-height: 1.55; }
+    .step-btns { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+
+    /* ── Progress bar ── */
+    .prog { display: flex; align-items: center; margin-bottom: 18px; }
+    .prog-step { display: flex; flex-direction: column; align-items: center; gap: 7px; flex: 1; min-width: 0; }
+    .prog-dot {
+      width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+      background: var(--dim); color: var(--muted);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 800; transition: all .35s;
+    }
+    .prog-dot.done   { background: var(--green); color: #000; }
+    .prog-dot.active {
+      background: var(--blue); color: #fff;
+      box-shadow: 0 0 0 5px rgba(91,154,255,.22), 0 0 24px rgba(91,154,255,.35);
+    }
+    .prog-back { cursor: pointer; }
+    .prog-back:hover .prog-dot { filter: brightness(1.3); }
+    .prog-back:hover .prog-lbl { text-decoration: underline; }
+    .prog-lbl { font-size: 10px; font-weight: 600; color: var(--dim); text-align: center;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; letter-spacing: .2px; }
+    .prog-lbl.done   { color: var(--green); }
+    .prog-lbl.active { color: var(--blue); }
+    .prog-line { height: 2px; flex: 1; background: var(--dim); margin-bottom: 21px; transition: background .35s; }
+    .prog-line.done { background: var(--green); }
+
+    /* ── Post form ── */
+    .post-form { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+    .photo-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+      gap: 9px;
+    }
+    .photo-card {
+      background: rgba(0,0,0,.4); border-radius: 12px;
+      border: 1px solid var(--border2); transition: border-color .15s, box-shadow .15s; overflow: hidden;
+    }
+    .photo-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+    .photo-card.excluded { opacity: .3; border-color: var(--red); }
+    .photo-card[draggable] { cursor: grab; }
+    .photo-card[draggable]:active { cursor: grabbing; }
+    .photo-card.drag-over { border-color: var(--blue) !important; }
+    .photo-card-img-row { position: relative; overflow: hidden; }
+    .photo-card-img-row img {
+      width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block;
+      cursor: zoom-in; transition: transform .2s;
+    }
+    .photo-card-img-row img:hover { transform: scale(1.04); }
+    .photo-card-img-row .zoom-hint {
+      position: absolute; bottom: 8px; right: 8px;
+      background: rgba(0,0,0,.7); color: rgba(255,255,255,.8); font-size: 10px;
+      border-radius: 4px; padding: 2px 6px; pointer-events: none;
+      opacity: 0; transition: opacity .15s;
+    }
+    .photo-card-img-row:hover .zoom-hint { opacity: 1; }
+    .photo-card-fields { padding: 10px; display: flex; flex-direction: column; gap: 7px; }
+    .photo-card-header { display: flex; align-items: center; justify-content: space-between; }
+    .photo-fname { font-size: 10px; color: var(--muted); font-family: 'Menlo', monospace; }
+    .photo-card-remove { background: none; border: none; color: var(--dim); font-size: 15px;
+      cursor: pointer; padding: 0; line-height: 1; transition: color .15s; }
+    .photo-card-remove:hover { color: var(--red); }
+    .photo-card-fields input { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+      border-radius: 7px; padding: 7px 10px; color: var(--text); font-size: 13px;
+      font-family: inherit; width: 100%; transition: all .15s; }
+    .photo-card-fields input:focus { outline: none; border-color: var(--blue); background: rgba(91,154,255,.1); }
+    .photo-card-fields input::placeholder { color: var(--dim); }
+    .oos-check { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
+    .oos-check input { accent-color: var(--yellow); cursor: pointer; }
+
+    /* full-size preview modal */
+    .img-modal { display: none; position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,.93); align-items: center; justify-content: center; cursor: zoom-out; }
+    .img-modal.open { display: flex; }
+    .img-modal img { max-width: 90vw; max-height: 90vh; object-fit: contain;
+      border-radius: 10px; box-shadow: 0 24px 80px rgba(0,0,0,.9); }
+    .img-modal-nav { position: absolute; top: 50%; transform: translateY(-50%);
+      background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.2);
+      color: #fff; font-size: 28px; cursor: pointer; border-radius: 50%;
+      width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
+      transition: background .15s; }
+    .img-modal-nav:hover { background: rgba(255,255,255,.22); }
+    #modal-prev { left: 24px; }
+    #modal-next { right: 72px; }
+    .img-modal-close { position: absolute; top: 20px; right: 24px;
+      background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18);
+      color: #fff; font-size: 18px; cursor: pointer; border-radius: 50%;
+      width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; }
+    .img-modal-close:hover { background: rgba(255,255,255,.22); }
+    .img-modal-name { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+      font-size: 11px; color: rgba(255,255,255,.4); font-family: 'Menlo', monospace; }
+    .shared-fields { display: flex; flex-direction: column; gap: 7px; }
+    .shared-fields .row { display: flex; gap: 8px; }
+    .shared-fields .row > div { flex: 1; }
+    .fld-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin-bottom: 4px; }
+    .shared-fields input { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+      border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 13px;
+      font-family: inherit; width: 100%; transition: all .15s; }
+    .shared-fields input:focus { outline: none; border-color: var(--green); background: rgba(52,211,153,.08); }
+    .shared-fields input::placeholder { color: var(--dim); }
+
+    /* ── Resizer ── */
+    .resizer { width: 5px; flex-shrink: 0; cursor: col-resize; background: transparent; position: relative; transition: background .15s; }
+    .resizer:hover, .resizer.dragging { background: var(--blue); }
+    .resizer::after { content: ""; position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%); width: 2px; height: 32px; border-radius: 2px; background: var(--border2); }
+    .resizer:hover::after, .resizer.dragging::after { background: var(--blue); }
+
+    /* ── Log column ── */
+    .log-col { width: 300px; flex-shrink: 0; border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden; }
+    .log-header-bar { padding: 10px 16px 8px; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
+      border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .log-body { flex: 1; overflow-y: auto; padding: 10px 14px;
+      font-family: 'Menlo', monospace; font-size: 11px; line-height: 1.8; }
+    .ll { color: var(--muted); white-space: pre-wrap; word-break: break-all; }
+    .ll.ok   { color: var(--green); }
+    .ll.err  { color: var(--red); }
+    .ll.warn { color: var(--yellow); }
+    .ll.dim  { color: var(--dim); }
+
+    /* ── Buttons ── */
+    .btn { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 9px;
+      font-size: 13px; font-weight: 700; padding: 8px 18px; cursor: pointer; font-family: inherit;
+      transition: all .15s; white-space: nowrap; }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .3; cursor: default; pointer-events: none; }
+    .btn-primary { background: var(--blue); color: #fff; box-shadow: 0 2px 12px rgba(91,154,255,.35); }
+    .btn-primary:hover { box-shadow: 0 4px 20px rgba(91,154,255,.5); filter: brightness(1.1); }
+    .btn-success { background: linear-gradient(135deg, #34d399 0%, #1ab87a 100%);
+      color: #000; width: 100%; justify-content: center; font-size: 14px; font-weight: 800;
+      box-shadow: 0 4px 20px rgba(52,211,153,.3); }
+    .btn-success:hover { box-shadow: 0 6px 28px rgba(52,211,153,.45); filter: brightness(1.06); }
+    .btn-neutral { background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.11); color: var(--muted); }
+    .btn-neutral:hover { background: rgba(255,255,255,.12); color: var(--text); }
+    .btn-sm { font-size: 12px; padding: 5px 13px; border-radius: 8px; }
+    .empty { text-align: center; padding: 60px 20px; color: var(--muted); font-size: 13px; line-height: 2.2; }
+
+    /* ── Post toast ── */
+    .post-toast {
+      position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+      background: rgba(8,20,14,.96); border: 1px solid rgba(52,211,153,.4); border-radius: 14px;
+      padding: 13px 22px; display: flex; align-items: center; gap: 14px;
+      font-size: 13px; color: var(--text);
+      box-shadow: 0 12px 40px rgba(0,0,0,.7), 0 0 0 1px rgba(52,211,153,.08);
+      z-index: 300; white-space: nowrap; opacity: 1; transition: opacity .4s;
+      backdrop-filter: blur(20px);
+    }
+    .post-toast.hidden { display: none; }
+    .post-toast.fading { opacity: 0; pointer-events: none; }
+    .post-toast a { color: var(--green); text-decoration: none; font-weight: 700; }
+    .post-toast a:hover { text-decoration: underline; }
+    .post-toast-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0; line-height: 1; }
+
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+    .pulsing { animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* automation overlay */
+    .auto-overlay {
+      display: none; position: fixed; inset: 0; z-index: 50;
+      background: rgba(0,0,0,.75); backdrop-filter: blur(6px) saturate(1.4);
+      flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    }
+    .auto-overlay.visible { display: flex; }
+    .auto-spinner { width: 42px; height: 42px; border-radius: 50%;
+      border: 3px solid rgba(255,255,255,.08); border-top-color: var(--blue);
+      animation: spin .75s linear infinite; }
+    .auto-label { font-size: 17px; font-weight: 800; color: var(--text); }
+    .auto-sub   { font-size: 13px; color: var(--muted); }
+
+    .posted-line { font-size: 11px; color: var(--muted); margin-top: 10px; }
+    .posted-line a { color: var(--green); text-decoration: none; font-weight: 600; }
+    .posted-line a:hover { text-decoration: underline; }
+
+    /* ── Done bird strip ── */
+    .done-birbs { display: flex; margin-top: 14px; overflow-x: auto; padding-bottom: 4px; }
+    .done-thumb {
+      width: 76px; height: 57px; object-fit: cover; border-radius: 9px;
+      flex-shrink: 0; cursor: zoom-in;
+      border: 2px solid var(--surf);
+      margin-left: -14px;
+      box-shadow: -4px 0 14px rgba(0,0,0,.55);
+      transition: filter .18s, box-shadow .18s, border-color .18s;
+      position: relative; z-index: 0;
+    }
+    .done-birbs .done-thumb:first-child { margin-left: 0; }
+    .done-thumb:hover {
+      filter: brightness(1.25);
+      border-color: var(--blue);
+      box-shadow: 0 0 0 2px var(--blue), -4px 0 14px rgba(0,0,0,.55);
+      z-index: 10;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 680px) {
+      .log-col { display: none; }
+      .batch-col { padding: 12px 12px 80px; }
+      .batch-name { font-size: 16px; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <nav>
+    <div class="logo">🐦 <span>birb workflow</span></div>
+    <div class="nav-right">
+      <button class="btn-log" id="log-toggle" onclick="toggleLog()">Hide log</button>
+      <div class="host-pill">
+        <div class="host-dot" id="host-dot"></div>
+        <span id="host-lbl">lr_host</span>
+        <div class="tip">
+          <strong>lr_host.py</strong> — Mac-side bridge<br>
+          Runs on your Mac as a background service.<br>
+          Lets Docker trigger Lightroom automation<br>
+          (import, auto-tone, denoise, export).
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Automation overlay -->
+  <div class="auto-overlay" id="auto-overlay">
+    <div class="auto-spinner"></div>
+    <div class="auto-label" id="auto-label">Birb automation running…</div>
+    <div class="auto-sub" id="auto-sub">Lightroom is doing its thing</div>
+    <button class="btn btn-neutral btn-sm" id="overlay-skip"
+            style="display:none;margin-top:8px;opacity:.65" onclick="forceAdvance()">skip step →</button>
+  </div>
+
+  <div class="body">
+    <div class="batch-col">
+      <div class="panel-header">
+        <div class="filter-bar">
+          <button class="chip active" data-f="all"        onclick="setFilter('all')">All</button>
+          <button class="chip"        data-f="pending"   onclick="setFilter('pending')">Pending</button>
+          <button class="chip"        data-f="processing" onclick="setFilter('processing')">Active</button>
+          <button class="chip"        data-f="done"      onclick="setFilter('done')">Done</button>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn-sm-action" onclick="skipOld()">✓ Skip old</button>
+          <button class="btn-sm-action" onclick="doScan()">↺ Scan</button>
+        </div>
+      </div>
+      <div id="batch-list"></div>
+    </div>
+
+    <div class="resizer" id="resizer"></div>
+    <div class="log-col" id="log-col">
+      <div class="log-header-bar">Live log</div>
+      <div class="log-body" id="log-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Datalists (populated from Buffer history) -->
+<datalist id="species-list"></datalist>
+<datalist id="location-list"></datalist>
+
+<!-- Post success toast -->
+<div class="post-toast hidden" id="post-toast">
+  <span id="toast-msg"></span>
+  <a id="toast-link" href="https://publish.buffer.com" target="_blank" rel="noopener">View in Buffer →</a>
+  <button class="post-toast-close" onclick="dismissToast()">✕</button>
+</div>
+
+<!-- Full-size image preview modal -->
+<div class="img-modal" id="img-modal" onclick="closeModal()">
+  <button class="img-modal-close" onclick="closeModal()">✕</button>
+  <button class="img-modal-nav" id="modal-prev" onclick="event.stopPropagation();modalStep(-1)">‹</button>
+  <img id="modal-img" src="" onclick="event.stopPropagation()" />
+  <button class="img-modal-nav" id="modal-next" onclick="event.stopPropagation();modalStep(1)">›</button>
+  <div class="img-modal-name" id="modal-name"></div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let lastLogLen      = 0;
+let lastState       = null;
+let activeFilter    = "all";
+let logVisible      = false;
+let recentSpecies   = [];
+let recentLocations = [];
+let photoOrder      = [];   // ordered filenames for post form
+let dragSrc         = null; // index being dragged
+let excluded        = new Set(); // indices excluded from post
+let postingInFlight  = false;
+let nextDateFetched  = false;
+
+// ── Pipeline stages ───────────────────────────────────────────────────────────
+const STAGES = [
+  { label: "Import",  steps: ["importing","continue_toning"], back: null   },
+  { label: "Tone",    steps: ["toning"],                      back: "tone"   },
+  { label: "Denoise", steps: ["denoise"],                     back: "denoise"},
+  { label: "Pick",    steps: ["picking"],                     back: "pick"   },
+  { label: "Export",  steps: ["exporting"],                   back: null   },
+  { label: "Post",    steps: ["posting"],                     back: null   },
+];
+
+// Steps that trigger the "automation running" overlay
+const AUTO_STEPS = {
+  importing:       { label: "Importing photos…",    sub: "Lightroom is loading your batch" },
+  continue_toning: { label: "Preparing auto-tone…", sub: "Almost there" },
+  toning:          { label: "Applying auto-tone…",  sub: "Setting exposure on all photos" },
+  copy_pasting:    { label: "Spreading denoise…",   sub: "Copying settings to all photos" },
+  exporting:       { label: "Triggering export…",   sub: "Sending command to Lightroom" },
+};
+
+const STEP_INFO = {
+  importing:       { label: "Importing",   msg: "Lightroom is loading photos. Click Continue when all appear in the grid.", btns: true, pulse: true },
+  continue_toning: { label: "Importing",   msg: "Finishing up…", pulse: true },
+  toning:          { label: "Auto-tone",   msg: "Applying Auto Settings to all photos…", pulse: true },
+  denoise:         { label: "Denoise",     msg: "Check <b>Denoise</b> on one photo in Lightroom's Edit panel → Detail section. Then click Continue — settings will spread to all.", btns: true },
+  copy_pasting:    { label: "Denoise",     msg: "Spreading settings to all photos…", pulse: true },
+  picking:         { label: "Pick shots",  msg: "Select your best photo(s) in Lightroom — ⌘-click for multiple. Click Done when ready.", done: true },
+  exporting:       { label: "Exporting",   msg: "Export triggered — waiting for Lightroom…", pulse: true },
+  export_wait:     { label: "Export",      msg: "Lightroom is exporting. Click Done when it finishes.", done: true },
+  export_done:     { label: "Export",      msg: "Export complete — interrupted before posting. Click Resume.", resume: true },
+  posting:         { label: "Post",        form: true },
+};
+
+// ── Progress bar ──────────────────────────────────────────────────────────────
+function renderProgress(step) {
+  if (!step) return "";
+  let cur = -1;
+  STAGES.forEach((s, i) => { if (s.steps.includes(step)) cur = i; });
+  let h = '<div class="prog">';
+  STAGES.forEach((s, i) => {
+    const done   = i < cur;
+    const active = i === cur;
+    const clickable = done && s.back;
+    const click  = clickable ? `onclick="gotoStep('${s.back}')" title="Restart from ${s.label}"` : "";
+    h += `<div class="prog-step ${clickable?"prog-back":""}" ${click}>
+      <div class="prog-dot ${done?"done":active?"active pulsing":""}">${done?"✓":i+1}</div>
+      <div class="prog-lbl ${done?"done":active?"active":""}">${s.label}</div>
+    </div>`;
+    if (i < STAGES.length-1) h += `<div class="prog-line ${done||active?"done":""}"></div>`;
+  });
+  return h + "</div>";
+}
+
+async function gotoStep(step) {
+  await fetch('/api/goto-step', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({step}),
+  });
+}
+
+// ── Step card ─────────────────────────────────────────────────────────────────
+function renderStepCard(step, batch, data) {
+  const s = STEP_INFO[step];
+  if (!s) return `<div class="step-card">
+    <div class="step-lbl">Stuck — step: ${step}</div>
+    <div class="step-btns">
+      <button class="btn btn-primary btn-sm" onclick="forceAdvance()">↗ Force advance</button>
+      <button class="btn btn-neutral btn-sm" style="margin-left:auto" onclick="doReset('${batch.folder}')">↺ Reset</button>
+    </div></div>`;
+
+  const isPost = s.form;
+  const cls    = isPost ? "post-card" : "step-card";
+  const lblCls = isPost ? "post-card" : "";
+
+  let content = "";
+  if (s.msg)  content += `<div class="step-msg">${s.msg}</div>`;
+
+  let btns = "";
+  if (s.btns)   btns += `<button class="btn btn-primary btn-sm" onclick="doContinue()">Continue →</button>`;
+  if (s.done)   btns += `<button class="btn btn-success btn-sm" onclick="doDone()">✓ Done</button>`;
+  if (s.resume) btns += `<button class="btn btn-primary btn-sm" onclick="forceAdvance()">↗ Resume</button>`;
+  btns += `<button class="btn btn-neutral btn-sm" style="margin-left:auto" onclick="doReset('${batch.folder}')">↺ Reset</button>`;
+
+  if (isPost) content += renderPostForm(batch, data);
+
+  return `<div class="${cls}">
+    ${renderProgress(step)}
+    <div class="step-lbl">${s.label}</div>
+    ${content}
+    ${btns ? `<div class="step-btns">${btns}</div>` : ""}
+  </div>`;
+}
+
+// ── Post form ─────────────────────────────────────────────────────────────────
+function renderPostForm(batch, data) {
+  const birbs = data.new_birbs || [];
+  // Initialise or sync photoOrder
+  if (!photoOrder.length || !birbs.every(f => photoOrder.includes(f))) photoOrder = [...birbs];
+
+  const defaultLoc = recentLocations[0] || localStorage.getItem('birbLocation') || 'Rea St.';
+
+  const photoCards = photoOrder.map((f, idx) => `
+    <div class="photo-card" id="pc-${idx}" data-file="${f}"
+         draggable="true"
+         ondragstart="onDragStart(event,${idx})"
+         ondragover="onDragOver(event)"
+         ondrop="onDrop(event,${idx})"
+         ondragend="onDragEnd()">
+      <div class="photo-card-img-row">
+        <img src="/birb-thumb/${encodeURIComponent(f)}"
+             onclick="openModal('/birb-img/${encodeURIComponent(f)}','${f}',photoOrder,${idx})"
+             loading="lazy"
+             title="Click to preview" />
+        <div class="zoom-hint">🔍 preview</div>
+      </div>
+      <div class="photo-card-fields">
+        <div class="photo-card-header">
+          <div class="photo-fname">${idx + 1}. ${f}</div>
+          <button class="photo-card-remove" onclick="excludeCard(${idx})" title="Exclude">✕</button>
+        </div>
+        <input list="species-list" id="sp-${idx}" placeholder="Species…"
+               onfocus="this.dataset.prev=this.value" oninput="spreadSpecies(this)" />
+        <input list="location-list" id="loc-${idx}" value="${defaultLoc}" placeholder="Rea St."
+               onfocus="this.dataset.prev=this.value" oninput="spreadLocation(this)" />
+        <label class="oos-check"><input type="checkbox" id="oos-${idx}" /> ⚠️ out of area</label>
+      </div>
+    </div>`).join("");
+
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+  const schedDefault = tomorrow.toISOString().split('T')[0];
+  return `<div class="post-form">
+    ${birbs.length ? `<div class="photo-cards" id="photo-cards-list">${photoCards}</div>` : ""}
+    <div class="shared-fields">
+      <div class="row">
+        <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.cap_date||''}" placeholder="5-14-26" /></div>
+        <div>
+          <div class="fld-lbl">Post on <span id="pf-schedule-hint" style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.6"></span></div>
+          <input id="pf-schedule" type="date" value="${schedDefault}" />
+        </div>
+      </div>
+    </div>
+    <button class="btn btn-success" id="post-btn" onclick="doPost()">▶ Post to Buffer</button>
+  </div>`;
+}
+
+// ── Batch list ────────────────────────────────────────────────────────────────
+function renderBatches(data) {
+  const typing = dragSrc !== null
+    || ["pf-date","pf-schedule"].some(id => document.activeElement?.id === id)
+    || !!document.activeElement?.id?.match(/^(sp|loc)-\d+$/);
+  if (typing) return;
+
+  // Don't rebuild photo cards once the post form is on screen — images would reload
+  if (data.proc_step === 'posting' && document.getElementById('photo-cards-list')) return;
+
+  const list = document.getElementById("batch-list");
+  const all  = (data.batches || []).filter(b =>
+    activeFilter === "all" || b.status === activeFilter);
+
+  if (!all.length) {
+    list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads and click Scan.</div>`;
+    return;
+  }
+
+  list.innerHTML = all.map(b => {
+    const isActive = data.active?.folder === b.folder;
+    const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done" }[b.status] || "badge-pending";
+    const badgeTxt = { pending:"Pending", processing:"Active", done:"Done" }[b.status] || b.status;
+
+    let meta = `<span class="meta-pill">📅 ${b.cap_date}</span>`;
+    if (b.location) meta += `<span class="meta-pill">📍 ${b.location}</span>`;
+    meta += `<span class="meta-pill">${b.raw_count} RAWs</span>`;
+
+    let actions = "";
+    if (b.status === "pending")
+      actions = `<button class="btn btn-primary btn-sm" onclick="doProcess('${b.folder}')">▶ Process</button>
+                 <button class="btn btn-neutral btn-sm" onclick="doSkip('${b.folder}')">Skip</button>`;
+    else if (b.status === "done")
+      actions = `<button class="btn btn-neutral btn-sm" onclick="doReset('${b.folder}')">↺ Reprocess</button>`;
+
+    const doneBirbs = (b.status === "done" && b.birbs?.length)
+      ? `<div class="done-birbs" data-files="${encodeURIComponent(JSON.stringify(b.birbs))}">${
+          b.birbs.map((f, i) =>
+            `<img class="done-thumb" src="/birb-thumb/${encodeURIComponent(f)}"
+                  onclick="thumbClick(event,${i})" title="${f}" />`).join("")
+        }</div>`
+      : "";
+    const postedLine = (b.status === "done" && b.posted_due)
+      ? `<div class="posted-line">📅 ${formatDue(b.posted_due)} &nbsp;·&nbsp; <a href="https://publish.buffer.com" target="_blank" rel="noopener">View in Buffer →</a></div>`
+      : "";
+
+    const stepCard = isActive && data.proc_step ? renderStepCard(data.proc_step, b, data) : "";
+
+    return `<div class="batch-card ${b.status === 'done' ? 'done' : isActive ? 'active' : ''}">
+      <div class="batch-top">
+        <div>
+          <div class="batch-name">${b.folder}</div>
+          <div class="batch-sub">${b.raw_count} RAW files</div>
+        </div>
+        <span class="status-badge ${badge}">${badgeTxt}</span>
+      </div>
+      <div class="meta-row">${meta}</div>
+      ${actions ? `<div class="card-actions">${actions}</div>` : ""}
+      ${postedLine}
+      ${doneBirbs}
+      ${stepCard}
+    </div>`;
+  }).join("");
+}
+
+// ── Log (SSE) ─────────────────────────────────────────────────────────────────
+function appendLogLine(line) {
+  const box = document.getElementById("log-body");
+  if (!box) return;
+  const d = document.createElement("div");
+  d.className = "ll " + (/✓|Done|Posted|ok/i.test(line) ? "ok" : /error|fail|cannot/i.test(line) ? "err" : /skip|already/i.test(line) ? "dim" : "");
+  d.textContent = line;
+  box.insertBefore(d, box.firstChild);
+}
+
+function initLogStream() {
+  const es = new EventSource("/api/log-stream");
+  es.onmessage = e => { try { appendLogLine(JSON.parse(e.data)); } catch {} };
+}
+
+function renderHost(ok) {
+  const dot = document.getElementById("host-dot");
+  const lbl = document.getElementById("host-lbl");
+  if (ok === true)  { dot.className="host-dot ok";  lbl.textContent="lr_host · connected"; }
+  else if (ok===false) { dot.className="host-dot err"; lbl.textContent="lr_host · offline"; }
+  else              { dot.className="host-dot";      lbl.textContent="lr_host"; }
+}
+
+// ── Poll ──────────────────────────────────────────────────────────────────────
+async function poll() {
+  let d;
+  try {
+    const r = await fetch("/api/state");
+    d = await r.json();
+    // Auto-fill schedule date when posting form first appears
+    if (d.proc_step === 'posting' && !nextDateFetched) {
+      nextDateFetched = true;
+      fetchNextPostDate();
+    }
+    if (d.proc_step !== 'posting') nextDateFetched = false;
+
+    // Detect posting completion or failure
+    if (postingInFlight && lastState?.proc_step === 'posting' && d.proc_step !== 'posting') {
+      postingInFlight = false;
+      if (d.last_post) showPostToast(d.last_post);
+    }
+    if (postingInFlight && d.post_error) {
+      postingInFlight = false;
+      const btn = document.getElementById('post-btn');
+      if (btn) { btn.disabled = false; btn.textContent = '▶ Post to Buffer'; }
+    }
+    renderBatches(d);
+    renderHost(d.host_ok);
+    renderOverlay(d.proc_step);
+    lastState = d;
+  } catch (_) {}
+  setTimeout(poll, d?.proc_step === 'posting' ? 3000 : 1200);
+}
+
+// ── Post toast ────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function showPostToast(post) {
+  const toast = document.getElementById('post-toast');
+  const msg   = document.getElementById('toast-msg');
+  const link  = document.getElementById('toast-link');
+  if (post.due) {
+    msg.textContent = `🐦 Scheduled for ${formatDue(post.due)}`;
+  } else {
+    msg.textContent = '🐦 Queued to Buffer!';
+  }
+  if (post.url) link.href = post.url;
+  toast.classList.remove('hidden', 'fading');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(dismissToast, 10000);
+}
+
+let _scheduledAt = '';   // full ISO scheduledAt for the target slot
+
+async function fetchNextPostDate() {
+  try {
+    const r = await fetch('/api/next-post-date');
+    const d = await r.json();
+    const el   = document.getElementById('pf-schedule');
+    const hint = document.getElementById('pf-schedule-hint');
+    if (!el) return;
+
+    const toLocalDate = iso => new Date(iso).toLocaleDateString('en-CA');
+
+    if (d.dues && d.dues.length) {
+      const filled = new Set(d.dues.map(toLocalDate));
+
+      // Walk forward until we find a day with no queued post
+      const cursor = new Date(); cursor.setHours(0,0,0,0); cursor.setDate(cursor.getDate()+1);
+      let targetDate = '';
+      for (let i = 0; i < 365; i++) {
+        const ds = cursor.toLocaleDateString('en-CA');
+        if (!filled.has(ds)) { targetDate = ds; break; }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      if (!targetDate) return;
+      el.value = targetDate;
+      if (hint) hint.textContent = `queue ends ${[...filled].sort().pop()}`;
+
+      // Find a queued post on the same day-of-week to borrow the posting time
+      const targetDow = new Date(targetDate + 'T12:00:00').getDay();
+      const ref = d.dues.find(iso => new Date(toLocalDate(iso)+'T12:00:00').getDay() === targetDow)
+                  || d.dues[0];
+      const refDt = new Date(ref);
+      const utcH  = refDt.getUTCHours();
+      const utcM  = refDt.getUTCMinutes();
+
+      // UTC date for a local-evening ET post is local date + 1 when UTC hour < 12
+      const [y, mo, dy] = targetDate.split('-').map(Number);
+      const utcDate = new Date(y, mo-1, dy + (utcH < 12 ? 1 : 0));
+      _scheduledAt = utcDate.toISOString().slice(0,10)
+                   + 'T' + String(utcH).padStart(2,'0') + ':' + String(utcM).padStart(2,'0') + ':00.000Z';
+    } else {
+      const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+      el.value = tomorrow.toLocaleDateString('en-CA');
+      _scheduledAt = '';
+    }
+  } catch(e) { console.error('fetchNextPostDate', e); }
+}
+
+function formatDue(iso) {
+  try {
+    return new Date(iso).toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+  } catch { return iso; }
+}
+
+function dismissToast() {
+  const toast = document.getElementById('post-toast');
+  toast.classList.add('fading');
+  setTimeout(() => toast.classList.add('hidden'), 400);
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+async function doProcess(f) { await fetch(`/api/process/${enc(f)}`, {method:"POST"}); }
+async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
+async function doDone()      { await fetch("/api/done", {method:"POST"}); }
+async function doReset(f)    { await fetch(`/api/reset/${enc(f)}`, {method:"POST"}); }
+async function doSkip(f)     { await fetch(`/api/skip/${enc(f)}`, {method:"POST"}); }
+async function doScan()      { await fetch("/api/scan", {method:"POST"}); }
+
+async function skipOld() {
+  const d = prompt("Mark all pending batches before this date as done (YYYY-MM-DD):", "2026-05-25");
+  if (!d) return;
+  const r = await fetch(`/api/skip-before/${d}`, {method:"POST"});
+  const j = await r.json();
+  if (j.ok) alert(`Marked ${j.count} batch(es) as done.`);
+}
+
+function setFilter(f) {
+  activeFilter = f;
+  document.querySelectorAll(".chip").forEach(c => c.classList.toggle("active", c.dataset.f === f));
+  if (lastState) renderBatches(lastState);
+}
+
+function toggleLog() {
+  logVisible = !logVisible;
+  const logCol  = document.getElementById("log-col");
+  const resizer = document.getElementById("resizer");
+  if (logVisible) {
+    const w = localStorage.getItem("logWidth") || 300;
+    logCol.style.width = w + "px";
+    logCol.style.borderLeft = "";
+    resizer.style.display = "";
+  } else {
+    logCol.style.width = "0";
+    logCol.style.borderLeft = "none";
+    resizer.style.display = "none";
+  }
+  document.getElementById("log-toggle").textContent = logVisible ? "Hide log" : "Show log";
+}
+
+// ── Drag to reorder ───────────────────────────────────────────────────────────
+function onDragStart(e, idx) { dragSrc = idx; e.dataTransfer.effectAllowed = "move"; }
+function onDragOver(e)       { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }
+function onDragEnd()         { document.querySelectorAll(".photo-card").forEach(c => c.classList.remove("drag-over")); }
+function onDrop(e, targetIdx) {
+  e.preventDefault();
+  onDragEnd();
+  if (dragSrc === null || dragSrc === targetIdx) return;
+
+  // Snapshot all user input keyed by filename before reordering
+  const snap = {};
+  photoOrder.forEach((f, i) => {
+    snap[f] = {
+      species:  document.getElementById(`sp-${i}`)?.value  ?? '',
+      location: document.getElementById(`loc-${i}`)?.value ?? '',
+      oos:      document.getElementById(`oos-${i}`)?.checked ?? false,
+      excluded: document.getElementById(`pc-${i}`)?.classList.contains('excluded') ?? false,
+    };
+  });
+
+  const moved = photoOrder.splice(dragSrc, 1)[0];
+  photoOrder.splice(targetIdx, 0, moved);
+  dragSrc = null;
+
+  if (lastState) {
+    const container = document.getElementById("photo-cards-list");
+    if (container && lastState.active) {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = renderPostForm(lastState.active, lastState);
+      const newCards = tmp.querySelector("#photo-cards-list");
+      if (newCards) container.replaceWith(newCards);
+    }
+  }
+
+  // Restore input state to new positions
+  photoOrder.forEach((f, i) => {
+    const s = snap[f]; if (!s) return;
+    const sp  = document.getElementById(`sp-${i}`);
+    const loc = document.getElementById(`loc-${i}`);
+    const oos = document.getElementById(`oos-${i}`);
+    const card = document.getElementById(`pc-${i}`);
+    if (sp)   sp.value    = s.species;
+    if (loc)  loc.value   = s.location;
+    if (oos)  oos.checked = s.oos;
+    if (card && s.excluded) card.classList.add('excluded');
+  });
+}
+
+function excludeCard(idx) {
+  document.getElementById(`pc-${idx}`)?.classList.toggle("excluded");
+}
+
+let _locTimer = null;
+function spreadLocation(src) {
+  clearTimeout(_locTimer);
+  _locTimer = setTimeout(() => {
+    const val  = src.value.trim();
+    const prev = (src.dataset.prev || '').trim();
+    const myIdx = parseInt(src.id.replace('loc-', ''));
+    photoOrder.forEach((_, i) => {
+      if (i <= myIdx) return;
+      const el = document.getElementById(`loc-${i}`);
+      if (!el) return;
+      if (!el.value.trim() || el.value.trim() === prev) el.value = val;
+    });
+    src.dataset.prev = val;
+  }, 300);
+}
+
+let _spreadTimer = null;
+function spreadSpecies(src) {
+  clearTimeout(_spreadTimer);
+  _spreadTimer = setTimeout(() => {
+    const val  = src.value.trim();
+    const prev = (src.dataset.prev || '').trim();
+    const myIdx = parseInt(src.id.replace('sp-', ''));
+    photoOrder.forEach((_, i) => {
+      if (i <= myIdx) return;
+      const el = document.getElementById(`sp-${i}`);
+      if (!el) return;
+      // Propagate to blank cards, or cards still carrying the previous auto-filled value
+      if (!el.value.trim() || el.value.trim() === prev) el.value = val;
+    });
+    src.dataset.prev = val;
+  }, 300);
+}
+
+async function doPost() {
+  const order = photoOrder.length ? photoOrder : (lastState?.new_birbs || []);
+  const photos = [];
+  order.forEach((f, i) => {
+    const card = document.getElementById(`pc-${i}`);
+    if (card?.classList.contains("excluded")) return;
+    const oos      = document.getElementById(`oos-${i}`)?.checked || false;
+    const rawSp    = document.getElementById(`sp-${i}`)?.value.trim() || "";
+    const species  = oos ? `⚠️ ${rawSp}` : rawSp;
+    const location = document.getElementById(`loc-${i}`)?.value.trim() || "";
+    photos.push({ file: f, species, location });
+  });
+  const date = document.getElementById("pf-date")?.value.trim() || "";
+  if (!photos.length) { alert("No photos selected."); return; }
+  if (!photos[0].location || !date) { alert("Fill in location and date."); return; }
+  if (!photos[0].species.replace("⚠️ ", "").trim()) { alert("Fill in species for at least the first photo."); return; }
+
+  // Fill-down: blanks inherit from the nearest filled card above
+  let lastSp = "";
+  photos.forEach(p => {
+    const bare = p.species.replace("⚠️ ", "").trim();
+    if (bare) { lastSp = p.species; }
+    else if (lastSp) { p.species = lastSp; }
+  });
+
+  localStorage.setItem('birbLocation', photos[0].location);
+  const scheduleDate = document.getElementById('pf-schedule')?.value || '';
+  const scheduledAt  = _scheduledAt || '';
+  const btn = document.getElementById('post-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Posting…'; }
+  postingInFlight = true;
+  await fetch("/api/post", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ photos, date, schedule_date: scheduleDate, scheduled_at: scheduledAt }),
+  });
+}
+
+
+let _modalFiles = [];
+let _modalIdx   = 0;
+
+function thumbClick(event, idx) {
+  const container = event.target.closest('.done-birbs');
+  const files = JSON.parse(decodeURIComponent(container?.dataset.files || '%5B%5D'));
+  const f = files[idx];
+  if (f) openModal(`/birb-img/${encodeURIComponent(f)}`, f, files, idx);
+}
+
+function openModal(src, name, files, idx) {
+  _modalFiles = files || [];
+  _modalIdx   = idx  ?? 0;
+  document.getElementById("modal-img").src = src;
+  document.getElementById("modal-name").textContent = name;
+  document.getElementById("img-modal").classList.add("open");
+  const hasPrev = _modalFiles.length > 1;
+  document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
+  document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
+}
+function modalStep(dir) {
+  if (!_modalFiles.length) return;
+  _modalIdx = (_modalIdx + dir + _modalFiles.length) % _modalFiles.length;
+  const f = _modalFiles[_modalIdx];
+  document.getElementById("modal-img").src = `/birb-img/${encodeURIComponent(f)}`;
+  document.getElementById("modal-name").textContent = f;
+}
+function closeModal() {
+  document.getElementById("img-modal").classList.remove("open");
+}
+document.addEventListener("keydown", e => {
+  if (!document.getElementById("img-modal").classList.contains("open")) return;
+  if (e.key === "Escape")      closeModal();
+  if (e.key === "ArrowLeft")   modalStep(-1);
+  if (e.key === "ArrowRight")  modalStep(1);
+});
+
+let _overlayTimer = null;
+function renderOverlay(step) {
+  const overlay = document.getElementById("auto-overlay");
+  const info    = step && AUTO_STEPS[step];
+  const was     = overlay.classList.contains("visible");
+  overlay.classList.toggle("visible", !!info);
+  const skipBtn = document.getElementById("overlay-skip");
+  if (info) {
+    document.getElementById("auto-label").textContent = info.label;
+    document.getElementById("auto-sub").textContent   = info.sub;
+    if (!was) {
+      skipBtn.style.display = "none";
+      clearTimeout(_overlayTimer);
+      _overlayTimer = setTimeout(() => { skipBtn.style.display = ""; }, 12000);
+    }
+  } else {
+    clearTimeout(_overlayTimer);
+    skipBtn.style.display = "none";
+  }
+}
+
+async function forceAdvance() {
+  await fetch("/api/force-advance", { method: "POST" });
+}
+
+function enc(s) { return encodeURIComponent(s); }
+
+// ── Species suggestions ───────────────────────────────────────────────────────
+async function loadSpecies() {
+  try {
+    const r = await fetch("/api/recent-species");
+    const d = await r.json();
+    recentSpecies   = d.species   || [];
+    recentLocations = d.locations || [];
+    document.getElementById("species-list").innerHTML =
+      recentSpecies.map(s => `<option value="${s}">`).join("");
+    document.getElementById("location-list").innerHTML =
+      recentLocations.map(l => `<option value="${l}">`).join("");
+  } catch (_) {}
+}
+
+// ── Resizer ───────────────────────────────────────────────────────────────────
+(function () {
+  const resizer = document.getElementById("resizer");
+  const logCol  = document.getElementById("log-col");
+  const MIN = 160, MAX = 600;
+
+  // Restore saved width
+  const saved = localStorage.getItem("logWidth");
+  if (saved) logCol.style.width = saved + "px";
+
+  let startX, startW;
+
+  resizer.addEventListener("mousedown", e => {
+    startX = e.clientX;
+    startW = logCol.offsetWidth;
+    resizer.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = e => {
+      const w = Math.min(MAX, Math.max(MIN, startW - (e.clientX - startX)));
+      logCol.style.width = w + "px";
+    };
+    const onUp = () => {
+      resizer.classList.remove("dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      localStorage.setItem("logWidth", logCol.offsetWidth);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+})();
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+// Log hidden by default
+document.getElementById("log-col").style.width = "0";
+document.getElementById("log-col").style.borderLeft = "none";
+document.getElementById("resizer").style.display = "none";
+document.getElementById("log-toggle").textContent = "Show log";
+initLogStream();
+loadSpecies();
+poll();
+</script>
+</body>
+</html>

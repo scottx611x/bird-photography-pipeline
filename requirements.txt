@@ -1,0 +1,4 @@
+httpx
+Pillow
+browser_cookie3
+flask
