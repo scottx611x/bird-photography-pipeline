@@ -539,7 +539,7 @@ function renderPostForm(batch, data) {
                onfocus="this.dataset.prev=this.value" oninput="spreadSpecies(this)" />
         <input list="location-list" id="loc-${idx}" value="${defaultLoc}" placeholder="Rea St."
                onfocus="this.dataset.prev=this.value" oninput="spreadLocation(this)" />
-        <label class="oos-check"><input type="checkbox" id="oos-${idx}" /> ⚠️ out of area</label>
+        <label class="oos-check"><input type="checkbox" id="oos-${idx}" onchange="spreadOos(this)" /> ⚠️ out of area</label>
       </div>
     </div>`).join("");
 
@@ -845,6 +845,16 @@ function onDrop(e, targetIdx) {
 
 function excludeCard(idx) {
   document.getElementById(`pc-${idx}`)?.classList.toggle("excluded");
+}
+
+function spreadOos(src) {
+  if (!src.checked) return;
+  const myIdx = parseInt(src.id.replace('oos-', ''));
+  photoOrder.forEach((_, i) => {
+    if (i <= myIdx) return;
+    const el = document.getElementById(`oos-${i}`);
+    if (el && !el.checked) el.checked = true;
+  });
 }
 
 let _locTimer = null;
