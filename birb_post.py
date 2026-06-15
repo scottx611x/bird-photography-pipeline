@@ -33,7 +33,7 @@ from io import BytesIO
 
 import httpx
 import browser_cookie3
-from PIL import Image
+from PIL import Image, ImageCms, ImageOps
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -73,31 +73,53 @@ def get_buffer_cookies() -> dict:
 
 # ── Image ─────────────────────────────────────────────────────────────────────
 
+# Goal: hand Instagram the highest-quality file we can while staying just under
+# its ~8 MB upload limit, and let IG do its own single downscale to display size.
+# Pre-shrinking to 1080 here only throws away detail before IG sees it. We keep
+# resolution generous (long edge up to 4096px — beyond that IG keeps nothing and
+# the pixels are wasted) and spend the byte budget by dialing JPEG quality to
+# land as close to 8 MB as we can without going over.
+MAX_EDGE = 4096
+MAX_UPLOAD_MB = 8.0
+MIN_QUALITY = 70
+SRGB = ImageCms.createProfile("sRGB")
+
+
 def resize_for_instagram(src: Path, dst: Path):
     img = Image.open(src)
+    img = ImageOps.exif_transpose(img)
+
+    # IG assumes sRGB — Adobe RGB / ProPhoto exports come out flat without this
+    icc = img.info.get("icc_profile")
+    if icc:
+        try:
+            src_profile = ImageCms.ImageCmsProfile(BytesIO(icc))
+            img = ImageCms.profileToProfile(img, src_profile, SRGB, outputMode="RGB")
+        except Exception as e:
+            print(f"  (icc → sRGB skipped: {e})")
     if img.mode != "RGB":
         img = img.convert("RGB")
 
+    # Cap the long edge so we don't waste bytes on pixels IG discards anyway.
     w, h = img.size
-    if w >= h:
-        new_w = min(w, 1024*4)
-        new_h = round(new_w * h / w)
-    else:
-        new_h = min(h, 1350*4)
-        new_w = round(new_h * w / h)
+    scale = min(MAX_EDGE / max(w, h), 1.0)
+    if scale < 1.0:
+        img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
 
-    img = img.resize((new_w, new_h), Image.LANCZOS)
-
+    # Walk quality down from max until we fit under the limit — this fills the
+    # byte budget: a detailed photo settles near 8 MB at high quality, while an
+    # already-small one just stays at q100.
+    srgb_bytes = ImageCms.ImageCmsProfile(SRGB).tobytes()
     quality = 100
     while True:
-        img.save(dst, "JPEG", quality=quality, optimize=True)
+        img.save(dst, "JPEG", quality=quality, optimize=True, subsampling=0,
+                 icc_profile=srgb_bytes)
         mb = dst.stat().st_size / 1024 / 1024
-        if mb <= 8.0 or quality < 60:
+        if mb <= MAX_UPLOAD_MB or quality <= MIN_QUALITY:
             break
-        quality -= 5
+        quality -= 1
 
-    mb = dst.stat().st_size / 1024 / 1024
-    print(f"  resized → {new_w}×{new_h}  {mb:.1f} MB")
+    print(f"  saved → {img.width}×{img.height}  q{quality}  {mb:.1f} MB")
 
 # ── Buffer / S3 ───────────────────────────────────────────────────────────────
 
@@ -189,9 +211,10 @@ def main():
     parser.add_argument("--schedule-date", help="Post date YYYY-MM-DD (informational)")
     parser.add_argument("--scheduled-at",  help="Exact ISO scheduledAt timestamp (overrides --schedule-date)")
     parser.add_argument("--dry-run",     action="store_true", help="Show caption and stop — don't post")
+    parser.add_argument("--resize-only", action="store_true", help="Resize images into .ready and stop — no upload, no post")
     args = parser.parse_args()
 
-    if not BUFFER_TOKEN:
+    if not BUFFER_TOKEN and not args.resize_only:
         print("Missing BUFFER_TOKEN env var.")
         sys.exit(1)
 
@@ -205,6 +228,17 @@ def main():
             print(f"File not found: {p}")
             sys.exit(1)
         srcs.append(p)
+
+    # Resize-only: produce instagram-ready files and stop
+    if args.resize_only:
+        ready_dir = BIRBS_DIR / ".ready"
+        ready_dir.mkdir(exist_ok=True)
+        for src in srcs:
+            ready = ready_dir / src.name
+            print(f"Resizing {src.name} …")
+            resize_for_instagram(src, ready)
+        print(f"\n✓ Resized {len(srcs)} image(s) → {ready_dir}")
+        return
 
     # Build and preview caption
     if args.text:

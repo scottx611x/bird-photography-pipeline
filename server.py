@@ -291,14 +291,30 @@ def _pick_export_post():
         log(f"  {line}")
 
     set_step("export_wait")
-    log("Export running in Lightroom — click Done when it finishes.")
+    log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birbs/ (or click Done).")
+    last_sig, stable = None, 0
     while True:
-        time.sleep(0.5)
+        time.sleep(1)
         with lock:
             done    = state["proc_step"] != "export_wait"
             stopped = state["stop_requested"]
         if done or stopped:
             break
+        # Auto-advance once new files appear and stop growing for 8s
+        new_files = sorted(set(_birbs_snapshot()) - before)
+        if not new_files:
+            continue
+        try:
+            sig = tuple((f, (BIRBS_DIR / f).stat().st_size) for f in new_files)
+        except OSError:
+            continue
+        if sig == last_sig:
+            stable += 1
+            if stable >= 8:
+                log("Export finished — continuing automatically.")
+                break
+        else:
+            last_sig, stable = sig, 0
     if state.get("stop_requested"): return
 
     now = set(_birbs_snapshot())
@@ -343,27 +359,25 @@ def get_next_open_scheduled_at() -> str:
         if not future:
             return ""
 
-        # Build set of filled local dates (ET = UTC-4)
-        et = timedelta(hours=-4)
-        filled = {(dt + et).date().isoformat() for dt in future}
+        # Build set of filled local dates (handles EST/EDT correctly)
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+        filled = {dt.astimezone(et).date().isoformat() for dt in future}
 
         # Walk forward from tomorrow to find first open day
-        check = (now + et + timedelta(days=1)).date()
+        check = (now.astimezone(et) + timedelta(days=1)).date()
         for _ in range(365):
             if check.isoformat() not in filled:
                 break
             check += timedelta(days=1)
 
-        # Find a queued post on the same day-of-week for its UTC time
+        # Reuse the ET wall-clock time of a queued post on the same day-of-week
         target_dow = check.weekday()
-        ref = next((dt for dt in future if (dt + et).weekday() == target_dow), future[0])
-
-        # Reconstruct scheduledAt: same UTC HH:MM but on the target date
-        utc_h, utc_m = ref.hour, ref.minute
-        from datetime import timedelta as td
-        # ET evening (8 PM–midnight) = 00:00–04:00 UTC the following calendar day
-        utc_date = check + td(days=1) if utc_h < 4 else check
-        scheduled_at = f"{utc_date}T{utc_h:02d}:{utc_m:02d}:00.000Z"
+        ref = next((dt for dt in future if dt.astimezone(et).weekday() == target_dow), future[0])
+        ref_et = ref.astimezone(et)
+        sched = datetime(check.year, check.month, check.day,
+                         ref_et.hour, ref_et.minute, tzinfo=et).astimezone(timezone.utc)
+        scheduled_at = sched.strftime("%Y-%m-%dT%H:%M:00.000Z")
         log(f"Scheduling for {check} (ET) → {scheduled_at} UTC")
         return scheduled_at
     except Exception as e:
@@ -493,6 +507,28 @@ def done_picking():
             state["proc_step"] = "exporting"
         elif step == "export_wait":
             state["proc_step"] = "export_done"
+    return jsonify({"ok": True})
+
+
+@app.post("/api/resize-only")
+def resize_only():
+    """Resize selected photos into .ready — no upload, no Buffer post."""
+    data  = request.json or {}
+    files = data.get("files", [])
+    if not files:
+        return jsonify({"error": "no files"}), 400
+
+    def _resize():
+        import subprocess
+        cmd = ["/usr/local/bin/python", "/app/birb_post.py",
+               "--resize-only", "--file"] + files
+        log(f"Resize-only: {len(files)} image(s)")
+        r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
+        for line in (r.stdout + r.stderr).splitlines():
+            log(line)
+        log("✓ Resize complete." if r.returncode == 0 else "Resize failed — check log.")
+
+    threading.Thread(target=_resize, daemon=True).start()
     return jsonify({"ok": True})
 
 

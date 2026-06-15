@@ -556,7 +556,10 @@ function renderPostForm(batch, data) {
         </div>
       </div>
     </div>
-    <button class="btn btn-success" id="post-btn" onclick="doPost()">▶ Post to Buffer</button>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-success" id="post-btn" onclick="doPost()" style="flex:1">▶ Post to Buffer</button>
+      <button class="btn btn-neutral" id="resize-btn" onclick="doResizeOnly()" title="Resize images into .ready without posting">⤵ Resize only</button>
+    </div>
   </div>`;
 }
 
@@ -890,6 +893,19 @@ function spreadSpecies(src) {
     });
     src.dataset.prev = val;
   }, 300);
+}
+
+async function doResizeOnly() {
+  const order = photoOrder.length ? photoOrder : (lastState?.new_birbs || []);
+  const files = order.filter((_, i) => !document.getElementById(`pc-${i}`)?.classList.contains("excluded"));
+  if (!files.length) { alert("No photos selected."); return; }
+  const btn = document.getElementById('resize-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Resizing…'; }
+  await fetch("/api/resize-only", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ files }),
+  });
+  setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = '⤵ Resize only'; } }, 4000);
 }
 
 async function doPost() {
