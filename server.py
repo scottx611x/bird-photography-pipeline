@@ -205,6 +205,7 @@ def process_batch(folder_name: str):
         batch["status"] = "processing"
         state["active"] = folder_name
         state["new_birbs"] = []
+        state["stop_requested"] = False
         state["thread_active"] = True
     try:
         _run_batch(folder_name)
@@ -284,11 +285,24 @@ def _pick_export_post():
             break
     if state.get("stop_requested"): return
 
-    before = set(_birbs_snapshot())
+    export_start = time.time() - 2  # small slack for filesystem/clock skew
     log("Triggering export…")
     result = call_host("export")
     for line in result.get("output", "").splitlines():
         log(f"  {line}")
+
+    def _exported():
+        # Files written or *overwritten* since export began. /birbs is a flat
+        # dump that accumulates every shoot, so re-exporting a name that already
+        # exists is invisible to a name set-diff — mtime catches those too.
+        out = []
+        for f in _birbs_snapshot():
+            try:
+                if (BIRBS_DIR / f).stat().st_mtime >= export_start:
+                    out.append(f)
+            except OSError:
+                pass
+        return sorted(out)
 
     set_step("export_wait")
     log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birbs/ (or click Done).")
@@ -300,8 +314,8 @@ def _pick_export_post():
             stopped = state["stop_requested"]
         if done or stopped:
             break
-        # Auto-advance once new files appear and stop growing for 8s
-        new_files = sorted(set(_birbs_snapshot()) - before)
+        # Auto-advance once exported files appear and stop growing for 8s
+        new_files = _exported()
         if not new_files:
             continue
         try:
@@ -317,8 +331,7 @@ def _pick_export_post():
             last_sig, stable = sig, 0
     if state.get("stop_requested"): return
 
-    now = set(_birbs_snapshot())
-    new = sorted(now - before)
+    new = _exported()
     with lock:
         state["new_birbs"] = new
     save_state()
@@ -811,13 +824,27 @@ def force_advance():
 
 @app.post("/api/reset/<folder_name>")
 def reset_batch(folder_name: str):
+    was_active = False
     with lock:
         if folder_name in state["batches"]:
             state["batches"][folder_name]["status"] = "pending"
         if state["active"] == folder_name:
+            was_active = True
+            # Tell the running thread to actually bail — otherwise clearing
+            # proc_step just trips its wait loop and it marches on to the next step.
+            state["stop_requested"] = True
             state["active"]    = None
             state["proc_step"] = None
+            state["new_birbs"] = []
     save_state()
+    if was_active:
+        # Clear the stop flag once the thread has had time to exit, so the next
+        # run isn't immediately aborted by a leftover flag.
+        def _clear():
+            time.sleep(1.0)
+            with lock:
+                state["stop_requested"] = False
+        threading.Thread(target=_clear, daemon=True).start()
     return jsonify({"ok": True})
 
 

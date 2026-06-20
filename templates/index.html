@@ -415,6 +415,7 @@ let dragSrc         = null; // index being dragged
 let excluded        = new Set(); // indices excluded from post
 let postingInFlight  = false;
 let nextDateFetched  = false;
+let expandedDone     = new Set(); // folders whose done-thumbnails are loaded on demand
 
 // ── Pipeline stages ───────────────────────────────────────────────────────────
 const STAGES = [
@@ -599,10 +600,13 @@ function renderBatches(data) {
       actions = `<button class="btn btn-neutral btn-sm" onclick="doReset('${b.folder}')">↺ Reprocess</button>`;
 
     const doneBirbs = (b.status === "done" && b.birbs?.length)
-      ? `<div class="done-birbs" data-files="${encodeURIComponent(JSON.stringify(b.birbs))}">${
-          b.birbs.map((f, i) =>
-            `<img class="done-thumb" src="/birb-thumb/${encodeURIComponent(f)}"
-                  onclick="thumbClick(event,${i})" title="${f}" />`).join("")
+      ? `<div class="done-birbs ${expandedDone.has(b.folder) ? '' : 'collapsed'}"
+              data-folder="${b.folder}" data-files="${encodeURIComponent(JSON.stringify(b.birbs))}">${
+          expandedDone.has(b.folder)
+            ? b.birbs.map((f, i) =>
+                `<img class="done-thumb" src="/birb-thumb/${encodeURIComponent(f)}"
+                      onclick="thumbClick(event,${i})" loading="lazy" title="${f}" />`).join("")
+            : `<button class="btn btn-neutral btn-sm done-expand" onclick="expandDoneBirbs('${b.folder}')">🖼 Show ${b.birbs.length} photo${b.birbs.length > 1 ? 's' : ''}</button>`
         }</div>`
       : "";
     const postedLine = (b.status === "done" && b.posted_due)
@@ -948,6 +952,17 @@ async function doPost() {
 
 let _modalFiles = [];
 let _modalIdx   = 0;
+
+function expandDoneBirbs(folder) {
+  expandedDone.add(folder);  // remembered so the periodic re-render keeps it open
+  const container = document.querySelector(`.done-birbs[data-folder="${folder}"]`);
+  if (!container) return;
+  const files = JSON.parse(decodeURIComponent(container.dataset.files || '%5B%5D'));
+  container.classList.remove('collapsed');
+  container.innerHTML = files.map((f, i) =>
+    `<img class="done-thumb" src="/birb-thumb/${encodeURIComponent(f)}"
+          onclick="thumbClick(event,${i})" loading="lazy" title="${f}" />`).join("");
+}
 
 function thumbClick(event, idx) {
   const container = event.target.closest('.done-birbs');
