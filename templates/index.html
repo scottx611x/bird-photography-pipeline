@@ -160,6 +160,23 @@
       grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
       gap: 9px;
     }
+    .split-banner {
+      grid-column: 1 / -1;
+      background: rgba(91,154,255,.08);
+      border: 1px solid var(--border2); border-radius: 10px;
+      padding: 9px 12px; font-size: 13px; color: var(--text); line-height: 1.5;
+    }
+    .split-banner b { color: var(--blue); }
+    .post-group-divider {
+      grid-column: 1 / -1;
+      display: flex; align-items: baseline; gap: 8px;
+      margin-top: 4px; padding-top: 9px; border-top: 1px dashed var(--border2);
+      font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+      color: var(--blue);
+    }
+    .post-group-divider .pg-sub {
+      color: var(--muted); font-weight: 500; letter-spacing: 0; text-transform: none;
+    }
     .photo-card {
       background: rgba(0,0,0,.4); border-radius: 12px;
       border: 1px solid var(--border2); transition: border-color .15s, box-shadow .15s; overflow: hidden;
@@ -361,7 +378,8 @@
     <div class="batch-col">
       <div class="panel-header">
         <div class="filter-bar">
-          <button class="chip active" data-f="all"        onclick="setFilter('all')">All</button>
+          <button class="chip active" data-f="open"       onclick="setFilter('open')">Active + Pending</button>
+          <button class="chip"        data-f="all"        onclick="setFilter('all')">All</button>
           <button class="chip"        data-f="pending"   onclick="setFilter('pending')">Pending</button>
           <button class="chip"        data-f="processing" onclick="setFilter('processing')">Active</button>
           <button class="chip"        data-f="done"      onclick="setFilter('done')">Done</button>
@@ -406,13 +424,14 @@
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastLogLen      = 0;
 let lastState       = null;
-let activeFilter    = "all";
+let activeFilter    = "open";  // default: show Active + Pending, hide Done
 let logVisible      = false;
 let recentSpecies   = [];
 let recentLocations = [];
 let photoOrder      = [];   // ordered filenames for post form
 let dragSrc         = null; // index being dragged
-let excluded        = new Set(); // indices excluded from post
+let excludedFiles   = new Set(); // filenames excluded from posting (survives reorder)
+const PER_POST      = 10;        // Instagram's max images per carousel post
 let postingInFlight  = false;
 let nextDateFetched  = false;
 let expandedDone     = new Set(); // folders whose done-thumbnails are loaded on demand
@@ -512,13 +531,37 @@ function renderStepCard(step, batch, data) {
 // ── Post form ─────────────────────────────────────────────────────────────────
 function renderPostForm(batch, data) {
   const birbs = data.new_birbs || [];
-  // Initialise or sync photoOrder
-  if (!photoOrder.length || !birbs.every(f => photoOrder.includes(f))) photoOrder = [...birbs];
+  // Initialise or sync photoOrder; reset exclusions when the batch changes
+  if (!photoOrder.length || !birbs.every(f => photoOrder.includes(f))) {
+    photoOrder = [...birbs];
+    excludedFiles.clear();
+  }
 
   const defaultLoc = recentLocations[0] || localStorage.getItem('birbLocation') || 'Rea St.';
 
-  const photoCards = photoOrder.map((f, idx) => `
-    <div class="photo-card" id="pc-${idx}" data-file="${f}"
+  const includedCount = photoOrder.filter(f => !excludedFiles.has(f)).length;
+  const nPosts        = Math.max(1, Math.ceil(includedCount / PER_POST));
+  const willSplit     = nPosts > 1;
+
+  const banner = willSplit
+    ? `<div class="split-banner">📦 <b>${includedCount} photos</b> · Instagram allows ${PER_POST} per post → these will be split into <b>${nPosts} posts</b>, each scheduled on the next open day.</div>`
+    : "";
+
+  let seen = 0; // count of included photos rendered so far
+  const photoCards = photoOrder.map((f, idx) => {
+    const isExcluded = excludedFiles.has(f);
+    let divider = "";
+    if (!isExcluded) {
+      if (willSplit && seen % PER_POST === 0) {
+        const postNum = seen / PER_POST + 1;
+        const last = Math.min(seen + PER_POST, includedCount);
+        divider = `<div class="post-group-divider">📦 Post ${postNum}<span class="pg-sub">· photos ${seen + 1}–${last} of ${includedCount}</span></div>`;
+      }
+      seen++;
+    }
+    const label = isExcluded ? '✕' : seen;
+    return divider + `
+    <div class="photo-card ${isExcluded ? 'excluded' : ''}" id="pc-${idx}" data-file="${f}"
          draggable="true"
          ondragstart="onDragStart(event,${idx})"
          ondragover="onDragOver(event)"
@@ -533,8 +576,8 @@ function renderPostForm(batch, data) {
       </div>
       <div class="photo-card-fields">
         <div class="photo-card-header">
-          <div class="photo-fname">${idx + 1}. ${f}</div>
-          <button class="photo-card-remove" onclick="excludeCard(${idx})" title="Exclude">✕</button>
+          <div class="photo-fname">${label}. ${f}</div>
+          <button class="photo-card-remove" onclick="excludeCard(${idx})" title="${isExcluded ? 'Include' : 'Exclude'}">${isExcluded ? '↩' : '✕'}</button>
         </div>
         <input list="species-list" id="sp-${idx}" placeholder="Species…"
                onfocus="this.dataset.prev=this.value" oninput="spreadSpecies(this)" />
@@ -542,23 +585,27 @@ function renderPostForm(batch, data) {
                onfocus="this.dataset.prev=this.value" oninput="spreadLocation(this)" />
         <label class="oos-check"><input type="checkbox" id="oos-${idx}" onchange="spreadOos(this)" /> ⚠️ out of area</label>
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
+
+  const postLabel = willSplit ? `▶ Schedule ${nPosts} posts to Buffer` : `▶ Post to Buffer`;
 
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
   const schedDefault = tomorrow.toISOString().split('T')[0];
   return `<div class="post-form">
-    ${birbs.length ? `<div class="photo-cards" id="photo-cards-list">${photoCards}</div>` : ""}
+    ${birbs.length ? `<div class="photo-cards" id="photo-cards-list">${banner}${photoCards}</div>` : ""}
     <div class="shared-fields">
       <div class="row">
         <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.cap_date||''}" placeholder="5-14-26" /></div>
         <div>
           <div class="fld-lbl">Post on <span id="pf-schedule-hint" style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.6"></span></div>
-          <input id="pf-schedule" type="date" value="${schedDefault}" />
+          <input id="pf-schedule" type="date" value="${schedDefault}" ${willSplit ? 'disabled title="Split posts auto-schedule across consecutive open days"' : ''} />
+          ${willSplit ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${nPosts} posts → next ${nPosts} open days (auto)</div>` : ''}
         </div>
       </div>
     </div>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-success" id="post-btn" onclick="doPost()" style="flex:1">▶ Post to Buffer</button>
+      <button class="btn btn-success" id="post-btn" onclick="doPost()" style="flex:1">${postLabel}</button>
       <button class="btn btn-neutral" id="resize-btn" onclick="doResizeOnly()" title="Resize images into .ready without posting">⤵ Resize only</button>
     </div>
   </div>`;
@@ -576,7 +623,9 @@ function renderBatches(data) {
 
   const list = document.getElementById("batch-list");
   const all  = (data.batches || []).filter(b =>
-    activeFilter === "all" || b.status === activeFilter);
+    activeFilter === "all"  ? true
+    : activeFilter === "open" ? (b.status === "pending" || b.status === "processing")
+    : b.status === activeFilter);
 
   if (!all.length) {
     list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads and click Scan.</div>`;
@@ -806,52 +855,62 @@ function toggleLog() {
 function onDragStart(e, idx) { dragSrc = idx; e.dataTransfer.effectAllowed = "move"; }
 function onDragOver(e)       { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }
 function onDragEnd()         { document.querySelectorAll(".photo-card").forEach(c => c.classList.remove("drag-over")); }
-function onDrop(e, targetIdx) {
-  e.preventDefault();
-  onDragEnd();
-  if (dragSrc === null || dragSrc === targetIdx) return;
-
-  // Snapshot all user input keyed by filename before reordering
+// Snapshot per-photo inputs by filename so they survive a re-render
+function capturePhotoInputs() {
   const snap = {};
   photoOrder.forEach((f, i) => {
     snap[f] = {
-      species:  document.getElementById(`sp-${i}`)?.value  ?? '',
-      location: document.getElementById(`loc-${i}`)?.value ?? '',
+      species:  document.getElementById(`sp-${i}`)?.value   ?? '',
+      location: document.getElementById(`loc-${i}`)?.value  ?? '',
       oos:      document.getElementById(`oos-${i}`)?.checked ?? false,
-      excluded: document.getElementById(`pc-${i}`)?.classList.contains('excluded') ?? false,
     };
   });
+  return snap;
+}
 
-  const moved = photoOrder.splice(dragSrc, 1)[0];
-  photoOrder.splice(targetIdx, 0, moved);
-  dragSrc = null;
-
-  if (lastState) {
-    const container = document.getElementById("photo-cards-list");
-    if (container && lastState.active) {
-      const tmp = document.createElement("div");
-      tmp.innerHTML = renderPostForm(lastState.active, lastState);
-      const newCards = tmp.querySelector("#photo-cards-list");
-      if (newCards) container.replaceWith(newCards);
-    }
+// Rebuild the photo-card grid (re-groups posts, re-labels) and restore inputs.
+// `snap` must be captured BEFORE photoOrder is mutated.
+function rerenderPhotoCards(snap) {
+  snap = snap || capturePhotoInputs();
+  const container = document.getElementById("photo-cards-list");
+  if (container && lastState?.active) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = renderPostForm(lastState.active, lastState);
+    const newCards = tmp.querySelector("#photo-cards-list");
+    if (newCards) container.replaceWith(newCards);
   }
-
-  // Restore input state to new positions
   photoOrder.forEach((f, i) => {
     const s = snap[f]; if (!s) return;
     const sp  = document.getElementById(`sp-${i}`);
     const loc = document.getElementById(`loc-${i}`);
     const oos = document.getElementById(`oos-${i}`);
-    const card = document.getElementById(`pc-${i}`);
-    if (sp)   sp.value    = s.species;
-    if (loc)  loc.value   = s.location;
-    if (oos)  oos.checked = s.oos;
-    if (card && s.excluded) card.classList.add('excluded');
+    if (sp)  sp.value    = s.species;
+    if (loc) loc.value   = s.location;
+    if (oos) oos.checked = s.oos;
   });
+  const btn = document.getElementById('post-btn');  // keep label in sync
+  if (btn && !postingInFlight) {
+    const n = Math.max(1, Math.ceil(photoOrder.filter(f => !excludedFiles.has(f)).length / PER_POST));
+    btn.textContent = n > 1 ? `▶ Schedule ${n} posts to Buffer` : '▶ Post to Buffer';
+  }
+}
+
+function onDrop(e, targetIdx) {
+  e.preventDefault();
+  onDragEnd();
+  if (dragSrc === null || dragSrc === targetIdx) return;
+  const snap = capturePhotoInputs();          // before mutating order
+  const moved = photoOrder.splice(dragSrc, 1)[0];
+  photoOrder.splice(targetIdx, 0, moved);
+  dragSrc = null;
+  rerenderPhotoCards(snap);
 }
 
 function excludeCard(idx) {
-  document.getElementById(`pc-${idx}`)?.classList.toggle("excluded");
+  const f = photoOrder[idx];
+  if (!f) return;
+  if (excludedFiles.has(f)) excludedFiles.delete(f); else excludedFiles.add(f);
+  rerenderPhotoCards();                        // re-group + relabel around the change
 }
 
 function spreadOos(src) {
@@ -901,7 +960,7 @@ function spreadSpecies(src) {
 
 async function doResizeOnly() {
   const order = photoOrder.length ? photoOrder : (lastState?.new_birbs || []);
-  const files = order.filter((_, i) => !document.getElementById(`pc-${i}`)?.classList.contains("excluded"));
+  const files = order.filter(f => !excludedFiles.has(f));
   if (!files.length) { alert("No photos selected."); return; }
   const btn = document.getElementById('resize-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Resizing…'; }
@@ -916,8 +975,7 @@ async function doPost() {
   const order = photoOrder.length ? photoOrder : (lastState?.new_birbs || []);
   const photos = [];
   order.forEach((f, i) => {
-    const card = document.getElementById(`pc-${i}`);
-    if (card?.classList.contains("excluded")) return;
+    if (excludedFiles.has(f)) return;
     const oos      = document.getElementById(`oos-${i}`)?.checked || false;
     const rawSp    = document.getElementById(`sp-${i}`)?.value.trim() || "";
     const species  = oos ? `⚠️ ${rawSp}` : rawSp;
@@ -940,12 +998,13 @@ async function doPost() {
   localStorage.setItem('birbLocation', photos[0].location);
   const scheduleDate = document.getElementById('pf-schedule')?.value || '';
   const scheduledAt  = _scheduledAt || '';
+  const nPosts = Math.max(1, Math.ceil(photos.length / PER_POST));
   const btn = document.getElementById('post-btn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Posting…'; }
+  if (btn) { btn.disabled = true; btn.textContent = nPosts > 1 ? `⏳ Scheduling ${nPosts} posts…` : '⏳ Posting…'; }
   postingInFlight = true;
   await fetch("/api/post", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ photos, date, schedule_date: scheduleDate, scheduled_at: scheduledAt }),
+    body: JSON.stringify({ photos, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, per_post: PER_POST }),
   });
 }
 

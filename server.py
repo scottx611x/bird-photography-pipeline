@@ -398,6 +398,72 @@ def get_next_open_scheduled_at() -> str:
         return ""
 
 
+def get_next_open_scheduled_ats(n: int) -> list:
+    """ISO scheduledAt strings for the next `n` open days — one post per day."""
+    from datetime import datetime, timezone, timedelta
+    from zoneinfo import ZoneInfo
+    token = os.environ.get("BUFFER_TOKEN", "")
+    if not token or n < 1:
+        return []
+    query = """
+    query GetPosts($input: PostsInput!, $first: Int) {
+      posts(input: $input, first: $first) { edges { node { dueAt } } }
+    }
+    """
+    try:
+        with httpx.Client(timeout=10) as client:
+            r = client.post("https://api.buffer.com",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"query": query, "variables": {
+                    "input": {"organizationId": "6a008c6e3e4597b26fe42152"},
+                    "first": 100
+                }})
+        edges = r.json().get("data", {}).get("posts", {}).get("edges", [])
+        now = datetime.now(timezone.utc)
+        future = [datetime.fromisoformat(e["node"]["dueAt"].replace("Z", "+00:00"))
+                  for e in edges if e.get("node", {}).get("dueAt", "")
+                  and datetime.fromisoformat(e["node"]["dueAt"].replace("Z", "+00:00")) > now]
+        et = ZoneInfo("America/New_York")
+        filled = {dt.astimezone(et).date().isoformat() for dt in future}
+
+        def slot_for(day):
+            # Reuse the wall-clock time of an existing post on the same weekday.
+            ref = next((dt for dt in future if dt.astimezone(et).weekday() == day.weekday()),
+                       future[0] if future else None)
+            h, m = (ref.astimezone(et).hour, ref.astimezone(et).minute) if ref else (17, 37)
+            sched = datetime(day.year, day.month, day.day, h, m, tzinfo=et).astimezone(timezone.utc)
+            return sched.strftime("%Y-%m-%dT%H:%M:00.000Z")
+
+        out, check = [], (now.astimezone(et) + timedelta(days=1)).date()
+        for _ in range(n):
+            for _ in range(365):
+                if check.isoformat() not in filled:
+                    break
+                check += timedelta(days=1)
+            out.append(slot_for(check))
+            filled.add(check.isoformat())   # so the next post lands on a later day
+            check += timedelta(days=1)
+        log(f"Scheduling {n} post(s) across open slots: {out}")
+        return out
+    except Exception as e:
+        log(f"get_next_open_scheduled_ats error: {e}")
+        return []
+
+
+def _caption_for(chunk: list, cap_date: str) -> str:
+    """Build an IG caption for one post's photos (dedupes consecutive repeats)."""
+    locs = [p.get("location", "") for p in chunk]
+    same_loc = len(set(locs)) == 1 and locs[0]
+    seen, lines = None, []
+    for p in chunk:
+        item = p.get("species", "") if same_loc else f"{p.get('species','')} - {p.get('location','')}"
+        if item != seen:
+            lines.append(item)
+            seen = item
+    tail = f"\n\n{locs[0]}\n\n{cap_date}" if same_loc else f"\n\n{cap_date}"
+    return "\n".join(lines) + tail
+
+
 def _birbs_snapshot():
     if not BIRBS_DIR.exists():
         return []
@@ -571,53 +637,56 @@ def post_to_buffer():
         import subprocess
         with lock:
             state["post_error"] = False
-        # Smart caption: shared location vs per-photo location
-        locs = [p.get("location", "") for p in (photos or [])]
-        same_loc = photos and len(set(locs)) == 1 and locs[0]
-        if same_loc:
-            seen, deduped = None, []
-            for p in photos:
-                s = p.get("species", "")
-                if s != seen:
-                    deduped.append(s)
-                    seen = s
-            caption_text = "\n".join(deduped) + f"\n\n{locs[0]}\n\n{cap_date}"
-        elif photos:
-            seen, deduped = None, []
-            for p in photos:
-                line = f"{p.get('species','')} - {p.get('location','')}"
-                if line != seen:
-                    deduped.append(line)
-                    seen = line
-            caption_text = "\n".join(deduped) + f"\n\n{cap_date}"
-        else:
-            caption_text  = f"{species}\n\n{location}\n\n{cap_date}"
 
-        cmd = ["/usr/local/bin/python", "/app/birb_post.py",
-               "--file"] + files + ["--text", caption_text]
-        resolved_at = scheduled_at or get_next_open_scheduled_at()
-        if resolved_at:
-            cmd += ["--scheduled-at", resolved_at]
-        log(f"Posting: {' '.join(cmd)}")
-        r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
-        for line in (r.stdout + r.stderr).splitlines():
-            log(line)
-        if r.returncode == 0:
-            log("🐦 Posted to Buffer!")
-            due = next((l.split("Scheduled for:")[-1].strip()
-                        for l in (r.stdout + r.stderr).splitlines()
-                        if "Scheduled for:" in l), "")
+        # Instagram allows max 10 images per post — split into chunks of `per`.
+        per = max(1, min(int(data.get("per_post") or 10), 10))
+        chunk_photos = photos or [{"file": f, "species": species, "location": location} for f in files]
+        chunks = [chunk_photos[i:i+per] for i in range(0, len(chunk_photos), per)]
+        n = len(chunks)
+        # One open day per split post; a single post keeps the old behaviour
+        # (honour a manual slot, else next open slot).
+        slots = (get_next_open_scheduled_ats(n) if n > 1
+                 else [scheduled_at or get_next_open_scheduled_at()])
+
+        all_ok, last_due = True, ""
+        for i, chunk in enumerate(chunks):
+            caption_text = _caption_for(chunk, cap_date)
+            chunk_files  = [p["file"] for p in chunk]
+            cmd = ["/usr/local/bin/python", "/app/birb_post.py",
+                   "--file"] + chunk_files + ["--text", caption_text]
+            slot = slots[i] if i < len(slots) else ""
+            if slot:
+                cmd += ["--scheduled-at", slot]
+            if n > 1:
+                log(f"── Post {i+1}/{n} · {len(chunk_files)} photo(s) ──")
+            log(f"Posting: {' '.join(cmd)}")
+            r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
+            for line in (r.stdout + r.stderr).splitlines():
+                log(line)
+            if r.returncode == 0:
+                log("🐦 Posted to Buffer!" if n == 1 else f"🐦 Post {i+1}/{n} queued!")
+                due = next((l.split("Scheduled for:")[-1].strip()
+                            for l in (r.stdout + r.stderr).splitlines()
+                            if "Scheduled for:" in l), "")
+                last_due = due or last_due
+            else:
+                all_ok = False
+                log(f"Post {i+1}/{n} failed — check log.")
+                break
+
+        if all_ok:
+            if n > 1:
+                log(f"✓ All {n} posts queued to Buffer.")
             with lock:
                 if state["active"]:
                     state["batches"][state["active"]]["status"]     = "done"
                     state["batches"][state["active"]]["birbs"]      = list(state["new_birbs"])
-                    state["batches"][state["active"]]["posted_due"] = due
+                    state["batches"][state["active"]]["posted_due"] = last_due
                     state["active"]    = None
                     state["proc_step"] = None
-                state["last_post"] = {"due": due, "url": "https://publish.buffer.com"}
+                state["last_post"] = {"due": last_due, "url": "https://publish.buffer.com"}
             save_state()
         else:
-            log("Post failed — check log.")
             with lock:
                 state["post_error"] = True
 
