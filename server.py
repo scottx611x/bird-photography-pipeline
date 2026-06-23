@@ -630,7 +630,10 @@ def post_to_buffer():
         species  = ", ".join(p.get("species", "") for p in photos)
         location = photos[0].get("location", "") if photos else location
 
-    if not (files and species and location and cap_date):
+    # groups is the user's explicit per-post grouping (list of lists of photos).
+    groups = data.get("groups")
+
+    if not cap_date or not (groups or photos or files):
         return jsonify({"error": "missing fields"}), 400
 
     def _post():
@@ -638,10 +641,19 @@ def post_to_buffer():
         with lock:
             state["post_error"] = False
 
-        # Instagram allows max 10 images per post — split into chunks of `per`.
-        per = max(1, min(int(data.get("per_post") or 10), 10))
-        chunk_photos = photos or [{"file": f, "species": species, "location": location} for f in files]
-        chunks = [chunk_photos[i:i+per] for i in range(0, len(chunk_photos), per)]
+        # Use the explicit lane grouping if given; else split into chunks of `per`.
+        if groups:
+            chunks = [g for g in groups if g]
+        else:
+            per = max(1, min(int(data.get("per_post") or 10), 10))
+            chunk_photos = photos or [{"file": f, "species": species, "location": location} for f in files]
+            chunks = [chunk_photos[i:i+per] for i in range(0, len(chunk_photos), per)]
+        # Safety net: never let a single post exceed Instagram's 10-image limit.
+        capped = []
+        for g in chunks:
+            for i in range(0, len(g), 10):
+                capped.append(g[i:i+10])
+        chunks = capped or chunks
         n = len(chunks)
         # One open day per split post; a single post keeps the old behaviour
         # (honour a manual slot, else next open slot).

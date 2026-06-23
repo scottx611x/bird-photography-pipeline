@@ -160,23 +160,47 @@
       grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
       gap: 9px;
     }
+    .lanes-wrap { display: flex; flex-direction: column; gap: 10px; }
     .split-banner {
-      grid-column: 1 / -1;
       background: rgba(91,154,255,.08);
       border: 1px solid var(--border2); border-radius: 10px;
       padding: 9px 12px; font-size: 13px; color: var(--text); line-height: 1.5;
     }
     .split-banner b { color: var(--blue); }
-    .post-group-divider {
-      grid-column: 1 / -1;
-      display: flex; align-items: baseline; gap: 8px;
-      margin-top: 4px; padding-top: 9px; border-top: 1px dashed var(--border2);
+    .post-lane {
+      border: 1px solid var(--border2); border-radius: 12px;
+      padding: 9px; background: rgba(255,255,255,.015); transition: border-color .15s, background .15s;
+    }
+    .post-lane.lane-over { border-color: var(--blue); background: rgba(91,154,255,.07); }
+    .post-lane.over { border-color: var(--red); }
+    .post-lane-head {
+      display: flex; align-items: center; gap: 8px; margin: 0 2px 8px;
       font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-      color: var(--blue);
     }
-    .post-group-divider .pg-sub {
-      color: var(--muted); font-weight: 500; letter-spacing: 0; text-transform: none;
+    .post-lane-head .lane-title { color: var(--blue); }
+    .lane-count { color: var(--muted); font-weight: 600; letter-spacing: 0; }
+    .lane-count.bad { color: var(--red); }
+    .lane-remove {
+      margin-left: auto; background: none; border: none; color: var(--muted);
+      cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px;
     }
+    .lane-remove:hover { color: var(--red); background: rgba(248,113,113,.1); }
+    .lane-cards {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 9px;
+    }
+    .lane-empty {
+      grid-column: 1 / -1; text-align: center; color: var(--muted);
+      font-size: 12px; padding: 14px; border: 1px dashed var(--border2); border-radius: 8px;
+    }
+    .lane-actions { display: flex; gap: 8px; }
+    .add-post-btn {
+      background: none; border: 1px dashed var(--border2);
+      color: var(--muted); border-radius: 9px; padding: 7px 14px; font-size: 13px;
+      cursor: pointer; transition: border-color .15s, color .15s;
+    }
+    .add-post-btn:hover { border-color: var(--blue); color: var(--blue); }
+    .excluded-tray { border: 1px dashed var(--border2); border-radius: 12px; padding: 9px; opacity: .85; }
+    .excluded-tray.lane-over { border-color: var(--red); background: rgba(248,113,113,.06); }
     .photo-card {
       background: rgba(0,0,0,.4); border-radius: 12px;
       border: 1px solid var(--border2); transition: border-color .15s, box-shadow .15s; overflow: hidden;
@@ -428,10 +452,13 @@ let activeFilter    = "open";  // default: show Active + Pending, hide Done
 let logVisible      = false;
 let recentSpecies   = [];
 let recentLocations = [];
-let photoOrder      = [];   // ordered filenames for post form
-let dragSrc         = null; // index being dragged
-let excludedFiles   = new Set(); // filenames excluded from posting (survives reorder)
+let postLanes       = [];   // [[file,…], …] — one inner array per Buffer post
+let dragSrc         = null; // filename currently being dragged
+let excludedFiles   = new Set(); // filenames excluded from posting
+let photoMeta       = {};   // file -> {species, location, oos}; survives re-render
 const PER_POST      = 10;        // Instagram's max images per carousel post
+const fid = f => 'f_' + f.replace(/[^a-zA-Z0-9]/g, '_'); // safe element id from filename
+const flatFiles = () => postLanes.flat();
 let postingInFlight  = false;
 let nextDateFetched  = false;
 let expandedDone     = new Set(); // folders whose done-thumbnails are loaded on demand
@@ -531,69 +558,99 @@ function renderStepCard(step, batch, data) {
 // ── Post form ─────────────────────────────────────────────────────────────────
 function renderPostForm(batch, data) {
   const birbs = data.new_birbs || [];
-  // Initialise or sync photoOrder; reset exclusions when the batch changes
-  if (!photoOrder.length || !birbs.every(f => photoOrder.includes(f))) {
-    photoOrder = [...birbs];
+  // Re-init lanes only when the batch's photo set changes
+  const known = new Set([...flatFiles(), ...excludedFiles]);
+  if (!known.size || !birbs.every(f => known.has(f))) {
+    initLanes(birbs);
     excludedFiles.clear();
+    photoMeta = {};
   }
 
   const defaultLoc = recentLocations[0] || localStorage.getItem('birbLocation') || 'Rea St.';
+  const esc = s => String(s ?? '').replace(/"/g, '&quot;');
 
-  const includedCount = photoOrder.filter(f => !excludedFiles.has(f)).length;
-  const nPosts        = Math.max(1, Math.ceil(includedCount / PER_POST));
-  const willSplit     = nPosts > 1;
+  const lanes = postLanes.filter(l => l.length);   // non-empty lanes drive the count
+  const nPosts = Math.max(1, lanes.length);
+  const willSplit = nPosts > 1 || postLanes.length > 1;
+  const overfull = postLanes.some(l => l.length > PER_POST);
 
-  const banner = willSplit
-    ? `<div class="split-banner">📦 <b>${includedCount} photos</b> · Instagram allows ${PER_POST} per post → these will be split into <b>${nPosts} posts</b>, each scheduled on the next open day.</div>`
-    : "";
+  const banner = `<div class="split-banner">📦 <b>${flatFiles().length} photos</b> in <b>${lanes.length} post${lanes.length === 1 ? '' : 's'}</b> · Instagram allows ${PER_POST} per post.<br>Drag photos between posts to regroup; “＋ Add post” for a new one. Each post is scheduled on the next open day.</div>`;
 
-  let seen = 0; // count of included photos rendered so far
-  const photoCards = photoOrder.map((f, idx) => {
-    const isExcluded = excludedFiles.has(f);
-    let divider = "";
-    if (!isExcluded) {
-      if (willSplit && seen % PER_POST === 0) {
-        const postNum = seen / PER_POST + 1;
-        const last = Math.min(seen + PER_POST, includedCount);
-        divider = `<div class="post-group-divider">📦 Post ${postNum}<span class="pg-sub">· photos ${seen + 1}–${last} of ${includedCount}</span></div>`;
-      }
-      seen++;
-    }
-    const label = isExcluded ? '✕' : seen;
-    return divider + `
-    <div class="photo-card ${isExcluded ? 'excluded' : ''}" id="pc-${idx}" data-file="${f}"
-         draggable="true"
-         ondragstart="onDragStart(event,${idx})"
-         ondragover="onDragOver(event)"
-         ondrop="onDrop(event,${idx})"
-         ondragend="onDragEnd()">
-      <div class="photo-card-img-row">
-        <img src="/birb-thumb/${encodeURIComponent(f)}"
-             onclick="openModal('/birb-img/${encodeURIComponent(f)}','${f}',photoOrder,${idx})"
-             loading="lazy"
-             title="Click to preview" />
-        <div class="zoom-hint">🔍 preview</div>
-      </div>
-      <div class="photo-card-fields">
-        <div class="photo-card-header">
-          <div class="photo-fname">${label}. ${f}</div>
-          <button class="photo-card-remove" onclick="excludeCard(${idx})" title="${isExcluded ? 'Include' : 'Exclude'}">${isExcluded ? '↩' : '✕'}</button>
+  let gi = 0; // running index across all included photos (for modal nav)
+  const card = (f) => {
+    const m = photoMeta[f] || {};
+    const idx = gi++;
+    return `
+      <div class="photo-card" data-file="${f}" draggable="true"
+           ondragstart="onCardDragStart(event,'${f}')" ondragend="onDragEnd()"
+           ondragover="onCardOver(event)" ondragleave="onCardLeave(event)"
+           ondrop="onCardDrop(event,'${f}')">
+        <div class="photo-card-img-row">
+          <img src="/birb-thumb/${encodeURIComponent(f)}"
+               onclick="openModal('/birb-img/${encodeURIComponent(f)}','${f}',flatFiles(),${idx})"
+               loading="lazy" title="Click to preview" />
+          <div class="zoom-hint">🔍 preview</div>
         </div>
-        <input list="species-list" id="sp-${idx}" placeholder="Species…"
-               onfocus="this.dataset.prev=this.value" oninput="spreadSpecies(this)" />
-        <input list="location-list" id="loc-${idx}" value="${defaultLoc}" placeholder="Rea St."
-               onfocus="this.dataset.prev=this.value" oninput="spreadLocation(this)" />
-        <label class="oos-check"><input type="checkbox" id="oos-${idx}" onchange="spreadOos(this)" /> ⚠️ out of area</label>
-      </div>
-    </div>`;
+        <div class="photo-card-fields">
+          <div class="photo-card-header">
+            <div class="photo-fname">${f}</div>
+            <button class="photo-card-remove" onclick="excludeCard('${f}')" title="Exclude">✕</button>
+          </div>
+          <input list="species-list" id="sp-${fid(f)}" data-file="${f}" placeholder="Species…"
+                 value="${esc(m.species)}" onfocus="this.dataset.prev=this.value" oninput="spreadSpecies(this)" />
+          <input list="location-list" id="loc-${fid(f)}" data-file="${f}" placeholder="Rea St."
+                 value="${esc(m.location ?? defaultLoc)}" onfocus="this.dataset.prev=this.value" oninput="spreadLocation(this)" />
+          <label class="oos-check"><input type="checkbox" id="oos-${fid(f)}" data-file="${f}" ${m.oos ? 'checked' : ''} onchange="spreadOos(this)" /> ⚠️ out of area</label>
+        </div>
+      </div>`;
+  };
+
+  const laneHtml = postLanes.map((lane, i) => {
+    const over = lane.length > PER_POST;
+    const removeBtn = postLanes.length > 1
+      ? `<button class="lane-remove" onclick="removeLane(${i})" title="Remove this post (photos move to Excluded)">✕</button>` : '';
+    return `
+      <div class="post-lane ${over ? 'over' : ''}" data-lane="${i}"
+           ondragover="onLaneOver(event)" ondragleave="onLaneLeave(event)" ondrop="onLaneDrop(event,${i})">
+        <div class="post-lane-head">
+          <span class="lane-title">📦 Post ${i + 1}</span>
+          <span class="lane-count ${over ? 'bad' : ''}">${lane.length}/${PER_POST}</span>
+          ${removeBtn}
+        </div>
+        <div class="lane-cards">
+          ${lane.map(card).join("") || `<div class="lane-empty">drag photos here</div>`}
+        </div>
+      </div>`;
   }).join("");
 
-  const postLabel = willSplit ? `▶ Schedule ${nPosts} posts to Buffer` : `▶ Post to Buffer`;
+  const excludedHtml = excludedFiles.size ? `
+      <div class="excluded-tray" ondragover="onLaneOver(event)" ondragleave="onLaneLeave(event)" ondrop="onExcludeDrop(event)">
+        <div class="post-lane-head"><span class="lane-title" style="color:var(--red)">🚫 Excluded · won’t post</span></div>
+        <div class="lane-cards">
+          ${[...excludedFiles].map(f => `
+            <div class="photo-card excluded" data-file="${f}" draggable="true"
+                 ondragstart="onCardDragStart(event,'${f}')" ondragend="onDragEnd()">
+              <div class="photo-card-img-row">
+                <img src="/birb-thumb/${encodeURIComponent(f)}" loading="lazy" title="${f}" />
+              </div>
+              <div class="photo-card-fields">
+                <div class="photo-card-header">
+                  <div class="photo-fname">${f}</div>
+                  <button class="photo-card-remove" onclick="restoreCard('${f}')" title="Include again">↩</button>
+                </div>
+              </div>
+            </div>`).join("")}
+        </div>
+      </div>` : "";
+
+  const postLabel = overfull ? `⚠ A post exceeds ${PER_POST} photos`
+                  : nPosts > 1 ? `▶ Schedule ${nPosts} posts to Buffer`
+                  : `▶ Post to Buffer`;
 
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
   const schedDefault = tomorrow.toISOString().split('T')[0];
   return `<div class="post-form">
-    ${birbs.length ? `<div class="photo-cards" id="photo-cards-list">${banner}${photoCards}</div>` : ""}
+    ${birbs.length ? `<div class="lanes-wrap" id="photo-cards-list">${banner}${laneHtml}<div class="lane-actions"><button class="add-post-btn" onclick="addLane()">＋ Add post</button><button class="add-post-btn" onclick="sortByName()" title="Reorder all photos by filename and regroup into posts of 10">⇅ Sort by name</button></div>${excludedHtml}</div>` : ""}
     <div class="shared-fields">
       <div class="row">
         <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.cap_date||''}" placeholder="5-14-26" /></div>
@@ -605,7 +662,7 @@ function renderPostForm(batch, data) {
       </div>
     </div>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-success" id="post-btn" onclick="doPost()" style="flex:1">${postLabel}</button>
+      <button class="btn btn-success" id="post-btn" onclick="doPost()" style="flex:1" ${overfull ? 'disabled' : ''}>${postLabel}</button>
       <button class="btn btn-neutral" id="resize-btn" onclick="doResizeOnly()" title="Resize images into .ready without posting">⤵ Resize only</button>
     </div>
   </div>`;
@@ -615,7 +672,7 @@ function renderPostForm(batch, data) {
 function renderBatches(data) {
   const typing = dragSrc !== null
     || ["pf-date","pf-schedule"].some(id => document.activeElement?.id === id)
-    || !!document.activeElement?.id?.match(/^(sp|loc)-\d+$/);
+    || !!document.activeElement?.id?.match(/^(sp|loc)-/);
   if (typing) return;
 
   // Don't rebuild photo cards once the post form is on screen — images would reload
@@ -851,116 +908,155 @@ function toggleLog() {
   document.getElementById("log-toggle").textContent = logVisible ? "Hide log" : "Show log";
 }
 
-// ── Drag to reorder ───────────────────────────────────────────────────────────
-function onDragStart(e, idx) { dragSrc = idx; e.dataTransfer.effectAllowed = "move"; }
-function onDragOver(e)       { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }
-function onDragEnd()         { document.querySelectorAll(".photo-card").forEach(c => c.classList.remove("drag-over")); }
-// Snapshot per-photo inputs by filename so they survive a re-render
-function capturePhotoInputs() {
-  const snap = {};
-  photoOrder.forEach((f, i) => {
-    snap[f] = {
-      species:  document.getElementById(`sp-${i}`)?.value   ?? '',
-      location: document.getElementById(`loc-${i}`)?.value  ?? '',
-      oos:      document.getElementById(`oos-${i}`)?.checked ?? false,
-    };
-  });
-  return snap;
+// ── Lanes: init + state ─────────────────────────────────────────────────────────
+const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+
+function chunkToLanes(files) {
+  postLanes = [];
+  for (let i = 0; i < files.length; i += PER_POST) postLanes.push(files.slice(i, i + PER_POST));
+  if (!postLanes.length) postLanes = [[]];
 }
 
-// Rebuild the photo-card grid (re-groups posts, re-labels) and restore inputs.
-// `snap` must be captured BEFORE photoOrder is mutated.
-function rerenderPhotoCards(snap) {
-  snap = snap || capturePhotoInputs();
+function initLanes(birbs) {
+  chunkToLanes([...birbs].sort(byName));   // default order = natural filename order
+}
+
+function sortByName() {
+  const lanesWithContent = postLanes.filter(l => l.length).length;
+  if (lanesWithContent > 1 &&
+      !confirm('Sort all photos by filename? This regroups them into posts of 10.')) return;
+  capturePhotoInputs();
+  chunkToLanes(flatFiles().sort(byName));
+  rerenderPhotoCards();
+}
+
+// Sync on-screen inputs into photoMeta so values survive a re-render
+function capturePhotoInputs() {
+  [...flatFiles(), ...excludedFiles].forEach(f => {
+    const sp  = document.getElementById(`sp-${fid(f)}`);
+    const loc = document.getElementById(`loc-${fid(f)}`);
+    const oos = document.getElementById(`oos-${fid(f)}`);
+    if (sp || loc || oos) {
+      const m = photoMeta[f] || {};
+      photoMeta[f] = {
+        species:  sp  ? sp.value    : (m.species  || ''),
+        location: loc ? loc.value   : m.location,
+        oos:      oos ? oos.checked : (m.oos      || false),
+      };
+    }
+  });
+  return photoMeta;
+}
+
+// Re-render lanes in place (input values come from photoMeta)
+function rerenderPhotoCards() {
+  capturePhotoInputs();
   const container = document.getElementById("photo-cards-list");
   if (container && lastState?.active) {
     const tmp = document.createElement("div");
     tmp.innerHTML = renderPostForm(lastState.active, lastState);
-    const newCards = tmp.querySelector("#photo-cards-list");
-    if (newCards) container.replaceWith(newCards);
-  }
-  photoOrder.forEach((f, i) => {
-    const s = snap[f]; if (!s) return;
-    const sp  = document.getElementById(`sp-${i}`);
-    const loc = document.getElementById(`loc-${i}`);
-    const oos = document.getElementById(`oos-${i}`);
-    if (sp)  sp.value    = s.species;
-    if (loc) loc.value   = s.location;
-    if (oos) oos.checked = s.oos;
-  });
-  const btn = document.getElementById('post-btn');  // keep label in sync
-  if (btn && !postingInFlight) {
-    const n = Math.max(1, Math.ceil(photoOrder.filter(f => !excludedFiles.has(f)).length / PER_POST));
-    btn.textContent = n > 1 ? `▶ Schedule ${n} posts to Buffer` : '▶ Post to Buffer';
+    const fresh = tmp.querySelector("#photo-cards-list");
+    if (fresh) container.replaceWith(fresh);
+    const newBtn = tmp.querySelector("#post-btn"), curBtn = document.getElementById("post-btn");
+    if (newBtn && curBtn && !postingInFlight) { curBtn.textContent = newBtn.textContent; curBtn.disabled = newBtn.disabled; }
   }
 }
 
-function onDrop(e, targetIdx) {
-  e.preventDefault();
-  onDragEnd();
-  if (dragSrc === null || dragSrc === targetIdx) return;
-  const snap = capturePhotoInputs();          // before mutating order
-  const moved = photoOrder.splice(dragSrc, 1)[0];
-  photoOrder.splice(targetIdx, 0, moved);
+// ── Drag & drop between lanes ───────────────────────────────────────────────────
+function onCardDragStart(e, f) { dragSrc = f; e.dataTransfer.effectAllowed = "move"; e.stopPropagation(); }
+function onDragEnd() {
   dragSrc = null;
-  rerenderPhotoCards(snap);
+  document.querySelectorAll(".drag-over,.lane-over").forEach(el => el.classList.remove("drag-over", "lane-over"));
+}
+function onCardOver(e)  { if (dragSrc) { e.preventDefault(); e.currentTarget.classList.add("drag-over"); } }
+function onCardLeave(e) { e.currentTarget.classList.remove("drag-over"); }
+function onLaneOver(e)  { if (dragSrc) { e.preventDefault(); e.currentTarget.classList.add("lane-over"); } }
+function onLaneLeave(e) { e.currentTarget.classList.remove("lane-over"); }
+
+function removeFromAll(f) {
+  excludedFiles.delete(f);
+  for (const lane of postLanes) { const i = lane.indexOf(f); if (i >= 0) { lane.splice(i, 1); return; } }
+}
+function pruneEmptyLanes() {
+  postLanes = postLanes.filter(l => l.length);
+  if (!postLanes.length) postLanes = [[]];
 }
 
-function excludeCard(idx) {
-  const f = photoOrder[idx];
+function onCardDrop(e, targetFile) {
+  e.preventDefault(); e.stopPropagation();
+  const f = dragSrc; onDragEnd();
+  if (!f || f === targetFile) return;
+  capturePhotoInputs();
+  const laneIdx = postLanes.findIndex(l => l.includes(targetFile));
+  if (laneIdx < 0) return;
+  removeFromAll(f);
+  const lane = postLanes[laneIdx];
+  const at = lane.indexOf(targetFile);
+  lane.splice(at < 0 ? lane.length : at, 0, f);
+  pruneEmptyLanes();
+  rerenderPhotoCards();
+}
+function onLaneDrop(e, laneIdx) {
+  e.preventDefault();
+  const f = dragSrc; onDragEnd();
   if (!f) return;
-  if (excludedFiles.has(f)) excludedFiles.delete(f); else excludedFiles.add(f);
-  rerenderPhotoCards();                        // re-group + relabel around the change
+  capturePhotoInputs();
+  removeFromAll(f);
+  (postLanes[laneIdx] || (postLanes[laneIdx] = [])).push(f);
+  pruneEmptyLanes();
+  rerenderPhotoCards();
+}
+function onExcludeDrop(e) {
+  e.preventDefault();
+  const f = dragSrc; onDragEnd();
+  if (!f) return;
+  capturePhotoInputs();
+  removeFromAll(f);
+  excludedFiles.add(f);
+  pruneEmptyLanes();
+  rerenderPhotoCards();
 }
 
-function spreadOos(src) {
-  if (!src.checked) return;
-  const myIdx = parseInt(src.id.replace('oos-', ''));
-  photoOrder.forEach((_, i) => {
+function addLane()     { capturePhotoInputs(); postLanes.push([]); rerenderPhotoCards(); }
+function removeLane(i) {
+  capturePhotoInputs();
+  (postLanes[i] || []).forEach(f => excludedFiles.add(f));
+  postLanes.splice(i, 1);
+  if (!postLanes.length) postLanes = [[]];
+  rerenderPhotoCards();
+}
+function excludeCard(f) { capturePhotoInputs(); removeFromAll(f); excludedFiles.add(f); pruneEmptyLanes(); rerenderPhotoCards(); }
+function restoreCard(f) {
+  capturePhotoInputs();
+  excludedFiles.delete(f);
+  postLanes[postLanes.length - 1].push(f);
+  rerenderPhotoCards();
+}
+
+// ── Fill-down: propagate a field to later photos in flat order ───────────────────
+function _spreadField(src, prefix) {
+  const flat = flatFiles();
+  const myIdx = flat.indexOf(src.dataset.file);
+  if (myIdx < 0) return;
+  const val  = (src.value ?? '').trim();
+  const prev = (src.dataset.prev || '').trim();
+  flat.forEach((file, i) => {
     if (i <= myIdx) return;
-    const el = document.getElementById(`oos-${i}`);
-    if (el && !el.checked) el.checked = true;
+    const el = document.getElementById(`${prefix}-${fid(file)}`);
+    if (!el) return;
+    if (prefix === 'oos') { if (src.checked && !el.checked) el.checked = true; return; }
+    if (!el.value.trim() || el.value.trim() === prev) el.value = val;
   });
+  src.dataset.prev = val;
 }
-
+function spreadOos(src) { if (src.checked) _spreadField(src, 'oos'); }
 let _locTimer = null;
-function spreadLocation(src) {
-  clearTimeout(_locTimer);
-  _locTimer = setTimeout(() => {
-    const val  = src.value.trim();
-    const prev = (src.dataset.prev || '').trim();
-    const myIdx = parseInt(src.id.replace('loc-', ''));
-    photoOrder.forEach((_, i) => {
-      if (i <= myIdx) return;
-      const el = document.getElementById(`loc-${i}`);
-      if (!el) return;
-      if (!el.value.trim() || el.value.trim() === prev) el.value = val;
-    });
-    src.dataset.prev = val;
-  }, 300);
-}
-
+function spreadLocation(src) { clearTimeout(_locTimer); _locTimer = setTimeout(() => _spreadField(src, 'loc'), 300); }
 let _spreadTimer = null;
-function spreadSpecies(src) {
-  clearTimeout(_spreadTimer);
-  _spreadTimer = setTimeout(() => {
-    const val  = src.value.trim();
-    const prev = (src.dataset.prev || '').trim();
-    const myIdx = parseInt(src.id.replace('sp-', ''));
-    photoOrder.forEach((_, i) => {
-      if (i <= myIdx) return;
-      const el = document.getElementById(`sp-${i}`);
-      if (!el) return;
-      // Propagate to blank cards, or cards still carrying the previous auto-filled value
-      if (!el.value.trim() || el.value.trim() === prev) el.value = val;
-    });
-    src.dataset.prev = val;
-  }, 300);
-}
+function spreadSpecies(src) { clearTimeout(_spreadTimer); _spreadTimer = setTimeout(() => _spreadField(src, 'sp'), 300); }
 
 async function doResizeOnly() {
-  const order = photoOrder.length ? photoOrder : (lastState?.new_birbs || []);
-  const files = order.filter(f => !excludedFiles.has(f));
+  const files = flatFiles().length ? flatFiles() : (lastState?.new_birbs || []);
   if (!files.length) { alert("No photos selected."); return; }
   const btn = document.getElementById('resize-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Resizing…'; }
@@ -972,39 +1068,38 @@ async function doResizeOnly() {
 }
 
 async function doPost() {
-  const order = photoOrder.length ? photoOrder : (lastState?.new_birbs || []);
-  const photos = [];
-  order.forEach((f, i) => {
-    if (excludedFiles.has(f)) return;
-    const oos      = document.getElementById(`oos-${i}`)?.checked || false;
-    const rawSp    = document.getElementById(`sp-${i}`)?.value.trim() || "";
-    const species  = oos ? `⚠️ ${rawSp}` : rawSp;
-    const location = document.getElementById(`loc-${i}`)?.value.trim() || "";
-    photos.push({ file: f, species, location });
-  });
+  capturePhotoInputs();
   const date = document.getElementById("pf-date")?.value.trim() || "";
-  if (!photos.length) { alert("No photos selected."); return; }
-  if (!photos[0].location || !date) { alert("Fill in location and date."); return; }
-  if (!photos[0].species.replace("⚠️ ", "").trim()) { alert("Fill in species for at least the first photo."); return; }
+  const groups = [];
+  for (const lane of postLanes) {
+    if (!lane.length) continue;
+    const g = lane.map(f => {
+      const m = photoMeta[f] || {};
+      const raw = (m.species || '').trim();
+      return { file: f, species: m.oos ? `⚠️ ${raw}` : raw, location: (m.location || '').trim() };
+    });
+    // Fill-down species within this post
+    let lastSp = "";
+    g.forEach(p => { const bare = p.species.replace("⚠️ ", "").trim(); if (bare) lastSp = p.species; else if (lastSp) p.species = lastSp; });
+    groups.push(g);
+  }
+  if (!groups.length) { alert("No photos selected."); return; }
+  const over = groups.find(g => g.length > PER_POST);
+  if (over) { alert(`A post has ${over.length} photos — max is ${PER_POST}. Move some into another post.`); return; }
+  const first = groups[0][0];
+  if (!first.location || !date) { alert("Fill in location and date."); return; }
+  if (!first.species.replace("⚠️ ", "").trim()) { alert("Fill in species for at least the first photo."); return; }
 
-  // Fill-down: blanks inherit from the nearest filled card above
-  let lastSp = "";
-  photos.forEach(p => {
-    const bare = p.species.replace("⚠️ ", "").trim();
-    if (bare) { lastSp = p.species; }
-    else if (lastSp) { p.species = lastSp; }
-  });
-
-  localStorage.setItem('birbLocation', photos[0].location);
+  localStorage.setItem('birbLocation', first.location);
   const scheduleDate = document.getElementById('pf-schedule')?.value || '';
   const scheduledAt  = _scheduledAt || '';
-  const nPosts = Math.max(1, Math.ceil(photos.length / PER_POST));
+  const n = groups.length;
   const btn = document.getElementById('post-btn');
-  if (btn) { btn.disabled = true; btn.textContent = nPosts > 1 ? `⏳ Scheduling ${nPosts} posts…` : '⏳ Posting…'; }
+  if (btn) { btn.disabled = true; btn.textContent = n > 1 ? `⏳ Scheduling ${n} posts…` : '⏳ Posting…'; }
   postingInFlight = true;
   await fetch("/api/post", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ photos, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, per_post: PER_POST }),
+    body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt }),
   });
 }
 
