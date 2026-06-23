@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>birb workflow</title>
+  <title>Birb Workflow — Lightroom → Buffer → Instagram</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,6 +36,7 @@
       z-index: 10;
     }
     .logo { font-size: 15px; font-weight: 800; letter-spacing: -.5px; display: flex; align-items: center; gap: 9px; }
+    .logo-sub { font-size: 11px; font-weight: 500; letter-spacing: 0; color: var(--muted); padding-left: 9px; border-left: 1px solid var(--border2); }
     .nav-right { display: flex; align-items: center; gap: 10px; }
     .host-pill { display: flex; align-items: center; gap: 6px; font-size: 11px;
       color: var(--muted); background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
@@ -373,7 +374,7 @@
 <body>
 <div class="shell">
   <nav>
-    <div class="logo">🐦 <span>birb workflow</span></div>
+    <div class="logo">🐦 <span>Birb Workflow</span><span class="logo-sub">Lightroom → Buffer → Instagram</span></div>
     <div class="nav-right">
       <button class="btn-log" id="log-toggle" onclick="toggleLog()">Hide log</button>
       <div class="host-pill">
