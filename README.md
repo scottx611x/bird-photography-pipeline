@@ -10,7 +10,7 @@ Drop a folder of RAWs in `~/Downloads`, and Birb Workflow walks it through impor
 
 ## Why
 
-A good morning at the marsh produces a few hundred RAWs and a dozen keepers across several species. Getting those onto Instagram is a lot of repetitive Lightroom clicking, manual resizing, caption typing, and queue juggling — especially when one batch needs to become several posts (Instagram caps carousels at 10 images).
+These shots happen on neighborhood walks — dog on the leash, one-year-old riding on my back, camera over the shoulder. You get home with a few hundred RAWs and a handful of keepers, and the tedious part is everything *after* the shutter: repetitive Lightroom clicking, manual resizing, caption typing, and Buffer queue juggling — especially when a good walk turns into several posts (Instagram caps carousels at 10 images).
 
 Birb Workflow automates the mechanical parts and keeps the judgment calls (which shots, which species, how to group) one drag away.
 
@@ -160,4 +160,4 @@ Lightroom Classic                  import · tone · denoise · export
 
 ---
 
-*Personal project — built for one photographer’s marsh habit. 🪶*
+*Personal project — built around neighborhood dog-walks with a toddler on board and a camera over the shoulder. 🪶*
