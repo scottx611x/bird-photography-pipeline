@@ -35,7 +35,7 @@ Each batch moves through six stages, shown as a live progress bar you can rewind
 
 The post screen organizes exports into **draggable lanes** — one lane per Instagram post. Photos seed in natural filename order, then you regroup them however the species/scenes break up. Each lane is capped at Instagram’s 10-image limit (the counter turns red and blocks posting if you go over), and every post is scheduled on the next open day in your Buffer queue.
 
-![Post form with lanes](docs/post-lanes.png)
+![Regrouping photos into posts](docs/lanes-demo.gif)
 
 - **Drag** any photo between posts to regroup; **＋ Add post** for a new lane.
 - **⇅ Sort by name** snaps everything back to filename order.
