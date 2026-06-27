@@ -11,6 +11,7 @@ Architecture:
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from collections import deque
@@ -627,6 +628,35 @@ def resize_only():
     return jsonify({"ok": True})
 
 
+def _free_local_raws(folder: str):
+    """Delete a posted batch's local RAWs to reclaim disk — they're safe on the
+    NAS. Only deletes when the album is confirmed in the Synology list, so a
+    manually-dropped (non-backed-up) folder is never removed."""
+    if not folder:
+        return
+    path = DOWNLOADS / folder
+    if path.parent != DOWNLOADS or not path.is_dir():   # guard against path traversal
+        return
+    albums = _syno_cache.get("albums")
+    if albums is None:                                  # warm the cache to confirm
+        r = call_host("syno-albums", timeout=30)
+        try:
+            albums = json.loads(r.get("output", "[]")) if r.get("ok") else []
+        except Exception:
+            albums = []
+        _syno_cache["albums"] = albums
+        _syno_cache["at"] = time.time()
+    if folder not in {a.get("name") for a in (albums or [])}:
+        log(f"  (kept local RAWs for {folder} — not confirmed on Synology)")
+        return
+    try:
+        mb = sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1024 / 1024
+        shutil.rmtree(path, ignore_errors=True)
+        log(f"🗑 Freed {mb:.0f} MB of local RAWs for {folder} (originals safe on Synology).")
+    except Exception as e:
+        log(f"  (couldn't free local RAWs for {folder}: {e})")
+
+
 @app.post("/api/post")
 def post_to_buffer():
     """Post selected photo to Buffer."""
@@ -705,8 +735,10 @@ def post_to_buffer():
         if all_ok:
             if n > 1:
                 log(f"✓ All {n} posts queued to Buffer.")
+            posted_folder = None
             with lock:
                 if state["active"]:
+                    posted_folder = state["active"]
                     state["batches"][state["active"]]["status"]     = "done"
                     state["batches"][state["active"]]["birbs"]      = list(state["new_birbs"])
                     state["batches"][state["active"]]["posted_due"] = last_due
@@ -714,6 +746,7 @@ def post_to_buffer():
                     state["proc_step"] = None
                 state["last_post"] = {"due": last_due, "url": "https://publish.buffer.com"}
             save_state()
+            _free_local_raws(posted_folder)   # reclaim disk — originals are on the NAS
         else:
             with lock:
                 state["post_error"] = True
