@@ -366,6 +366,7 @@
     /* ── Synology import panel ── */
     .batch-card.remote { border-style: dashed; }
     .batch-card.remote.skipped { opacity: .5; }
+    .batch-card.remote.posted { opacity: .6; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
     .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
     .syno-foot { text-align: center; font-size: 12px; color: var(--muted); padding: 12px; cursor: pointer; }
@@ -470,6 +471,7 @@ let synoAlbums      = [];   // cached Synology album list (auto-loaded)
 let synoShowAll     = false; // include old (>60d) / skipped remote albums
 let synoError       = '';    // last Synology load error
 let synoSkipped     = new Set(); // album names the user has skipped (synced from server)
+let synoDone        = new Set(); // album names already posted (hidden even if local folder is gone)
 const PER_POST      = 10;        // Instagram's max images per carousel post
 const fid = f => 'f_' + f.replace(/[^a-zA-Z0-9]/g, '_'); // safe element id from filename
 const flatFiles = () => postLanes.flat();
@@ -694,6 +696,7 @@ function renderBatches(data) {
 
   const list = document.getElementById("batch-list");
   (data.syno_skipped || []).forEach(n => synoSkipped.add(n));   // merge server-side skips
+  (data.done_albums  || []).forEach(n => synoDone.add(n));      // posted albums stay hidden
   const localFolders = new Set((data.batches || []).map(b => b.folder));
 
   const all  = (data.batches || []).filter(b =>
@@ -934,9 +937,9 @@ function _albumRecent(name) {
   return !isNaN(d) && (Date.now() - d.getTime()) <= 60 * 864e5;
 }
 
-// Is this album hidden by default? (old OR skipped)
+// Is this album hidden by default? (old, skipped, or already posted)
 function _albumHidden(name) {
-  return synoSkipped.has(name) || !_albumRecent(name);
+  return synoSkipped.has(name) || synoDone.has(name) || !_albumRecent(name);
 }
 
 // Remote albums to show as cards: batch-namable, not already local;
@@ -964,6 +967,20 @@ function _remoteCardHtml(a) {
       </div>
     </div>`;
   }
+  if (synoDone.has(a.name)) {
+    return `<div class="batch-card remote posted">
+      <div class="batch-top">
+        <div>
+          <div class="batch-name">${a.name}</div>
+          <div class="batch-sub">${n} photo${n === 1 ? '' : 's'} · already posted</div>
+        </div>
+        <span class="status-badge badge-done">✓ Posted</span>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-neutral btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true)">⬇ Re-fetch &amp; run</button>
+      </div>
+    </div>`;
+  }
   return `<div class="batch-card remote">
     <div class="batch-top">
       <div>
@@ -984,11 +1001,11 @@ function _remoteCardHtml(a) {
 function _synoFooterHtml(localFolders) {
   if (synoError) return `<div class="syno-foot err">☁ Synology: ${synoError}</div>`;
   if (!synoAlbums.length) return '';
-  if (synoShowAll) return `<div class="syno-foot" onclick="toggleSynoOld(false)">☁ hide older &amp; skipped albums</div>`;
+  if (synoShowAll) return `<div class="syno-foot" onclick="toggleSynoOld(false)">☁ hide older / posted / skipped albums</div>`;
   const hidden = synoAlbums.filter(a =>
     /^\d{4}-\d{1,2}-\d{1,2}/.test(a.name) && !localFolders.has(a.name) && _albumHidden(a.name)).length;
   return hidden
-    ? `<div class="syno-foot" onclick="toggleSynoOld(true)">☁ show ${hidden} older / skipped Synology album${hidden === 1 ? '' : 's'}</div>`
+    ? `<div class="syno-foot" onclick="toggleSynoOld(true)">☁ show ${hidden} more Synology album${hidden === 1 ? '' : 's'} (older / posted / skipped)</div>`
     : '';
 }
 

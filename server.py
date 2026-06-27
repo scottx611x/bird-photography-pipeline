@@ -44,6 +44,7 @@ state = {
     "thread_active":   False,
     "stop_requested":  False,
     "syno_skipped":    set(),   # Synology album names hidden from the list
+    "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
 }
 lock    = threading.Lock()
 log_seq = 0   # monotonically increases with every log() call
@@ -51,6 +52,10 @@ log_seq = 0   # monotonically increases with every log() call
 
 def save_state():
     try:
+        # Remember posted albums permanently — local folders get deleted for disk
+        # space, but a posted album should never resurface as a fetchable card.
+        state["done_albums"].update(
+            name for name, b in state["batches"].items() if b.get("status") == "done")
         data = {
             "statuses":  {name: b["status"] for name, b in state["batches"].items()},
             "birbs":     {name: b.get("birbs", []) for name, b in state["batches"].items()},
@@ -59,6 +64,7 @@ def save_state():
             "proc_step": state["proc_step"],
             "new_birbs": list(state["new_birbs"]),
             "syno_skipped": sorted(state["syno_skipped"]),
+            "done_albums": sorted(state["done_albums"]),
         }
         STATE_FILE.write_text(json.dumps(data))
     except Exception:
@@ -554,6 +560,7 @@ def get_state():
             "post_error":     state.get("post_error", False),
             "thread_active":  state["thread_active"],
             "syno_skipped":   sorted(state["syno_skipped"]),
+            "done_albums":    sorted(state["done_albums"]),
         }
     return jsonify(payload)
 
@@ -1010,8 +1017,11 @@ def syno_unskip():
 # ── Boot ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Restore persisted Synology skip list
-    state["syno_skipped"] = set(load_saved_statuses().get("syno_skipped", []))
+    # Restore persisted Synology skip list + posted-album memory
+    _saved = load_saved_statuses()
+    state["syno_skipped"] = set(_saved.get("syno_skipped", []))
+    state["done_albums"]  = set(_saved.get("done_albums", [])) | {
+        n for n, s in _saved.get("statuses", {}).items() if s == "done"}
     # Defer scanning to background so Flask starts immediately
     threading.Thread(target=scanner_loop, daemon=True).start()
     log("Birb workflow server ready — scanning for batches…")
