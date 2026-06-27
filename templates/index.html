@@ -364,15 +364,11 @@
     }
 
     /* ── Synology import panel ── */
-    .btn-sm-action.on { color: var(--blue); border-color: var(--blue); background: rgba(91,154,255,.12); }
-    .syno-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      margin: 2px 2px 10px; font-size: 12px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--blue); }
-    .syno-controls { display: flex; align-items: center; gap: 10px; }
-    .syno-allchk { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 500; }
-    .syno-msg { color: var(--muted); font-size: 13px; padding: 6px 2px 14px; }
-    .syno-msg.err { color: var(--red); }
     .batch-card.remote { border-style: dashed; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
+    .syno-foot { text-align: center; font-size: 12px; color: var(--muted); padding: 12px; cursor: pointer; }
+    .syno-foot:hover { color: var(--blue); }
+    .syno-foot.err { color: var(--red); cursor: default; }
 
     /* ── Responsive ── */
     @media (max-width: 680px) {
@@ -421,7 +417,6 @@
           <button class="chip"        data-f="done"      onclick="setFilter('done')">Done</button>
         </div>
         <div style="display:flex;gap:6px">
-          <button class="btn-sm-action" id="syno-toggle" onclick="toggleSyno()">📥 Synology</button>
           <button class="btn-sm-action" onclick="skipOld()">✓ Skip old</button>
           <button class="btn-sm-action" onclick="doScan()">↺ Scan</button>
         </div>
@@ -469,8 +464,7 @@ let postLanes       = [];   // [[file,…], …] — one inner array per Buffer 
 let dragSrc         = null; // filename currently being dragged
 let excludedFiles   = new Set(); // filenames excluded from posting
 let photoMeta       = {};   // file -> {species, location, oos}; survives re-render
-let synoAlbums      = [];   // cached Synology album list
-let synoVisible     = false; // show remote album cards in the batch list
+let synoAlbums      = [];   // cached Synology album list (auto-loaded)
 let synoShowAll     = false; // include old (>60d) remote albums
 let synoError       = '';    // last Synology load error
 const PER_POST      = 10;        // Instagram's max images per carousel post
@@ -697,21 +691,24 @@ function renderBatches(data) {
 
   const list = document.getElementById("batch-list");
   const localFolders = new Set((data.batches || []).map(b => b.folder));
-  // Remote Synology cards only make sense alongside not-yet-run batches
-  const synoHtml = (activeFilter === "all" || activeFilter === "open")
-    ? _synoSectionHtml(localFolders) : "";
 
   const all  = (data.batches || []).filter(b =>
     activeFilter === "all"  ? true
     : activeFilter === "open" ? (b.status === "pending" || b.status === "processing")
     : b.status === activeFilter);
 
-  if (!all.length && !synoHtml) {
-    list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads, click Scan, or hit 📥 Synology.</div>`;
+  // Remote Synology albums sit in the same list, interleaved by date (open/all views)
+  const remoteItems = (activeFilter === "all" || activeFilter === "open")
+    ? _remoteAlbums(localFolders).map(a => ({ date: _normDate(a.name), html: _remoteCardHtml(a) }))
+    : [];
+
+  if (!all.length && !remoteItems.length) {
+    list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads, or click Scan.</div>`
+      + _synoFooterHtml(localFolders);
     return;
   }
 
-  list.innerHTML = synoHtml + all.map(b => {
+  const localItems = all.map(b => {
     const isActive = data.active?.folder === b.folder;
     const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done" }[b.status] || "badge-pending";
     const badgeTxt = { pending:"Pending", processing:"Active", done:"Done" }[b.status] || b.status;
@@ -743,7 +740,7 @@ function renderBatches(data) {
 
     const stepCard = isActive && data.proc_step ? renderStepCard(data.proc_step, b, data) : "";
 
-    return `<div class="batch-card ${b.status === 'done' ? 'done' : isActive ? 'active' : ''}">
+    return { date: _normDate(b.date), html: `<div class="batch-card ${b.status === 'done' ? 'done' : isActive ? 'active' : ''}">
       <div class="batch-top">
         <div>
           <div class="batch-name">${b.folder}</div>
@@ -756,8 +753,12 @@ function renderBatches(data) {
       ${postedLine}
       ${doneBirbs}
       ${stepCard}
-    </div>`;
-  }).join("");
+    </div>` };
+  });
+
+  const merged = [...localItems, ...remoteItems]
+    .sort((x, y) => (y.date || '').localeCompare(x.date || ''));
+  list.innerHTML = merged.map(i => i.html).join("") + _synoFooterHtml(localFolders);
 }
 
 // ── Log (SSE) ─────────────────────────────────────────────────────────────────
@@ -897,34 +898,29 @@ async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
 async function doDone()      { await fetch("/api/done", {method:"POST"}); }
 async function doReset(f)    { await fetch(`/api/reset/${enc(f)}`, {method:"POST"}); }
 async function doSkip(f)     { await fetch(`/api/skip/${enc(f)}`, {method:"POST"}); }
-async function doScan()      { await fetch("/api/scan", {method:"POST"}); }
+async function doScan()      { await fetch("/api/scan", {method:"POST"}); refreshSyno(); }
 
 // ── Synology import (remote album cards in the batch list) ──────────────────────
-function toggleSyno() {
-  synoVisible = !synoVisible;
-  const btn = document.getElementById('syno-toggle');
-  if (btn) btn.classList.toggle('on', synoVisible);
-  if (synoVisible && !synoAlbums.length) loadSynoAlbums();
-  else if (lastState) renderBatches(lastState);
-}
-
 async function loadSynoAlbums() {
-  const btn = document.getElementById('syno-toggle');
-  if (btn) btn.textContent = '📥 Loading…';
   try {
     const r = await fetch('/api/syno/albums');
     const d = await r.json();
-    if (r.ok) synoAlbums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name));
+    if (r.ok) { synoAlbums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name)); synoError = ''; }
     else synoError = (d.error || 'failed').slice(0, 100);
   } catch (e) {
     synoError = String(e);
   } finally {
-    if (btn) btn.textContent = '📥 Synology';
     if (lastState) renderBatches(lastState);
   }
 }
-function refreshSyno() { synoAlbums = []; synoError = ''; loadSynoAlbums(); }
-function toggleSynoOld(cb) { synoShowAll = cb.checked; if (lastState) renderBatches(lastState); }
+function refreshSyno() { loadSynoAlbums(); }
+function toggleSynoOld(val) { synoShowAll = val; if (lastState) renderBatches(lastState); }
+
+// Normalize a date-prefixed name (or batch date) to YYYY-MM-DD for sorting
+function _normDate(s) {
+  const m = String(s || '').match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : '';
+}
 
 // Date-prefixed (batch-namable) and within the last ~60 days?
 function _albumRecent(name) {
@@ -959,22 +955,16 @@ function _remoteCardHtml(a) {
   </div>`;
 }
 
-function _synoSectionHtml(localFolders) {
-  if (!synoVisible) return "";
-  const albums = _remoteAlbums(localFolders);
-  const head = `<div class="syno-section-head">
-    <span>☁ On Synology — fetch to start</span>
-    <span class="syno-controls">
-      <label class="syno-allchk"><input type="checkbox" ${synoShowAll ? 'checked' : ''} onchange="toggleSynoOld(this)"> show old</label>
-      <button class="btn-sm-action" onclick="refreshSyno()">↻ Refresh</button>
-    </span>
-  </div>`;
-  let body;
-  if (synoError) body = `<div class="syno-msg err">${synoError}</div>`;
-  else if (!synoAlbums.length) body = `<div class="syno-msg">Loading albums…</div>`;
-  else if (!albums.length) body = `<div class="syno-msg">No new recent albums — tick “show old” for the rest.</div>`;
-  else body = albums.map(_remoteCardHtml).join("");
-  return head + body;
+// Quiet footer: surface a Synology error, or a toggle for older albums
+function _synoFooterHtml(localFolders) {
+  if (synoError) return `<div class="syno-foot err">☁ Synology: ${synoError}</div>`;
+  if (!synoAlbums.length) return '';
+  if (synoShowAll) return `<div class="syno-foot" onclick="toggleSynoOld(false)">☁ hide older Synology albums</div>`;
+  const oldCount = synoAlbums.filter(a =>
+    /^\d{4}-\d{1,2}-\d{1,2}/.test(a.name) && !localFolders.has(a.name) && !_albumRecent(a.name)).length;
+  return oldCount
+    ? `<div class="syno-foot" onclick="toggleSynoOld(true)">☁ show ${oldCount} older Synology album${oldCount === 1 ? '' : 's'}</div>`
+    : '';
 }
 
 async function synoFetchRun(album, run) {
@@ -1348,6 +1338,7 @@ document.getElementById("log-toggle").textContent = "Show log";
 initLogStream();
 loadSpecies();
 poll();
+loadSynoAlbums();   // remote albums appear in the list on their own
 </script>
 </body>
 </html>
