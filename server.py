@@ -43,6 +43,7 @@ state = {
     "last_post":     None,
     "thread_active":   False,
     "stop_requested":  False,
+    "syno_skipped":    set(),   # Synology album names hidden from the list
 }
 lock    = threading.Lock()
 log_seq = 0   # monotonically increases with every log() call
@@ -57,6 +58,7 @@ def save_state():
             "active":    state["active"],
             "proc_step": state["proc_step"],
             "new_birbs": list(state["new_birbs"]),
+            "syno_skipped": sorted(state["syno_skipped"]),
         }
         STATE_FILE.write_text(json.dumps(data))
     except Exception:
@@ -551,6 +553,7 @@ def get_state():
             "last_post":  state["last_post"],
             "post_error":     state.get("post_error", False),
             "thread_active":  state["thread_active"],
+            "syno_skipped":   sorted(state["syno_skipped"]),
         }
     return jsonify(payload)
 
@@ -982,9 +985,33 @@ def syno_fetch():
     return jsonify({"ok": True})
 
 
+@app.post("/api/syno/skip")
+def syno_skip():
+    """Hide a Synology album from the list (persisted)."""
+    album = ((request.json or {}).get("album") or "").strip()
+    if not album:
+        return jsonify({"error": "no album"}), 400
+    with lock:
+        state["syno_skipped"].add(album)
+    save_state()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/syno/unskip")
+def syno_unskip():
+    """Un-hide a previously skipped Synology album."""
+    album = ((request.json or {}).get("album") or "").strip()
+    with lock:
+        state["syno_skipped"].discard(album)
+    save_state()
+    return jsonify({"ok": True})
+
+
 # ── Boot ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Restore persisted Synology skip list
+    state["syno_skipped"] = set(load_saved_statuses().get("syno_skipped", []))
     # Defer scanning to background so Flask starts immediately
     threading.Thread(target=scanner_loop, daemon=True).start()
     log("Birb workflow server ready — scanning for batches…")

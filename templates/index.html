@@ -365,7 +365,9 @@
 
     /* ── Synology import panel ── */
     .batch-card.remote { border-style: dashed; }
+    .batch-card.remote.skipped { opacity: .5; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
+    .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
     .syno-foot { text-align: center; font-size: 12px; color: var(--muted); padding: 12px; cursor: pointer; }
     .syno-foot:hover { color: var(--blue); }
     .syno-foot.err { color: var(--red); cursor: default; }
@@ -465,8 +467,9 @@ let dragSrc         = null; // filename currently being dragged
 let excludedFiles   = new Set(); // filenames excluded from posting
 let photoMeta       = {};   // file -> {species, location, oos}; survives re-render
 let synoAlbums      = [];   // cached Synology album list (auto-loaded)
-let synoShowAll     = false; // include old (>60d) remote albums
+let synoShowAll     = false; // include old (>60d) / skipped remote albums
 let synoError       = '';    // last Synology load error
+let synoSkipped     = new Set(); // album names the user has skipped (synced from server)
 const PER_POST      = 10;        // Instagram's max images per carousel post
 const fid = f => 'f_' + f.replace(/[^a-zA-Z0-9]/g, '_'); // safe element id from filename
 const flatFiles = () => postLanes.flat();
@@ -690,6 +693,7 @@ function renderBatches(data) {
   if (data.proc_step === 'posting' && document.getElementById('photo-cards-list')) return;
 
   const list = document.getElementById("batch-list");
+  (data.syno_skipped || []).forEach(n => synoSkipped.add(n));   // merge server-side skips
   const localFolders = new Set((data.batches || []).map(b => b.folder));
 
   const all  = (data.batches || []).filter(b =>
@@ -930,16 +934,36 @@ function _albumRecent(name) {
   return !isNaN(d) && (Date.now() - d.getTime()) <= 60 * 864e5;
 }
 
-// Remote albums to show as cards: batch-namable, not already local, recent (or show-all)
+// Is this album hidden by default? (old OR skipped)
+function _albumHidden(name) {
+  return synoSkipped.has(name) || !_albumRecent(name);
+}
+
+// Remote albums to show as cards: batch-namable, not already local;
+// by default only recent & not-skipped — "show all" reveals old + skipped too.
 function _remoteAlbums(localFolders) {
   return synoAlbums.filter(a =>
     /^\d{4}-\d{1,2}-\d{1,2}/.test(a.name) &&
     !localFolders.has(a.name) &&
-    (synoShowAll || _albumRecent(a.name)));
+    (synoShowAll || !_albumHidden(a.name)));
 }
 
 function _remoteCardHtml(a) {
   const n = a.item_count, safe = a.name.replace(/'/g, "\\'");
+  if (synoSkipped.has(a.name)) {
+    return `<div class="batch-card remote skipped">
+      <div class="batch-top">
+        <div>
+          <div class="batch-name">${a.name}</div>
+          <div class="batch-sub">${n} photo${n === 1 ? '' : 's'} · skipped</div>
+        </div>
+        <span class="status-badge badge-skipped">⊘ Skipped</span>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-neutral btn-sm" onclick="synoUnskip('${safe}')">↩ Restore</button>
+      </div>
+    </div>`;
+  }
   return `<div class="batch-card remote">
     <div class="batch-top">
       <div>
@@ -951,20 +975,32 @@ function _remoteCardHtml(a) {
     <div class="card-actions">
       <button class="btn btn-primary btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true)">⬇ Fetch &amp; run</button>
       <button class="btn btn-neutral btn-sm" onclick="synoFetchRun('${safe}', false)">⬇ Fetch only</button>
+      <button class="btn btn-neutral btn-sm" onclick="synoSkip('${safe}')">Skip</button>
     </div>
   </div>`;
 }
 
-// Quiet footer: surface a Synology error, or a toggle for older albums
+// Quiet footer: surface a Synology error, or a toggle for older/skipped albums
 function _synoFooterHtml(localFolders) {
   if (synoError) return `<div class="syno-foot err">☁ Synology: ${synoError}</div>`;
   if (!synoAlbums.length) return '';
-  if (synoShowAll) return `<div class="syno-foot" onclick="toggleSynoOld(false)">☁ hide older Synology albums</div>`;
-  const oldCount = synoAlbums.filter(a =>
-    /^\d{4}-\d{1,2}-\d{1,2}/.test(a.name) && !localFolders.has(a.name) && !_albumRecent(a.name)).length;
-  return oldCount
-    ? `<div class="syno-foot" onclick="toggleSynoOld(true)">☁ show ${oldCount} older Synology album${oldCount === 1 ? '' : 's'}</div>`
+  if (synoShowAll) return `<div class="syno-foot" onclick="toggleSynoOld(false)">☁ hide older &amp; skipped albums</div>`;
+  const hidden = synoAlbums.filter(a =>
+    /^\d{4}-\d{1,2}-\d{1,2}/.test(a.name) && !localFolders.has(a.name) && _albumHidden(a.name)).length;
+  return hidden
+    ? `<div class="syno-foot" onclick="toggleSynoOld(true)">☁ show ${hidden} older / skipped Synology album${hidden === 1 ? '' : 's'}</div>`
     : '';
+}
+
+async function synoSkip(album) {
+  synoSkipped.add(album);
+  if (lastState) renderBatches(lastState);
+  await fetch('/api/syno/skip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ album }) });
+}
+async function synoUnskip(album) {
+  synoSkipped.delete(album);
+  if (lastState) renderBatches(lastState);
+  await fetch('/api/syno/unskip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ album }) });
 }
 
 async function synoFetchRun(album, run) {
