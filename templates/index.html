@@ -364,12 +364,15 @@
     }
 
     /* ── Synology import panel ── */
-    .syno-panel { background: var(--surf2); border: 1px solid var(--border2); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
-    .syno-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    .syno-row select { flex: 1; min-width: 180px; background: var(--bg); color: var(--text); border: 1px solid var(--border2); border-radius: 8px; padding: 7px 9px; font-size: 13px; }
-    .syno-allchk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
-    .syno-hint { font-size: 11px; color: var(--muted); margin-top: 7px; }
-    .syno-hint code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+    .btn-sm-action.on { color: var(--blue); border-color: var(--blue); background: rgba(91,154,255,.12); }
+    .syno-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      margin: 2px 2px 10px; font-size: 12px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--blue); }
+    .syno-controls { display: flex; align-items: center; gap: 10px; }
+    .syno-allchk { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; cursor: pointer; text-transform: none; letter-spacing: 0; font-weight: 500; }
+    .syno-msg { color: var(--muted); font-size: 13px; padding: 6px 2px 14px; }
+    .syno-msg.err { color: var(--red); }
+    .batch-card.remote { border-style: dashed; }
+    .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
 
     /* ── Responsive ── */
     @media (max-width: 680px) {
@@ -418,19 +421,10 @@
           <button class="chip"        data-f="done"      onclick="setFilter('done')">Done</button>
         </div>
         <div style="display:flex;gap:6px">
-          <button class="btn-sm-action" onclick="toggleSyno()">📥 Synology</button>
+          <button class="btn-sm-action" id="syno-toggle" onclick="toggleSyno()">📥 Synology</button>
           <button class="btn-sm-action" onclick="skipOld()">✓ Skip old</button>
           <button class="btn-sm-action" onclick="doScan()">↺ Scan</button>
         </div>
-      </div>
-      <div id="syno-panel" class="syno-panel" style="display:none">
-        <div class="syno-row">
-          <select id="syno-album"><option value="">— load albums —</option></select>
-          <button class="btn btn-neutral btn-sm" id="syno-load" onclick="loadSynoAlbums()">↻ Load albums</button>
-          <button class="btn btn-success btn-sm" id="syno-fetch" onclick="synoFetch()">📥 Fetch into workflow</button>
-          <label class="syno-allchk"><input type="checkbox" id="syno-showall" onchange="renderSynoAlbums()"> show all</label>
-        </div>
-        <div class="syno-hint">Recent albums shown by default (✓ done / ● in workflow are flagged). Originals download to <code>~/Downloads/&lt;album&gt;</code> and appear as a batch below.</div>
       </div>
       <div id="batch-list"></div>
     </div>
@@ -475,7 +469,10 @@ let postLanes       = [];   // [[file,…], …] — one inner array per Buffer 
 let dragSrc         = null; // filename currently being dragged
 let excludedFiles   = new Set(); // filenames excluded from posting
 let photoMeta       = {};   // file -> {species, location, oos}; survives re-render
-let synoAlbums      = [];   // cached Synology album list for the import picker
+let synoAlbums      = [];   // cached Synology album list
+let synoVisible     = false; // show remote album cards in the batch list
+let synoShowAll     = false; // include old (>60d) remote albums
+let synoError       = '';    // last Synology load error
 const PER_POST      = 10;        // Instagram's max images per carousel post
 const fid = f => 'f_' + f.replace(/[^a-zA-Z0-9]/g, '_'); // safe element id from filename
 const flatFiles = () => postLanes.flat();
@@ -699,17 +696,22 @@ function renderBatches(data) {
   if (data.proc_step === 'posting' && document.getElementById('photo-cards-list')) return;
 
   const list = document.getElementById("batch-list");
+  const localFolders = new Set((data.batches || []).map(b => b.folder));
+  // Remote Synology cards only make sense alongside not-yet-run batches
+  const synoHtml = (activeFilter === "all" || activeFilter === "open")
+    ? _synoSectionHtml(localFolders) : "";
+
   const all  = (data.batches || []).filter(b =>
     activeFilter === "all"  ? true
     : activeFilter === "open" ? (b.status === "pending" || b.status === "processing")
     : b.status === activeFilter);
 
-  if (!all.length) {
-    list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads and click Scan.</div>`;
+  if (!all.length && !synoHtml) {
+    list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads, click Scan, or hit 📥 Synology.</div>`;
     return;
   }
 
-  list.innerHTML = all.map(b => {
+  list.innerHTML = synoHtml + all.map(b => {
     const isActive = data.active?.folder === b.folder;
     const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done" }[b.status] || "badge-pending";
     const badgeTxt = { pending:"Pending", processing:"Active", done:"Done" }[b.status] || b.status;
@@ -897,32 +899,34 @@ async function doReset(f)    { await fetch(`/api/reset/${enc(f)}`, {method:"POST
 async function doSkip(f)     { await fetch(`/api/skip/${enc(f)}`, {method:"POST"}); }
 async function doScan()      { await fetch("/api/scan", {method:"POST"}); }
 
-// ── Synology import ─────────────────────────────────────────────────────────────
+// ── Synology import (remote album cards in the batch list) ──────────────────────
 function toggleSyno() {
-  const p = document.getElementById('syno-panel');
-  const show = p.style.display === 'none';
-  p.style.display = show ? '' : 'none';
-  if (show && !document.getElementById('syno-album').dataset.loaded) loadSynoAlbums();
+  synoVisible = !synoVisible;
+  const btn = document.getElementById('syno-toggle');
+  if (btn) btn.classList.toggle('on', synoVisible);
+  if (synoVisible && !synoAlbums.length) loadSynoAlbums();
+  else if (lastState) renderBatches(lastState);
 }
 
 async function loadSynoAlbums() {
-  const sel = document.getElementById('syno-album'), btn = document.getElementById('syno-load');
-  btn.disabled = true; btn.textContent = '↻ Loading…';
+  const btn = document.getElementById('syno-toggle');
+  if (btn) btn.textContent = '📥 Loading…';
   try {
     const r = await fetch('/api/syno/albums');
     const d = await r.json();
-    if (!r.ok) { sel.innerHTML = `<option value="">${(d.error || 'failed').slice(0, 80)}</option>`; return; }
-    synoAlbums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name));
-    sel.dataset.loaded = '1';
-    renderSynoAlbums();
+    if (r.ok) synoAlbums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name));
+    else synoError = (d.error || 'failed').slice(0, 100);
   } catch (e) {
-    sel.innerHTML = `<option value="">error: ${e}</option>`;
+    synoError = String(e);
   } finally {
-    btn.disabled = false; btn.textContent = '↻ Load albums';
+    if (btn) btn.textContent = '📥 Synology';
+    if (lastState) renderBatches(lastState);
   }
 }
+function refreshSyno() { synoAlbums = []; synoError = ''; loadSynoAlbums(); }
+function toggleSynoOld(cb) { synoShowAll = cb.checked; if (lastState) renderBatches(lastState); }
 
-// Is the album name date-prefixed and within the last ~60 days?
+// Date-prefixed (batch-namable) and within the last ~60 days?
 function _albumRecent(name) {
   const m = name.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (!m) return false;
@@ -930,42 +934,57 @@ function _albumRecent(name) {
   return !isNaN(d) && (Date.now() - d.getTime()) <= 60 * 864e5;
 }
 
-// Has this album already been fetched / posted? (cross-reference batch state)
-function _albumStatus(name) {
-  const b = (lastState?.batches || []).find(x => x.folder === name);
-  if (!b) return '';
-  return b.status === 'done' ? 'done' : 'workflow';
+// Remote albums to show as cards: batch-namable, not already local, recent (or show-all)
+function _remoteAlbums(localFolders) {
+  return synoAlbums.filter(a =>
+    /^\d{4}-\d{1,2}-\d{1,2}/.test(a.name) &&
+    !localFolders.has(a.name) &&
+    (synoShowAll || _albumRecent(a.name)));
 }
 
-function renderSynoAlbums() {
-  const sel = document.getElementById('syno-album');
-  if (!sel) return;
-  const showAll = document.getElementById('syno-showall')?.checked;
-  const cur = sel.value;
-  const list = synoAlbums.filter(a => showAll || _albumRecent(a.name) || _albumStatus(a.name));
-  if (!list.length) {
-    sel.innerHTML = '<option value="">— no recent albums · tick “show all” —</option>';
-    return;
-  }
-  sel.innerHTML = '<option value="">— select album —</option>' + list.map(a => {
-    const st = _albumStatus(a.name);
-    const tag = st === 'done' ? ' · ✓ done' : st === 'workflow' ? ' · ● in workflow' : '';
-    return `<option value="${a.name.replace(/"/g, '&quot;')}">${a.name} (${a.item_count})${tag}</option>`;
-  }).join('');
-  if (cur) sel.value = cur;
+function _remoteCardHtml(a) {
+  const n = a.item_count, safe = a.name.replace(/'/g, "\\'");
+  return `<div class="batch-card remote">
+    <div class="batch-top">
+      <div>
+        <div class="batch-name">${a.name}</div>
+        <div class="batch-sub">${n} photo${n === 1 ? '' : 's'} on Synology</div>
+      </div>
+      <span class="status-badge badge-remote">☁ Synology</span>
+    </div>
+    <div class="card-actions">
+      <button class="btn btn-primary btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true)">⬇ Fetch &amp; run</button>
+      <button class="btn btn-neutral btn-sm" onclick="synoFetchRun('${safe}', false)">⬇ Fetch only</button>
+    </div>
+  </div>`;
 }
 
-async function synoFetch() {
-  const album = document.getElementById('syno-album').value;
-  if (!album) { alert('Pick an album first.'); return; }
-  const btn = document.getElementById('syno-fetch');
-  btn.disabled = true; btn.textContent = '📥 Fetching…';
+function _synoSectionHtml(localFolders) {
+  if (!synoVisible) return "";
+  const albums = _remoteAlbums(localFolders);
+  const head = `<div class="syno-section-head">
+    <span>☁ On Synology — fetch to start</span>
+    <span class="syno-controls">
+      <label class="syno-allchk"><input type="checkbox" ${synoShowAll ? 'checked' : ''} onchange="toggleSynoOld(this)"> show old</label>
+      <button class="btn-sm-action" onclick="refreshSyno()">↻ Refresh</button>
+    </span>
+  </div>`;
+  let body;
+  if (synoError) body = `<div class="syno-msg err">${synoError}</div>`;
+  else if (!synoAlbums.length) body = `<div class="syno-msg">Loading albums…</div>`;
+  else if (!albums.length) body = `<div class="syno-msg">No new recent albums — tick “show old” for the rest.</div>`;
+  else body = albums.map(_remoteCardHtml).join("");
+  return head + body;
+}
+
+async function synoFetchRun(album, run) {
+  const btn = document.getElementById('sfr-' + fid(album));
+  if (btn && run) { btn.disabled = true; btn.textContent = '⬇ Fetching…'; }
+  if (!logVisible) toggleLog();   // surface progress
   await fetch('/api/syno/fetch', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ album }),
+    body: JSON.stringify({ album, then_process: run }),
   });
-  if (!logVisible) toggleLog();   // surface progress
-  setTimeout(() => { btn.disabled = false; btn.textContent = '📥 Fetch into workflow'; }, 3000);
 }
 
 async function skipOld() {

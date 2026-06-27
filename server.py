@@ -950,14 +950,33 @@ def syno_fetch():
     if not album:
         return jsonify({"error": "no album"}), 400
 
+    then_process = bool(data.get("then_process"))
+
     def _fetch():
         log(f"📥 Synology fetch: '{album}' …")
         r = call_host("syno-fetch", body={"album": album, "raw_only": bool(data.get("raw_only"))},
                       timeout=3600)
         for line in (r.get("output", "") or "").splitlines():
             log(line)
-        log("✓ Synology fetch complete — batch will appear shortly."
-            if r.get("ok") else "Synology fetch failed — check log.")
+        if not r.get("ok"):
+            log("Synology fetch failed — check log.")
+            return
+        log("✓ Synology fetch complete.")
+        if not then_process:
+            log("Batch will appear shortly.")
+            return
+        # Register the new folder, then kick off the pipeline automatically
+        scan_batches()
+        with lock:
+            exists = album in state["batches"]
+            busy   = state["active"]
+        if not exists:
+            log(f"Fetched, but no batch matched '{album}' (check the date-prefixed name).")
+        elif busy:
+            log(f"Another batch is active ({busy}) — start '{album}' manually when free.")
+        else:
+            log(f"▶ Starting pipeline for {album} …")
+            threading.Thread(target=process_batch, args=(album,), daemon=True).start()
 
     threading.Thread(target=_fetch, daemon=True).start()
     return jsonify({"ok": True})
