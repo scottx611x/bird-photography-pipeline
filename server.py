@@ -162,12 +162,12 @@ def batch_host_path(folder_name: str) -> str:
 
 # ── Host bridge ───────────────────────────────────────────────────────────────
 
-def call_host(cmd: str, folder: str = None) -> dict:
-    data = {}
+def call_host(cmd: str, folder: str = None, body: dict = None, timeout: float = 90) -> dict:
+    data = dict(body or {})
     if folder:
         data["folder"] = folder
     try:
-        with httpx.Client(timeout=90) as client:
+        with httpx.Client(timeout=timeout) as client:
             r = client.post(f"{HOST_BRIDGE}/run/{cmd}", json=data)
         return r.json()
     except httpx.ConnectError:
@@ -926,6 +926,40 @@ def reset_batch(folder_name: str):
             with lock:
                 state["stop_requested"] = False
         threading.Thread(target=_clear, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/syno/albums")
+def syno_albums():
+    """List Synology Photos albums (proxied through the Mac bridge)."""
+    r = call_host("syno-albums", timeout=30)
+    if not r.get("ok"):
+        return jsonify({"error": r.get("output", "lr_host error")}), 502
+    try:
+        albums = json.loads(r.get("output", "[]"))
+    except Exception:
+        return jsonify({"error": f"bad album response: {r.get('output','')[:200]}"}), 502
+    return jsonify({"albums": albums})
+
+
+@app.post("/api/syno/fetch")
+def syno_fetch():
+    """Download a Synology album's originals into ~/Downloads/<album> (background)."""
+    data  = request.json or {}
+    album = (data.get("album") or "").strip()
+    if not album:
+        return jsonify({"error": "no album"}), 400
+
+    def _fetch():
+        log(f"📥 Synology fetch: '{album}' …")
+        r = call_host("syno-fetch", body={"album": album, "raw_only": bool(data.get("raw_only"))},
+                      timeout=3600)
+        for line in (r.get("output", "") or "").splitlines():
+            log(line)
+        log("✓ Synology fetch complete — batch will appear shortly."
+            if r.get("ok") else "Synology fetch failed — check log.")
+
+    threading.Thread(target=_fetch, daemon=True).start()
     return jsonify({"ok": True})
 
 

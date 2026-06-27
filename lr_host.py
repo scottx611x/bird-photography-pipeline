@@ -19,7 +19,8 @@ from pathlib import Path
 
 TOOLS  = Path(__file__).parent
 PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3")
-ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export"}
+ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
+           "syno-albums", "syno-fetch"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -45,13 +46,23 @@ class Handler(BaseHTTPRequestHandler):
         if length:
             body = json.loads(self.rfile.read(length))
 
-        print(f"→ lr_auto.py {cmd}" + (f"  folder={body.get('folder','')}" if body.get("folder") else ""))
-
-        # --folder must come before the subcommand in argparse
-        args = [PYTHON, str(TOOLS / "lr_auto.py")]
-        if body.get("folder"):
-            args += ["--folder", body["folder"]]
-        args.append(cmd)
+        # Synology fetch runs Mac-side so s-cubed-nas.local resolves over mDNS
+        if cmd == "syno-albums":
+            print("→ syno_fetch.py albums")
+            args = [PYTHON, str(TOOLS / "syno_fetch.py"), "albums"]
+        elif cmd == "syno-fetch":
+            album = body.get("album", "")
+            print(f"→ syno_fetch.py fetch --album {album}")
+            args = [PYTHON, str(TOOLS / "syno_fetch.py"), "fetch", "--album", album]
+            if body.get("raw_only"):
+                args.append("--raw-only")
+        else:
+            print(f"→ lr_auto.py {cmd}" + (f"  folder={body.get('folder','')}" if body.get("folder") else ""))
+            # --folder must come before the subcommand in argparse
+            args = [PYTHON, str(TOOLS / "lr_auto.py")]
+            if body.get("folder"):
+                args += ["--folder", body["folder"]]
+            args.append(cmd)
 
         result = subprocess.run(args, capture_output=True, text=True)
         output = (result.stdout + result.stderr).strip()

@@ -363,6 +363,13 @@
       z-index: 10;
     }
 
+    /* ── Synology import panel ── */
+    .syno-panel { background: var(--surf2); border: 1px solid var(--border2); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
+    .syno-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .syno-row select { flex: 1; min-width: 180px; background: var(--bg); color: var(--text); border: 1px solid var(--border2); border-radius: 8px; padding: 7px 9px; font-size: 13px; }
+    .syno-hint { font-size: 11px; color: var(--muted); margin-top: 7px; }
+    .syno-hint code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+
     /* ── Responsive ── */
     @media (max-width: 680px) {
       .log-col { display: none; }
@@ -410,9 +417,18 @@
           <button class="chip"        data-f="done"      onclick="setFilter('done')">Done</button>
         </div>
         <div style="display:flex;gap:6px">
+          <button class="btn-sm-action" onclick="toggleSyno()">📥 Synology</button>
           <button class="btn-sm-action" onclick="skipOld()">✓ Skip old</button>
           <button class="btn-sm-action" onclick="doScan()">↺ Scan</button>
         </div>
+      </div>
+      <div id="syno-panel" class="syno-panel" style="display:none">
+        <div class="syno-row">
+          <select id="syno-album"><option value="">— load albums —</option></select>
+          <button class="btn btn-neutral btn-sm" id="syno-load" onclick="loadSynoAlbums()">↻ Load albums</button>
+          <button class="btn btn-success btn-sm" id="syno-fetch" onclick="synoFetch()">📥 Fetch into workflow</button>
+        </div>
+        <div class="syno-hint">Pick a curated album named like <code>2026-06-08-best</code>. Originals download to <code>~/Downloads/&lt;album&gt;</code> and appear as a batch below.</div>
       </div>
       <div id="batch-list"></div>
     </div>
@@ -877,6 +893,45 @@ async function doDone()      { await fetch("/api/done", {method:"POST"}); }
 async function doReset(f)    { await fetch(`/api/reset/${enc(f)}`, {method:"POST"}); }
 async function doSkip(f)     { await fetch(`/api/skip/${enc(f)}`, {method:"POST"}); }
 async function doScan()      { await fetch("/api/scan", {method:"POST"}); }
+
+// ── Synology import ─────────────────────────────────────────────────────────────
+function toggleSyno() {
+  const p = document.getElementById('syno-panel');
+  const show = p.style.display === 'none';
+  p.style.display = show ? '' : 'none';
+  if (show && !document.getElementById('syno-album').dataset.loaded) loadSynoAlbums();
+}
+
+async function loadSynoAlbums() {
+  const sel = document.getElementById('syno-album'), btn = document.getElementById('syno-load');
+  btn.disabled = true; btn.textContent = '↻ Loading…';
+  try {
+    const r = await fetch('/api/syno/albums');
+    const d = await r.json();
+    if (!r.ok) { sel.innerHTML = `<option value="">${(d.error || 'failed').slice(0, 80)}</option>`; return; }
+    const albums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name));
+    sel.innerHTML = '<option value="">— select album —</option>' +
+      albums.map(a => `<option value="${a.name.replace(/"/g, '&quot;')}">${a.name} (${a.item_count})</option>`).join('');
+    sel.dataset.loaded = '1';
+  } catch (e) {
+    sel.innerHTML = `<option value="">error: ${e}</option>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '↻ Load albums';
+  }
+}
+
+async function synoFetch() {
+  const album = document.getElementById('syno-album').value;
+  if (!album) { alert('Pick an album first.'); return; }
+  const btn = document.getElementById('syno-fetch');
+  btn.disabled = true; btn.textContent = '📥 Fetching…';
+  await fetch('/api/syno/fetch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ album }),
+  });
+  if (!logVisible) toggleLog();   // surface progress
+  setTimeout(() => { btn.disabled = false; btn.textContent = '📥 Fetch into workflow'; }, 3000);
+}
 
 async function skipOld() {
   const d = prompt("Mark all pending batches before this date as done (YYYY-MM-DD):", "2026-05-25");
