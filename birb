@@ -28,6 +28,9 @@ _stop_host() {
 cmd_up() {
   echo "Starting birb workflow…"
   cd "$DIR"
+  # Extract Buffer session cookies with the pyenv python (has browser_cookie3)
+  export BUFFER_COOKIES="$("$PYTHON" "$DIR/extract_buffer_cookies.py" 2>/dev/null)"
+  [ -z "$BUFFER_COOKIES" ] && echo "  ⚠ couldn't read Buffer cookies from Chrome — uploads may fail"
   BUFFER_TOKEN="${BUFFER_TOKEN:-}" docker compose up -d --build
   _start_host
   echo ""

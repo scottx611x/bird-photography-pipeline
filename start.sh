@@ -5,7 +5,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$HOME/.birb_host.pid"
 PYTHON="$HOME/.pyenv/versions/3.12.11/bin/python3"
 
-export BUFFER_COOKIES="$(python3 "$DIR/extract_buffer_cookies.py")"
+# Use the pyenv python — it has browser_cookie3 (system python3 may not)
+export BUFFER_COOKIES="$("$PYTHON" "$DIR/extract_buffer_cookies.py")"
 docker compose -f "$DIR/docker-compose.yml" down
 docker compose -f "$DIR/docker-compose.yml" up --build -d
 
