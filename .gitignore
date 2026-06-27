@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 
 .syno_device
+
+# but keep the template
+!.env.example
