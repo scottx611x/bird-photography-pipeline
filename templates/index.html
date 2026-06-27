@@ -367,6 +367,7 @@
     .syno-panel { background: var(--surf2); border: 1px solid var(--border2); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; }
     .syno-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .syno-row select { flex: 1; min-width: 180px; background: var(--bg); color: var(--text); border: 1px solid var(--border2); border-radius: 8px; padding: 7px 9px; font-size: 13px; }
+    .syno-allchk { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
     .syno-hint { font-size: 11px; color: var(--muted); margin-top: 7px; }
     .syno-hint code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 
@@ -427,8 +428,9 @@
           <select id="syno-album"><option value="">— load albums —</option></select>
           <button class="btn btn-neutral btn-sm" id="syno-load" onclick="loadSynoAlbums()">↻ Load albums</button>
           <button class="btn btn-success btn-sm" id="syno-fetch" onclick="synoFetch()">📥 Fetch into workflow</button>
+          <label class="syno-allchk"><input type="checkbox" id="syno-showall" onchange="renderSynoAlbums()"> show all</label>
         </div>
-        <div class="syno-hint">Pick a curated album named like <code>2026-06-08-best</code>. Originals download to <code>~/Downloads/&lt;album&gt;</code> and appear as a batch below.</div>
+        <div class="syno-hint">Recent albums shown by default (✓ done / ● in workflow are flagged). Originals download to <code>~/Downloads/&lt;album&gt;</code> and appear as a batch below.</div>
       </div>
       <div id="batch-list"></div>
     </div>
@@ -473,6 +475,7 @@ let postLanes       = [];   // [[file,…], …] — one inner array per Buffer 
 let dragSrc         = null; // filename currently being dragged
 let excludedFiles   = new Set(); // filenames excluded from posting
 let photoMeta       = {};   // file -> {species, location, oos}; survives re-render
+let synoAlbums      = [];   // cached Synology album list for the import picker
 const PER_POST      = 10;        // Instagram's max images per carousel post
 const fid = f => 'f_' + f.replace(/[^a-zA-Z0-9]/g, '_'); // safe element id from filename
 const flatFiles = () => postLanes.flat();
@@ -909,15 +912,47 @@ async function loadSynoAlbums() {
     const r = await fetch('/api/syno/albums');
     const d = await r.json();
     if (!r.ok) { sel.innerHTML = `<option value="">${(d.error || 'failed').slice(0, 80)}</option>`; return; }
-    const albums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name));
-    sel.innerHTML = '<option value="">— select album —</option>' +
-      albums.map(a => `<option value="${a.name.replace(/"/g, '&quot;')}">${a.name} (${a.item_count})</option>`).join('');
+    synoAlbums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name));
     sel.dataset.loaded = '1';
+    renderSynoAlbums();
   } catch (e) {
     sel.innerHTML = `<option value="">error: ${e}</option>`;
   } finally {
     btn.disabled = false; btn.textContent = '↻ Load albums';
   }
+}
+
+// Is the album name date-prefixed and within the last ~60 days?
+function _albumRecent(name) {
+  const m = name.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!m) return false;
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return !isNaN(d) && (Date.now() - d.getTime()) <= 60 * 864e5;
+}
+
+// Has this album already been fetched / posted? (cross-reference batch state)
+function _albumStatus(name) {
+  const b = (lastState?.batches || []).find(x => x.folder === name);
+  if (!b) return '';
+  return b.status === 'done' ? 'done' : 'workflow';
+}
+
+function renderSynoAlbums() {
+  const sel = document.getElementById('syno-album');
+  if (!sel) return;
+  const showAll = document.getElementById('syno-showall')?.checked;
+  const cur = sel.value;
+  const list = synoAlbums.filter(a => showAll || _albumRecent(a.name) || _albumStatus(a.name));
+  if (!list.length) {
+    sel.innerHTML = '<option value="">— no recent albums · tick “show all” —</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">— select album —</option>' + list.map(a => {
+    const st = _albumStatus(a.name);
+    const tag = st === 'done' ? ' · ✓ done' : st === 'workflow' ? ' · ● in workflow' : '';
+    return `<option value="${a.name.replace(/"/g, '&quot;')}">${a.name} (${a.item_count})${tag}</option>`;
+  }).join('');
+  if (cur) sel.value = cur;
 }
 
 async function synoFetch() {
