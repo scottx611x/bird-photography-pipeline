@@ -45,7 +45,12 @@ state = {
     "stop_requested":  False,
     "syno_skipped":    set(),   # Synology album names hidden from the list
     "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
+    "syno_fetching":   {},      # album -> {got, total} while a download is in progress
 }
+
+# In-memory cache of the Synology album list (avoid hammering the NAS each load)
+_syno_cache = {"at": 0.0, "albums": None}
+SYNO_CACHE_TTL = 300  # seconds
 lock    = threading.Lock()
 log_seq = 0   # monotonically increases with every log() call
 
@@ -561,6 +566,7 @@ def get_state():
             "thread_active":  state["thread_active"],
             "syno_skipped":   sorted(state["syno_skipped"]),
             "done_albums":    sorted(state["done_albums"]),
+            "syno_fetching":  dict(state["syno_fetching"]),
         }
     return jsonify(payload)
 
@@ -941,7 +947,11 @@ def reset_batch(folder_name: str):
 
 @app.get("/api/syno/albums")
 def syno_albums():
-    """List Synology Photos albums (proxied through the Mac bridge)."""
+    """List Synology Photos albums (cached; ?refresh=1 bypasses)."""
+    import time as _t
+    if not request.args.get("refresh") and _syno_cache["albums"] is not None \
+            and _t.time() - _syno_cache["at"] < SYNO_CACHE_TTL:
+        return jsonify({"albums": _syno_cache["albums"], "cached": True})
     r = call_host("syno-albums", timeout=30)
     if not r.get("ok"):
         return jsonify({"error": r.get("output", "lr_host error")}), 502
@@ -949,6 +959,8 @@ def syno_albums():
         albums = json.loads(r.get("output", "[]"))
     except Exception:
         return jsonify({"error": f"bad album response: {r.get('output','')[:200]}"}), 502
+    _syno_cache["albums"] = albums
+    _syno_cache["at"] = _t.time()
     return jsonify({"albums": albums})
 
 
@@ -961,11 +973,41 @@ def syno_fetch():
         return jsonify({"error": "no album"}), 400
 
     then_process = bool(data.get("then_process"))
+    total = int(data.get("total") or 0)
+
+    def _watch_progress(stop):
+        """Report download progress by counting files landing in the dest folder."""
+        dest = DOWNLOADS / album
+        last = -1
+        while not stop["done"]:
+            try:
+                got = sum(1 for f in dest.iterdir()
+                          if f.is_file() and not f.name.endswith(".part") and not f.name.startswith("."))
+            except OSError:
+                got = 0
+            with lock:
+                if album in state["syno_fetching"]:
+                    state["syno_fetching"][album]["got"] = got
+            # Log at ~10% milestones so the log isn't spammed per file
+            step = max(1, total // 10) if total else 10
+            if got != last and (got % step == 0 or got == total):
+                log(f"  …{album}: {got}/{total or '?'} fetched")
+                last = got
+            time.sleep(1.5)
 
     def _fetch():
-        log(f"📥 Synology fetch: '{album}' …")
-        r = call_host("syno-fetch", body={"album": album, "raw_only": bool(data.get("raw_only"))},
-                      timeout=3600)
+        log(f"📥 Fetching from Synology: '{album}' ({total or '?'} photos) …")
+        with lock:
+            state["syno_fetching"][album] = {"got": 0, "total": total}
+        stop = {"done": False}
+        threading.Thread(target=_watch_progress, args=(stop,), daemon=True).start()
+        try:
+            r = call_host("syno-fetch", body={"album": album, "raw_only": bool(data.get("raw_only"))},
+                          timeout=3600)
+        finally:
+            stop["done"] = True
+            with lock:
+                state["syno_fetching"].pop(album, None)
         for line in (r.get("output", "") or "").splitlines():
             log(line)
         if not r.get("ok"):

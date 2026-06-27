@@ -367,6 +367,9 @@
     .batch-card.remote { border-style: dashed; }
     .batch-card.remote.skipped { opacity: .5; }
     .batch-card.remote.posted { opacity: .6; }
+    .batch-card.remote.fetching { border-style: solid; border-color: var(--blue); }
+    .fetch-bar { height: 6px; border-radius: 4px; background: var(--dim); overflow: hidden; margin-top: 4px; }
+    .fetch-bar-fill { height: 100%; background: var(--blue); transition: width .4s ease; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
     .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
     .syno-foot { text-align: center; font-size: 12px; color: var(--muted); padding: 12px; cursor: pointer; }
@@ -472,6 +475,7 @@ let synoShowAll     = false; // include old (>60d) / skipped remote albums
 let synoError       = '';    // last Synology load error
 let synoSkipped     = new Set(); // album names the user has skipped (synced from server)
 let synoDone        = new Set(); // album names already posted (hidden even if local folder is gone)
+let synoForceRefresh = false;    // bypass the server album cache on next load (Scan)
 const PER_POST      = 10;        // Instagram's max images per carousel post
 const fid = f => 'f_' + f.replace(/[^a-zA-Z0-9]/g, '_'); // safe element id from filename
 const flatFiles = () => postLanes.flat();
@@ -704,18 +708,25 @@ function renderBatches(data) {
     : activeFilter === "open" ? (b.status === "pending" || b.status === "processing")
     : b.status === activeFilter);
 
+  // Albums currently downloading get a live progress card (shown in any view)
+  const fetching = data.syno_fetching || {};
+  const fetchingNames = new Set(Object.keys(fetching));
+  const fetchingItems = Object.entries(fetching).map(([name, p]) =>
+    ({ date: _normDate(name), html: _fetchingCardHtml(name, p) }));
+
   // Remote Synology albums sit in the same list, interleaved by date (open/all views)
   const remoteItems = (activeFilter === "all" || activeFilter === "open")
-    ? _remoteAlbums(localFolders).map(a => ({ date: _normDate(a.name), html: _remoteCardHtml(a) }))
+    ? _remoteAlbums(localFolders).filter(a => !fetchingNames.has(a.name))
+        .map(a => ({ date: _normDate(a.name), html: _remoteCardHtml(a) }))
     : [];
 
-  if (!all.length && !remoteItems.length) {
+  if (!all.length && !remoteItems.length && !fetchingItems.length) {
     list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads, or click Scan.</div>`
       + _synoFooterHtml(localFolders);
     return;
   }
 
-  const localItems = all.map(b => {
+  const localItems = all.filter(b => !fetchingNames.has(b.folder)).map(b => {
     const isActive = data.active?.folder === b.folder;
     const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done" }[b.status] || "badge-pending";
     const badgeTxt = { pending:"Pending", processing:"Active", done:"Done" }[b.status] || b.status;
@@ -763,7 +774,7 @@ function renderBatches(data) {
     </div>` };
   });
 
-  const merged = [...localItems, ...remoteItems]
+  const merged = [...localItems, ...remoteItems, ...fetchingItems]
     .sort((x, y) => (y.date || '').localeCompare(x.date || ''));
   list.innerHTML = merged.map(i => i.html).join("") + _synoFooterHtml(localFolders);
 }
@@ -910,7 +921,7 @@ async function doScan()      { await fetch("/api/scan", {method:"POST"}); refres
 // ── Synology import (remote album cards in the batch list) ──────────────────────
 async function loadSynoAlbums() {
   try {
-    const r = await fetch('/api/syno/albums');
+    const r = await fetch('/api/syno/albums' + (synoForceRefresh ? '?refresh=1' : ''));
     const d = await r.json();
     if (r.ok) { synoAlbums = (d.albums || []).filter(a => a.name).sort((a, b) => byName(b.name, a.name)); synoError = ''; }
     else synoError = (d.error || 'failed').slice(0, 100);
@@ -920,7 +931,7 @@ async function loadSynoAlbums() {
     if (lastState) renderBatches(lastState);
   }
 }
-function refreshSyno() { loadSynoAlbums(); }
+function refreshSyno() { synoForceRefresh = true; loadSynoAlbums().finally(() => { synoForceRefresh = false; }); }
 function toggleSynoOld(val) { synoShowAll = val; if (lastState) renderBatches(lastState); }
 
 // Normalize a date-prefixed name (or batch date) to YYYY-MM-DD for sorting
@@ -951,6 +962,20 @@ function _remoteAlbums(localFolders) {
     (synoShowAll || !_albumHidden(a.name)));
 }
 
+function _fetchingCardHtml(name, p) {
+  const pct = p.total ? Math.round(100 * p.got / p.total) : 0;
+  return `<div class="batch-card remote fetching">
+    <div class="batch-top">
+      <div>
+        <div class="batch-name">${name}</div>
+        <div class="batch-sub">Fetching ${p.got}/${p.total || '?'} from Synology…</div>
+      </div>
+      <span class="status-badge badge-remote">⏳ Fetching</span>
+    </div>
+    <div class="fetch-bar"><div class="fetch-bar-fill" style="width:${pct}%"></div></div>
+  </div>`;
+}
+
 function _remoteCardHtml(a) {
   const n = a.item_count, safe = a.name.replace(/'/g, "\\'");
   if (synoSkipped.has(a.name)) {
@@ -977,7 +1002,7 @@ function _remoteCardHtml(a) {
         <span class="status-badge badge-done">✓ Posted</span>
       </div>
       <div class="card-actions">
-        <button class="btn btn-neutral btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true)">⬇ Re-fetch &amp; run</button>
+        <button class="btn btn-neutral btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true, ${a.item_count})">⬇ Re-fetch &amp; run</button>
       </div>
     </div>`;
   }
@@ -990,8 +1015,8 @@ function _remoteCardHtml(a) {
       <span class="status-badge badge-remote">☁ Synology</span>
     </div>
     <div class="card-actions">
-      <button class="btn btn-primary btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true)">⬇ Fetch &amp; run</button>
-      <button class="btn btn-neutral btn-sm" onclick="synoFetchRun('${safe}', false)">⬇ Fetch only</button>
+      <button class="btn btn-primary btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true, ${a.item_count})">⬇ Fetch &amp; run</button>
+      <button class="btn btn-neutral btn-sm" onclick="synoFetchRun('${safe}', false, ${a.item_count})">⬇ Fetch only</button>
       <button class="btn btn-neutral btn-sm" onclick="synoSkip('${safe}')">Skip</button>
     </div>
   </div>`;
@@ -1020,13 +1045,13 @@ async function synoUnskip(album) {
   await fetch('/api/syno/unskip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ album }) });
 }
 
-async function synoFetchRun(album, run) {
+async function synoFetchRun(album, run, total) {
   const btn = document.getElementById('sfr-' + fid(album));
-  if (btn && run) { btn.disabled = true; btn.textContent = '⬇ Fetching…'; }
+  if (btn) { btn.disabled = true; btn.textContent = '⬇ Fetching…'; }
   if (!logVisible) toggleLog();   // surface progress
   await fetch('/api/syno/fetch', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ album, then_process: run }),
+    body: JSON.stringify({ album, then_process: run, total: total || 0 }),
   });
 }
 
