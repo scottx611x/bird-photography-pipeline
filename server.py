@@ -668,6 +668,7 @@ def post_to_buffer():
     oos           = bool(data.get("out_of_area", False))
     schedule_date = data.get("schedule_date", "")
     scheduled_at  = data.get("scheduled_at", "")
+    finalize      = bool(data.get("finalize", True))  # False = post one group, keep batch open
 
     # photos is list of {file, species, location} for per-photo assignment
     photos = data.get("photos")
@@ -733,20 +734,30 @@ def post_to_buffer():
                 break
 
         if all_ok:
-            if n > 1:
-                log(f"✓ All {n} posts queued to Buffer.")
-            posted_folder = None
+            posted_files = [p["file"] for g in chunks for p in g]
+            finalized_folder, remaining_n = None, 0
             with lock:
-                if state["active"]:
-                    posted_folder = state["active"]
-                    state["batches"][state["active"]]["status"]     = "done"
-                    state["batches"][state["active"]]["birbs"]      = list(state["new_birbs"])
-                    state["batches"][state["active"]]["posted_due"] = last_due
-                    state["active"]    = None
-                    state["proc_step"] = None
+                folder = state["active"]
+                if folder and folder in state["batches"]:
+                    b = state["batches"][folder]
+                    cur = b.get("birbs", [])
+                    b["birbs"] = cur + [f for f in posted_files if f not in cur]   # accumulate posted
+                    state["new_birbs"] = [f for f in state["new_birbs"] if f not in posted_files]
+                    remaining_n = len(state["new_birbs"])
+                    if finalize or remaining_n == 0:   # done when told to, or nothing left to post
+                        b["status"]     = "done"
+                        b["posted_due"] = last_due
+                        state["active"]    = None
+                        state["proc_step"] = None
+                        finalized_folder = folder
                 state["last_post"] = {"due": last_due, "url": "https://publish.buffer.com"}
+            if finalized_folder:
+                log("✓ All posts queued to Buffer." if finalize else "✓ Final post queued — batch complete.")
+            else:
+                log(f"✓ Post queued — {remaining_n} photo(s) still staged.")
             save_state()
-            _free_local_raws(posted_folder)   # reclaim disk — originals are on the NAS
+            if finalized_folder:
+                _free_local_raws(finalized_folder)   # reclaim disk — originals are on the NAS
         else:
             with lock:
                 state["post_error"] = True

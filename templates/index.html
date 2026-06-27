@@ -181,8 +181,16 @@
     .post-lane-head .lane-title { color: var(--blue); }
     .lane-count { color: var(--muted); font-weight: 600; letter-spacing: 0; }
     .lane-count.bad { color: var(--red); }
+    .lane-actions-r { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .lane-post {
+      background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.4); color: var(--green);
+      cursor: pointer; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 7px;
+      letter-spacing: 0; text-transform: none;
+    }
+    .lane-post:hover { background: rgba(52,211,153,.2); }
+    .lane-post:disabled { opacity: .6; cursor: default; }
     .lane-remove {
-      margin-left: auto; background: none; border: none; color: var(--muted);
+      background: none; border: none; color: var(--muted);
       cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px;
     }
     .lane-remove:hover { color: var(--red); background: rgba(248,113,113,.1); }
@@ -629,13 +637,16 @@ function renderPostForm(batch, data) {
     const over = lane.length > PER_POST;
     const removeBtn = postLanes.length > 1
       ? `<button class="lane-remove" onclick="removeLane(${i})" title="Remove this post (photos move to Excluded)">✕</button>` : '';
+    // "Post this" lets you schedule one of several posts now, leaving the rest staged
+    const postOneBtn = (lanes.length > 1 && lane.length && !over)
+      ? `<button class="lane-post" id="postlane-${i}" onclick="postLane(${i})" title="Schedule just this post now">▶ Post this</button>` : '';
     return `
       <div class="post-lane ${over ? 'over' : ''}" data-lane="${i}"
            ondragover="onLaneOver(event)" ondragleave="onLaneLeave(event)" ondrop="onLaneDrop(event,${i})">
         <div class="post-lane-head">
           <span class="lane-title">📦 Post ${i + 1}</span>
           <span class="lane-count ${over ? 'bad' : ''}">${lane.length}/${PER_POST}</span>
-          ${removeBtn}
+          <span class="lane-actions-r">${postOneBtn}${removeBtn}</span>
         </div>
         <div class="lane-cards">
           ${lane.map(card).join("") || `<div class="lane-empty">drag photos here</div>`}
@@ -1277,8 +1288,41 @@ async function doPost() {
   postingInFlight = true;
   await fetch("/api/post", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt }),
+    body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, finalize: true }),
   });
+}
+
+// Schedule just one post (lane) now, leaving the rest staged
+async function postLane(i) {
+  capturePhotoInputs();
+  const date = document.getElementById("pf-date")?.value.trim() || "";
+  const lane = postLanes[i] || [];
+  if (!lane.length) return;
+  const g = lane.map(f => {
+    const m = photoMeta[f] || {};
+    const raw = (m.species || '').trim();
+    return { file: f, species: m.oos ? `⚠️ ${raw}` : raw, location: (m.location || '').trim() };
+  });
+  let lastSp = "";
+  g.forEach(p => { const bare = p.species.replace("⚠️ ", "").trim(); if (bare) lastSp = p.species; else if (lastSp) p.species = lastSp; });
+  if (!date) { alert("Fill in caption date."); return; }
+  if (!g[0].location) { alert("Fill in location for this post."); return; }
+  if (!g[0].species.replace("⚠️ ", "").trim()) { alert("Fill in species for the first photo of this post."); return; }
+  if (g.length > PER_POST) { alert(`This post has ${g.length} photos — max is ${PER_POST}.`); return; }
+
+  localStorage.setItem('birbLocation', g[0].location);
+  const btn = document.getElementById('postlane-' + i);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Scheduling…'; }
+  await fetch("/api/post", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ groups: [g], date,
+      schedule_date: document.getElementById('pf-schedule')?.value || '',
+      scheduled_at: _scheduledAt || '', finalize: false }),
+  });
+  // Consume this lane locally (server drops these files from new_birbs on success)
+  postLanes.splice(i, 1);
+  if (!postLanes.length) postLanes = [[]];
+  rerenderPhotoCards();
 }
 
 
