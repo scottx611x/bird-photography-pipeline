@@ -1,6 +1,6 @@
 # 🐦 Birb Workflow
 
-**A one-screen pipeline for bird photography: Lightroom → Buffer → Instagram.**
+**A one-screen pipeline for bird photography: Synology → Lightroom → Buffer → Instagram.**
 
 Drop a folder of RAWs in `~/Downloads`, and Birb Workflow walks it through import, auto-tone, denoise, picking, and export in Lightroom Classic — then resizes, captions, splits, and schedules the keepers to Instagram via Buffer. All from a single dark-mode web UI.
 
