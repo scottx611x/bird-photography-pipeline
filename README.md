@@ -1,8 +1,8 @@
-# 🐦 Birb Workflow
+# 🐦 Bird Photography Pipeline
 
 **A one-screen pipeline for bird photography: Synology → Lightroom → Buffer → Instagram.**
 
-Drop a folder of RAWs in `~/Downloads`, and Birb Workflow walks it through import, auto-tone, denoise, picking, and export in Lightroom Classic — then resizes, captions, splits, and schedules the keepers to Instagram via Buffer. All from a single dark-mode web UI.
+Drop a folder of RAWs in `~/Downloads`, and Bird Photography Pipeline walks it through import, auto-tone, denoise, picking, and export in Lightroom Classic — then resizes, captions, splits, and schedules the keepers to Instagram via Buffer. All from a single dark-mode web UI.
 
 ![Dashboard](docs/dashboard.png)
 
@@ -12,7 +12,7 @@ Drop a folder of RAWs in `~/Downloads`, and Birb Workflow walks it through impor
 
 These shots happen on neighborhood walks — dog on the leash, one-year-old riding on my back, camera over the shoulder. You get home with a few hundred RAWs and a handful of keepers, and the tedious part is everything *after* the shutter: repetitive Lightroom clicking, manual resizing, caption typing, and Buffer queue juggling — especially when a good walk turns into several posts (Instagram caps carousels at 10 images).
 
-Birb Workflow automates the mechanical parts and keeps the judgment calls (which shots, which species, how to group) one drag away.
+Bird Photography Pipeline automates the mechanical parts and keeps the judgment calls (which shots, which species, how to group) one drag away.
 
 ---
 
@@ -26,7 +26,7 @@ Each batch moves through six stages, shown as a live progress bar you can rewind
 | **2 · Tone** | Select All → Auto Settings across the batch |
 | **3 · Denoise** | You set denoise + CA removal on one photo; it’s copied to all |
 | **4 · Pick** | You flag your keepers in Lightroom |
-| **5 · Export** | Export with Previous → `~/Desktop/birbs/` (captured by modification time) |
+| **5 · Export** | Export with Previous → `~/Desktop/birds/` (captured by modification time) |
 | **6 · Post** | Resize, caption, group into posts, and schedule to Buffer |
 
 ---
@@ -61,22 +61,22 @@ A single post (≤ 10 photos) keeps it simple — one carousel, with a manual sc
 ### Install & run
 
 ```bash
-git clone git@github.com:scottx611x/bird-tools.git
-cd bird-tools
+git clone git@github.com:scottx611x/bird-photography-pipeline.git
+cd bird-photography-pipeline
 
 export BUFFER_TOKEN="your_token_here"   # or add to your shell profile
 
-./birb up          # build + start the container and the Lightroom bridge
+./bird up          # build + start the container and the Lightroom bridge
 ```
 
 Open **[http://localhost:8765](http://localhost:8765)**.
 
-`birb up` extracts your Buffer session cookies from Chrome, builds and starts the Docker container, and launches `lr_host.py` (the Mac-side Lightroom bridge) in the background.
+`bird up` extracts your Buffer session cookies from Chrome, builds and starts the Docker container, and launches `lr_host.py` (the Mac-side Lightroom bridge) in the background.
 
 ```bash
-./birb status      # container + bridge status
-./birb logs        # tail container logs
-./birb down        # stop everything
+./bird status      # container + bridge status
+./bird logs        # tail container logs
+./bird down        # stop everything
 ```
 
 ---
@@ -105,19 +105,19 @@ On the Post step, assign species, group photos into posts by dragging, and hit *
 
 ### CLI (optional)
 
-`birb_post.py` can post directly without the UI:
+`bird_post.py` can post directly without the UI:
 
 ```bash
 # Single carousel, auto-scheduled to the next open slot
-python birb_post.py --file DSC_5360.jpg DSC_5361.jpg \
+python bird_post.py --file DSC_5360.jpg DSC_5361.jpg \
     --species "Sharp-shinned Hawk" --location "Rea St." --date 6-8-26
 
 # Out-of-area sighting (adds a ⚠️ prefix)
-python birb_post.py --file DSC_1234.jpg \
+python bird_post.py --file DSC_1234.jpg \
     --species "Common Loon" --location "Sand Pond, ME" --date 6-8-26 --out-of-area
 
 # Just resize into .ready/ — no upload, no post
-python birb_post.py --file DSC_5360.jpg --resize-only
+python bird_post.py --file DSC_5360.jpg --resize-only
 ```
 
 Exports are color-managed to sRGB, EXIF-rotated, and saved at full resolution (long edge capped at 4096px) with JPEG quality dialed to fill Buffer’s ~8 MB limit — so Instagram does a single clean downscale instead of compressing an already-shrunken image.
@@ -145,8 +145,8 @@ Lightroom Classic                  import · tone · denoise · export
 | `templates/index.html` | Single-page UI — vanilla JS, dark theme, drag-and-drop lanes |
 | `lr_host.py` | Mac-side HTTP bridge that triggers Lightroom automation |
 | `lr_auto.py` | AppleScript wrappers for import / tone / denoise / export |
-| `birb_post.py` | Resize + sRGB convert, upload to Buffer’s S3, queue to Instagram |
-| `birb` / `start.sh` | Start, stop, and status helpers |
+| `bird_post.py` | Resize + sRGB convert, upload to Buffer’s S3, queue to Instagram |
+| `bird` / `start.sh` | Start, stop, and status helpers |
 
 ---
 
@@ -155,7 +155,7 @@ Lightroom Classic                  import · tone · denoise · export
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `BUFFER_TOKEN` | Yes | Buffer API bearer token |
-| `BUFFER_COOKIES` | Auto | Set by `birb up` / `start.sh` from your Chrome session |
+| `BUFFER_COOKIES` | Auto | Set by `bird up` / `start.sh` from your Chrome session |
 | `MAC_HOME` | No | Home dir inside Docker for path translation (default `/Users/scott`) |
 
 ---

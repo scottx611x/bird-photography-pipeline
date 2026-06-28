@@ -6,7 +6,7 @@ Runs on your Mac (not in Docker). The Docker web UI calls this via
 host.docker.internal:8766 to trigger AppleScript commands in Lightroom.
 
 Run once before using the workflow:
-  python3 ~/birb_tools/lr_host.py
+  python3 ~/bird-photography-pipeline/lr_host.py
 
 Keep this running in a Terminal tab while you work.
 """

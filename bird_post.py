@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-birb_post.py — Resize, upload, and queue a bird photo to Buffer.
+bird_post.py — Resize, upload, and queue a bird photo to Buffer.
 
 Usage:
-  python3 birb_post.py --file DSC_5360-2.jpg \
+  python3 bird_post.py --file DSC_5360-2.jpg \
                        --species "Sharp-shinned Hawk" \
                        --location "Rea St." \
                        --date 5-30-26
 
   # Out-of-area sighting (adds ⚠️ prefix):
-  python3 birb_post.py --file DSC_1234.jpg \
+  python3 bird_post.py --file DSC_1234.jpg \
                        --species "Common Loon" \
                        --location "Sand Pond, Litchfield ME" \
                        --date 5-23-26 \
                        --out-of-area
 
   # Multiple species (separate with commas):
-  python3 birb_post.py --file DSC_5107.jpg \
+  python3 bird_post.py --file DSC_5107.jpg \
                        --species "Gray Catbird, Downy Woodpecker" \
                        --location "Rea St." \
                        --date 5-16-26
@@ -39,7 +39,7 @@ from PIL import Image, ImageCms, ImageOps
 
 ORG_ID      = "6a008c6e3e4597b26fe42152"
 CHANNEL_ID  = "6a008cfb090476fb99050c51"   # birdsofnorthandover Instagram
-BIRBS_DIR   =  Path("/birbs")
+BIRDS_DIR   =  Path("/birds")
 BUFFER_TOKEN = os.environ.get("BUFFER_TOKEN", "")
 
 # ── Chrome session ─────────────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ def build_caption(species: str, location: str, date: str, out_of_area: bool) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="Queue a bird photo to Buffer Instagram")
-    parser.add_argument("--file",        required=True, nargs="+", help="One or more filenames in ~/Desktop/birbs/ (carousel if >1)")
+    parser.add_argument("--file",        required=True, nargs="+", help="One or more filenames in ~/Desktop/birds/ (carousel if >1)")
     parser.add_argument("--species",     help="Bird species, comma-separated for multiple")
     parser.add_argument("--location",    help="Shoot location, e.g. 'Rea St.'")
     parser.add_argument("--date",        help="Shoot date, e.g. '5-30-26'")
@@ -223,7 +223,7 @@ def main():
     for f in args.file:
         p = Path(f)
         if not p.is_absolute():
-            p = BIRBS_DIR / p
+            p = BIRDS_DIR / p
         if not p.exists():
             print(f"File not found: {p}")
             sys.exit(1)
@@ -231,7 +231,7 @@ def main():
 
     # Resize-only: produce instagram-ready files and stop
     if args.resize_only:
-        ready_dir = BIRBS_DIR / ".ready"
+        ready_dir = BIRDS_DIR / ".ready"
         ready_dir.mkdir(exist_ok=True)
         for src in srcs:
             ready = ready_dir / src.name
@@ -257,7 +257,7 @@ def main():
         return
 
     # Resize all
-    ready_dir = BIRBS_DIR / ".ready"
+    ready_dir = BIRDS_DIR / ".ready"
     ready_dir.mkdir(exist_ok=True)
     readies = []
     for src in srcs:

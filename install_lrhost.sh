@@ -1,13 +1,13 @@
 #!/bin/bash
 # Install lr_host.py as a macOS LaunchAgent so it runs automatically at login.
-# Run once: bash ~/birb_tools/install_lrhost.sh
+# Run once: bash ~/bird-photography-pipeline/install_lrhost.sh
 
 set -e
 
-PLIST="$HOME/Library/LaunchAgents/com.birb.lrhost.plist"
+PLIST="$HOME/Library/LaunchAgents/com.bird.lrhost.plist"
 PYTHON="$HOME/.pyenv/versions/3.12.11/bin/python3"
-SCRIPT="$HOME/birb_tools/lr_host.py"
-LOG="$HOME/.birb_host.log"
+SCRIPT="$HOME/bird-photography-pipeline/lr_host.py"
+LOG="$HOME/.bird_host.log"
 
 cat > "$PLIST" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -15,7 +15,7 @@ cat > "$PLIST" << EOF
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.birb.lrhost</string>
+    <string>com.bird.lrhost</string>
     <key>ProgramArguments</key>
     <array>
         <string>$PYTHON</string>
@@ -42,5 +42,5 @@ echo "lr_host.py installed as a LaunchAgent."
 echo "It will now start automatically at login and restart if it crashes."
 echo "Log: $LOG"
 echo ""
-echo "To check status:  launchctl list | grep birb"
+echo "To check status:  launchctl list | grep bird"
 echo "To stop:          launchctl unload $PLIST"

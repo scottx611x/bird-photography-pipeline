@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Birb Workflow — Synology → Lightroom → Buffer → Instagram</title>
+  <title>Bird Photography Pipeline — Synology → Lightroom → Buffer → Instagram</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -353,7 +353,7 @@
     .posted-line a:hover { text-decoration: underline; }
 
     /* ── Done bird strip ── */
-    .done-birbs { display: flex; margin-top: 14px; overflow-x: auto; padding-bottom: 4px; }
+    .done-birds { display: flex; margin-top: 14px; overflow-x: auto; padding-bottom: 4px; }
     .done-thumb {
       width: 76px; height: 57px; object-fit: cover; border-radius: 9px;
       flex-shrink: 0; cursor: zoom-in;
@@ -363,7 +363,7 @@
       transition: filter .18s, box-shadow .18s, border-color .18s;
       position: relative; z-index: 0;
     }
-    .done-birbs .done-thumb:first-child { margin-left: 0; }
+    .done-birds .done-thumb:first-child { margin-left: 0; }
     .done-thumb:hover {
       filter: brightness(1.25);
       border-color: var(--blue);
@@ -395,7 +395,7 @@
 <body>
 <div class="shell">
   <nav>
-    <div class="logo">🐦 <span>Birb Workflow</span><span class="logo-sub">Synology → Lightroom → Buffer → Instagram</span></div>
+    <div class="logo">🐦 <span>Bird Photography Pipeline</span><span class="logo-sub">Synology → Lightroom → Buffer → Instagram</span></div>
     <div class="nav-right">
       <button class="btn-log" id="log-toggle" onclick="toggleLog()">Hide log</button>
       <div class="host-pill">
@@ -414,7 +414,7 @@
   <!-- Automation overlay -->
   <div class="auto-overlay" id="auto-overlay">
     <div class="auto-spinner"></div>
-    <div class="auto-label" id="auto-label">Birb automation running…</div>
+    <div class="auto-label" id="auto-label">Bird automation running…</div>
     <div class="auto-sub" id="auto-sub">Lightroom is doing its thing</div>
     <button class="btn btn-neutral btn-sm" id="overlay-skip"
             style="display:none;margin-top:8px;opacity:.65" onclick="forceAdvance()">skip step →</button>
@@ -585,16 +585,16 @@ function renderStepCard(step, batch, data) {
 
 // ── Post form ─────────────────────────────────────────────────────────────────
 function renderPostForm(batch, data) {
-  const birbs = data.new_birbs || [];
+  const birds = data.new_birds || [];
   // Re-init lanes only when the batch's photo set changes
   const known = new Set([...flatFiles(), ...excludedFiles]);
-  if (!known.size || !birbs.every(f => known.has(f))) {
-    initLanes(birbs);
+  if (!known.size || !birds.every(f => known.has(f))) {
+    initLanes(birds);
     excludedFiles.clear();
     photoMeta = {};
   }
 
-  const defaultLoc = recentLocations[0] || localStorage.getItem('birbLocation') || 'Rea St.';
+  const defaultLoc = recentLocations[0] || localStorage.getItem('birdLocation') || 'Rea St.';
   const esc = s => String(s ?? '').replace(/"/g, '&quot;');
 
   const lanes = postLanes.filter(l => l.length);   // non-empty lanes drive the count
@@ -614,8 +614,8 @@ function renderPostForm(batch, data) {
            ondragover="onCardOver(event)" ondragleave="onCardLeave(event)"
            ondrop="onCardDrop(event,'${f}')">
         <div class="photo-card-img-row">
-          <img src="/birb-thumb/${encodeURIComponent(f)}"
-               onclick="openModal('/birb-img/${encodeURIComponent(f)}','${f}',flatFiles(),${idx})"
+          <img src="/bird-thumb/${encodeURIComponent(f)}"
+               onclick="openModal('/bird-img/${encodeURIComponent(f)}','${f}',flatFiles(),${idx})"
                loading="lazy" title="Click to preview" />
           <div class="zoom-hint">🔍 preview</div>
         </div>
@@ -662,7 +662,7 @@ function renderPostForm(batch, data) {
             <div class="photo-card excluded" data-file="${f}" draggable="true"
                  ondragstart="onCardDragStart(event,'${f}')" ondragend="onDragEnd()">
               <div class="photo-card-img-row">
-                <img src="/birb-thumb/${encodeURIComponent(f)}" loading="lazy" title="${f}" />
+                <img src="/bird-thumb/${encodeURIComponent(f)}" loading="lazy" title="${f}" />
               </div>
               <div class="photo-card-fields">
                 <div class="photo-card-header">
@@ -681,7 +681,7 @@ function renderPostForm(batch, data) {
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
   const schedDefault = tomorrow.toISOString().split('T')[0];
   return `<div class="post-form">
-    ${birbs.length ? `<div class="lanes-wrap" id="photo-cards-list">${banner}${laneHtml}<div class="lane-actions"><button class="add-post-btn" onclick="addLane()">＋ Add post</button><button class="add-post-btn" onclick="sortByName()" title="Reorder all photos by filename and regroup into posts of 10">⇅ Sort by name</button></div>${excludedHtml}</div>` : ""}
+    ${birds.length ? `<div class="lanes-wrap" id="photo-cards-list">${banner}${laneHtml}<div class="lane-actions"><button class="add-post-btn" onclick="addLane()">＋ Add post</button><button class="add-post-btn" onclick="sortByName()" title="Reorder all photos by filename and regroup into posts of 10">⇅ Sort by name</button></div>${excludedHtml}</div>` : ""}
     <div class="shared-fields">
       <div class="row">
         <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.cap_date||''}" placeholder="5-14-26" /></div>
@@ -753,14 +753,14 @@ function renderBatches(data) {
     else if (b.status === "done")
       actions = `<button class="btn btn-neutral btn-sm" onclick="doReset('${b.folder}')">↺ Reprocess</button>`;
 
-    const doneBirbs = (b.status === "done" && b.birbs?.length)
-      ? `<div class="done-birbs ${expandedDone.has(b.folder) ? '' : 'collapsed'}"
-              data-folder="${b.folder}" data-files="${encodeURIComponent(JSON.stringify(b.birbs))}">${
+    const doneBirds = (b.status === "done" && b.birds?.length)
+      ? `<div class="done-birds ${expandedDone.has(b.folder) ? '' : 'collapsed'}"
+              data-folder="${b.folder}" data-files="${encodeURIComponent(JSON.stringify(b.birds))}">${
           expandedDone.has(b.folder)
-            ? b.birbs.map((f, i) =>
-                `<img class="done-thumb" src="/birb-thumb/${encodeURIComponent(f)}"
+            ? b.birds.map((f, i) =>
+                `<img class="done-thumb" src="/bird-thumb/${encodeURIComponent(f)}"
                       onclick="thumbClick(event,${i})" loading="lazy" title="${f}" />`).join("")
-            : `<button class="btn btn-neutral btn-sm done-expand" onclick="expandDoneBirbs('${b.folder}')">🖼 Show ${b.birbs.length} photo${b.birbs.length > 1 ? 's' : ''}</button>`
+            : `<button class="btn btn-neutral btn-sm done-expand" onclick="expandDoneBirds('${b.folder}')">🖼 Show ${b.birds.length} photo${b.birds.length > 1 ? 's' : ''}</button>`
         }</div>`
       : "";
     const postedLine = (b.status === "done" && b.posted_due)
@@ -780,7 +780,7 @@ function renderBatches(data) {
       <div class="meta-row">${meta}</div>
       ${actions ? `<div class="card-actions">${actions}</div>` : ""}
       ${postedLine}
-      ${doneBirbs}
+      ${doneBirds}
       ${stepCard}
     </div>` };
   });
@@ -1106,8 +1106,8 @@ function chunkToLanes(files) {
   if (!postLanes.length) postLanes = [[]];
 }
 
-function initLanes(birbs) {
-  chunkToLanes([...birbs].sort(byName));   // default order = natural filename order
+function initLanes(birds) {
+  chunkToLanes([...birds].sort(byName));   // default order = natural filename order
 }
 
 function sortByName() {
@@ -1245,7 +1245,7 @@ let _spreadTimer = null;
 function spreadSpecies(src) { clearTimeout(_spreadTimer); _spreadTimer = setTimeout(() => _spreadField(src, 'sp'), 300); }
 
 async function doResizeOnly() {
-  const files = flatFiles().length ? flatFiles() : (lastState?.new_birbs || []);
+  const files = flatFiles().length ? flatFiles() : (lastState?.new_birds || []);
   if (!files.length) { alert("No photos selected."); return; }
   const btn = document.getElementById('resize-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Resizing…'; }
@@ -1279,7 +1279,7 @@ async function doPost() {
   if (!first.location || !date) { alert("Fill in location and date."); return; }
   if (!first.species.replace("⚠️ ", "").trim()) { alert("Fill in species for at least the first photo."); return; }
 
-  localStorage.setItem('birbLocation', first.location);
+  localStorage.setItem('birdLocation', first.location);
   const scheduleDate = document.getElementById('pf-schedule')?.value || '';
   const scheduledAt  = _scheduledAt || '';
   const n = groups.length;
@@ -1310,7 +1310,7 @@ async function postLane(i) {
   if (!g[0].species.replace("⚠️ ", "").trim()) { alert("Fill in species for the first photo of this post."); return; }
   if (g.length > PER_POST) { alert(`This post has ${g.length} photos — max is ${PER_POST}.`); return; }
 
-  localStorage.setItem('birbLocation', g[0].location);
+  localStorage.setItem('birdLocation', g[0].location);
   const btn = document.getElementById('postlane-' + i);
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Scheduling…'; }
   await fetch("/api/post", {
@@ -1319,7 +1319,7 @@ async function postLane(i) {
       schedule_date: document.getElementById('pf-schedule')?.value || '',
       scheduled_at: _scheduledAt || '', finalize: false }),
   });
-  // Consume this lane locally (server drops these files from new_birbs on success)
+  // Consume this lane locally (server drops these files from new_birds on success)
   postLanes.splice(i, 1);
   if (!postLanes.length) postLanes = [[]];
   rerenderPhotoCards();
@@ -1329,22 +1329,22 @@ async function postLane(i) {
 let _modalFiles = [];
 let _modalIdx   = 0;
 
-function expandDoneBirbs(folder) {
+function expandDoneBirds(folder) {
   expandedDone.add(folder);  // remembered so the periodic re-render keeps it open
-  const container = document.querySelector(`.done-birbs[data-folder="${folder}"]`);
+  const container = document.querySelector(`.done-birds[data-folder="${folder}"]`);
   if (!container) return;
   const files = JSON.parse(decodeURIComponent(container.dataset.files || '%5B%5D'));
   container.classList.remove('collapsed');
   container.innerHTML = files.map((f, i) =>
-    `<img class="done-thumb" src="/birb-thumb/${encodeURIComponent(f)}"
+    `<img class="done-thumb" src="/bird-thumb/${encodeURIComponent(f)}"
           onclick="thumbClick(event,${i})" loading="lazy" title="${f}" />`).join("");
 }
 
 function thumbClick(event, idx) {
-  const container = event.target.closest('.done-birbs');
+  const container = event.target.closest('.done-birds');
   const files = JSON.parse(decodeURIComponent(container?.dataset.files || '%5B%5D'));
   const f = files[idx];
-  if (f) openModal(`/birb-img/${encodeURIComponent(f)}`, f, files, idx);
+  if (f) openModal(`/bird-img/${encodeURIComponent(f)}`, f, files, idx);
 }
 
 function openModal(src, name, files, idx) {
@@ -1361,7 +1361,7 @@ function modalStep(dir) {
   if (!_modalFiles.length) return;
   _modalIdx = (_modalIdx + dir + _modalFiles.length) % _modalFiles.length;
   const f = _modalFiles[_modalIdx];
-  document.getElementById("modal-img").src = `/birb-img/${encodeURIComponent(f)}`;
+  document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(f)}`;
   document.getElementById("modal-name").textContent = f;
 }
 function closeModal() {
