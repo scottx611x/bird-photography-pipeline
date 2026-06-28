@@ -2,7 +2,7 @@
 
 **A one-screen pipeline for bird photography: Synology → Lightroom → Buffer → Instagram.**
 
-Drop a folder of RAWs in `~/Downloads`, and Bird Photography Pipeline walks it through import, auto-tone, denoise, picking, and export in Lightroom Classic — then resizes, captions, splits, and schedules the keepers to Instagram via Buffer. All from a single dark-mode web UI.
+Pick an album in Synology Photos, hit **Fetch & run**, and the pipeline pulls the RAWs and walks them through import, auto-tone, denoise, picking, and export in Lightroom Classic — then resizes, captions, splits, and schedules the keepers to Instagram via Buffer. All from a single dark-mode web UI.
 
 ![Dashboard](docs/dashboard.png)
 
@@ -13,6 +13,19 @@ Drop a folder of RAWs in `~/Downloads`, and Bird Photography Pipeline walks it t
 These shots happen on neighborhood walks — dog on the leash, one-year-old riding on my back, camera over the shoulder. You get home with a few hundred RAWs and a handful of keepers, and the tedious part is everything *after* the shutter: repetitive Lightroom clicking, manual resizing, caption typing, and Buffer queue juggling — especially when a good walk turns into several posts (Instagram caps carousels at 10 images).
 
 Bird Photography Pipeline automates the mechanical parts and keeps the judgment calls (which shots, which species, how to group) one drag away.
+
+---
+
+## Start from Synology
+
+Your Synology Photos albums show up right in the batch list as cards. Hit **⬇ Fetch & run** and it downloads the RAW originals (with a live progress bar) and kicks off the whole pipeline — no manual file shuffling.
+
+![Fetch an album from Synology](docs/synology-fetch.gif)
+
+- Recent albums surface automatically; older/posted/skipped ones tuck behind a toggle.
+- **Skip** hides albums you'll never post; posted albums are remembered so they don't resurface.
+- Originals stay safe on the NAS, so local RAWs are auto-deleted after a successful post to reclaim disk.
+- Prefer manual? Drop a `YYYY-MM-DD-<suffix>` folder of RAWs into `~/Downloads` and it appears as a batch too.
 
 ---
 
@@ -57,6 +70,7 @@ A single post (≤ 10 photos) keeps it simple — one carousel, with a manual sc
 - **Python 3.12** (pyenv or system)
 - **Chrome** logged in to [publish.buffer.com](https://publish.buffer.com)
 - A Buffer API token → [publish.buffer.com/settings/api](https://publish.buffer.com/settings/api)
+- *(optional)* **Synology Photos** + a DSM account, for the Fetch-from-NAS front door (creds in `.env`)
 
 ### Install & run
 
@@ -156,6 +170,7 @@ Lightroom Classic                  import · tone · denoise · export
 |----------|----------|-------------|
 | `BUFFER_TOKEN` | Yes | Buffer API bearer token |
 | `BUFFER_COOKIES` | Auto | Set by `bird up` / `start.sh` from your Chrome session |
+| `SYNO_HOST` / `SYNO_USER` / `SYNO_PASS` | For Synology | DSM host + account for the Fetch-from-NAS front door (in `.env`; a device token is cached after a one-time 2FA code so logins stay unattended) |
 | `MAC_HOME` | No | Home dir inside Docker for path translation (default `/Users/scott`) |
 
 ---
