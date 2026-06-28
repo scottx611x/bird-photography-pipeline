@@ -2,6 +2,8 @@
 
 **A one-screen pipeline for bird photography: Synology → Lightroom → Buffer → Instagram.**
 
+> The engine behind **[@birdsofnorthandover](https://instagram.com/birdsofnorthandover)** — every post on that feed runs through this.
+
 Pick an album in Synology Photos, hit **Fetch & run**, and the pipeline pulls the RAWs and walks them through import, auto-tone, denoise, picking, and export in Lightroom Classic — then resizes, captions, splits, and schedules the keepers to Instagram via Buffer. All from a single dark-mode web UI.
 
 ![Dashboard](docs/dashboard.png)
@@ -175,4 +177,4 @@ Lightroom Classic                  import · tone · denoise · export
 
 ---
 
-*Personal project — built around neighborhood dog-walks with a toddler on board and a camera over the shoulder. 🪶*
+*Personal project — built around neighborhood dog-walks with a toddler on board and a camera over the shoulder, feeding [@birdsofnorthandover](https://instagram.com/birdsofnorthandover). 🪶*
