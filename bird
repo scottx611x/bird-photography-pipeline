@@ -1,10 +1,10 @@
 #!/bin/bash
-# birb — start/stop the full birb workflow stack
-# Usage: birb [up|down|status|logs]
+# bird — start/stop the full bird workflow stack
+# Usage: bird [up|down|status|logs]
 
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
-PID_FILE="$HOME/.birb_host.pid"
+PID_FILE="$HOME/.bird_host.pid"
 PYTHON="$HOME/.pyenv/versions/3.12.11/bin/python3"
 
 _start_host() {
@@ -13,9 +13,9 @@ _start_host() {
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
     rm -f "$PID_FILE"
   fi
-  "$PYTHON" "$DIR/lr_host.py" >> "$HOME/.birb_host.log" 2>&1 &
+  "$PYTHON" "$DIR/lr_host.py" >> "$HOME/.bird_host.log" 2>&1 &
   echo $! > "$PID_FILE"
-  echo "  lr_host.py  →  pid $(cat "$PID_FILE")  (log: ~/.birb_host.log)"
+  echo "  lr_host.py  →  pid $(cat "$PID_FILE")  (log: ~/.bird_host.log)"
 }
 
 _stop_host() {
@@ -26,7 +26,7 @@ _stop_host() {
 }
 
 cmd_up() {
-  echo "Starting birb workflow…"
+  echo "Starting bird workflow…"
   cd "$DIR"
   # Extract Buffer session cookies with the pyenv python (has browser_cookie3)
   export BUFFER_COOKIES="$("$PYTHON" "$DIR/extract_buffer_cookies.py" 2>/dev/null)"
@@ -38,7 +38,7 @@ cmd_up() {
 }
 
 cmd_down() {
-  echo "Stopping birb workflow…"
+  echo "Stopping bird workflow…"
   cd "$DIR"
   docker compose down
   _stop_host
@@ -65,5 +65,5 @@ case "${1:-up}" in
   down)   cmd_down ;;
   status) cmd_status ;;
   logs)   cmd_logs ;;
-  *)      echo "Usage: birb [up|down|status|logs]" ;;
+  *)      echo "Usage: bird [up|down|status|logs]" ;;
 esac

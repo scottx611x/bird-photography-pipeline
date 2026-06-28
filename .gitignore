@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 
 .syno_device
+.idea/
 
-# but keep the template
+# keep the template (negation must come after the .env.* ignore above)
 !.env.example

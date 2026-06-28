@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from birb_post import build_caption
+from bird_post import build_caption
 
 
 def test_single_species():

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-lr_auto.py — Lightroom UI automation for birb batch editing.
+lr_auto.py — Lightroom UI automation for bird batch editing.
 
 Commands:
   import            Open a YYYY-MM-DD-* folder in Lightroom's Add Photos dialog
@@ -16,7 +16,7 @@ Typical workflow (driven by the web UI at localhost:8765):
   4. In Lightroom: edit ONE photo — set Denoise + Remove Chromatic Aberration
   5. Web UI: Denoise+CA — copies that photo's settings, pastes to all
   6. In Lightroom: pick your best shot
-  7. Web UI: Export — Export with Previous → ~/Desktop/birbs/
+  7. Web UI: Export — Export with Previous → ~/Desktop/birds/
   8. Web UI: Post — fills in species/location/date, queues to Buffer
 """
 
@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 DOWNLOADS    = Path.home() / "Downloads"
-BIRBS_DIR    = Path.home() / "Desktop" / "birbs"
+BIRDS_DIR    = Path.home() / "Desktop" / "birds"
 RAW_SUFFIXES = {".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".rw2", ".orf", ".pef"}
 
 
@@ -331,7 +331,7 @@ def cmd_export(args):
 
     print("Triggering Export with Previous…")
     lr_menu_click("File", "Export with Previous...")
-    print(f"Export started → check {BIRBS_DIR}")
+    print(f"Export started → check {BIRDS_DIR}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -348,7 +348,7 @@ def _latest_batch() -> Path | None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    p = argparse.ArgumentParser(description="Lightroom UI automation for birb photos")
+    p = argparse.ArgumentParser(description="Lightroom UI automation for bird photos")
     p.add_argument("--folder", help="Path to batch folder (for import command)")
     sub = p.add_subparsers(dest="cmd", required=True)
 

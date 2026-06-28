@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 syno_fetch.py — Pull originals from Synology Photos (personal space) into a
-birb-workflow batch folder.
+bird-workflow batch folder.
 
 Runs Mac-side (where s-cubed-nas.local resolves over mDNS). Reads creds from env:
 
@@ -94,7 +94,7 @@ def login(client: httpx.Client) -> str:
     params = {
         "api": "SYNO.API.Auth", "version": "7", "method": "login",
         "account": USER, "passwd": PASS, "format": "sid",
-        "enable_device_token": "yes", "device_name": "birb-workflow",
+        "enable_device_token": "yes", "device_name": "bird-workflow",
     }
     if did:
         params["device_id"] = did

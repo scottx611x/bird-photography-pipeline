@@ -1,12 +1,12 @@
 services:
-  birb-workflow:
+  bird-workflow:
     build: .
     ports:
       - "8765:8765"
     volumes:
       - ~/Downloads:/downloads
-      - ~/Desktop/birb_staging:/staging
-      - ~/Desktop/birbs:/birbs
+      - ~/Desktop/bird_staging:/staging
+      - ~/Desktop/birds:/birds
       - "~/Library/Application Support/Google/Chrome/Default/Cookies:/chrome-cookies/Cookies:ro"
 
     environment:

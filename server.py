@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-server.py — Birb workflow web UI (runs in Docker).
+server.py — Bird workflow web UI (runs in Docker).
 Open http://localhost:8765 in your browser.
 
 Architecture:
@@ -25,12 +25,12 @@ app = Flask(__name__)
 
 # ── Paths (Docker volume mounts) ──────────────────────────────────────────────
 DOWNLOADS    = Path("/downloads")
-BIRBS_DIR    = Path("/birbs")
+BIRDS_DIR    = Path("/birds")
 RAW_SUFFIXES = {".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".rw2", ".orf", ".pef"}
 BATCH_RE     = re.compile(r"^(\d{4}-\d{1,2}-\d{1,2})(?:-(.+))?$")
 HOST_BRIDGE  = "http://host.docker.internal:8766"
 MAC_HOME     = os.environ.get("MAC_HOME", "/Users/scott")
-STATE_FILE   = DOWNLOADS / ".birb_state.json"
+STATE_FILE   = DOWNLOADS / ".bird_state.json"
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ state = {
     "batches":       {},
     "active":        None,
     "proc_step":     None,
-    "new_birbs":     [],
+    "new_birds":     [],
     "log":           deque(maxlen=300),
     "host_ok":       None,
     "last_post":     None,
@@ -64,11 +64,11 @@ def save_state():
             name for name, b in state["batches"].items() if b.get("status") == "done")
         data = {
             "statuses":  {name: b["status"] for name, b in state["batches"].items()},
-            "birbs":     {name: b.get("birbs", []) for name, b in state["batches"].items()},
+            "birds":     {name: b.get("birds", []) for name, b in state["batches"].items()},
             "posted_due":{name: b.get("posted_due","") for name, b in state["batches"].items()},
             "active":    state["active"],
             "proc_step": state["proc_step"],
-            "new_birbs": list(state["new_birbs"]),
+            "new_birds": list(state["new_birds"]),
             "syno_skipped": sorted(state["syno_skipped"]),
             "done_albums": sorted(state["done_albums"]),
         }
@@ -154,14 +154,14 @@ def scan_batches():
                 if name not in state["batches"]:
                     statuses = saved.get("statuses", saved)  # handle old format
                     batch["status"] = statuses.get(name, "pending")
-                    batch["birbs"]      = saved.get("birbs", {}).get(name, [])
+                    batch["birds"]      = saved.get("birds", {}).get(name, [])
                     batch["posted_due"] = saved.get("posted_due", {}).get(name, "")
                     state["batches"][name] = batch
             # Restore active run — log() call moved outside lock to avoid deadlock
             if not state["active"] and saved.get("active") and saved["active"] in state["batches"]:
                 state["active"]    = saved["active"]
                 state["proc_step"] = saved.get("proc_step")
-                state["new_birbs"] = saved.get("new_birbs", [])
+                state["new_birds"] = saved.get("new_birds", [])
                 restored_msg = f"Restored active run: {state['active']} at step {state['proc_step']}"
         if restored_msg:
             log(restored_msg)
@@ -218,7 +218,7 @@ def process_batch(folder_name: str):
             return
         batch["status"] = "processing"
         state["active"] = folder_name
-        state["new_birbs"] = []
+        state["new_birds"] = []
         state["stop_requested"] = False
         state["thread_active"] = True
     try:
@@ -306,20 +306,20 @@ def _pick_export_post():
         log(f"  {line}")
 
     def _exported():
-        # Files written or *overwritten* since export began. /birbs is a flat
+        # Files written or *overwritten* since export began. /birds is a flat
         # dump that accumulates every shoot, so re-exporting a name that already
         # exists is invisible to a name set-diff — mtime catches those too.
         out = []
-        for f in _birbs_snapshot():
+        for f in _birds_snapshot():
             try:
-                if (BIRBS_DIR / f).stat().st_mtime >= export_start:
+                if (BIRDS_DIR / f).stat().st_mtime >= export_start:
                     out.append(f)
             except OSError:
                 pass
         return sorted(out)
 
     set_step("export_wait")
-    log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birbs/ (or click Done).")
+    log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birds/ (or click Done).")
     last_sig, stable = None, 0
     while True:
         time.sleep(1)
@@ -333,7 +333,7 @@ def _pick_export_post():
         if not new_files:
             continue
         try:
-            sig = tuple((f, (BIRBS_DIR / f).stat().st_size) for f in new_files)
+            sig = tuple((f, (BIRDS_DIR / f).stat().st_size) for f in new_files)
         except OSError:
             continue
         if sig == last_sig:
@@ -347,12 +347,12 @@ def _pick_export_post():
 
     new = _exported()
     with lock:
-        state["new_birbs"] = new
+        state["new_birds"] = new
     save_state()
     for n in new:
         log(f"  ✓ {n}")
     if not new:
-        log("No new files detected — check ~/Desktop/birbs/")
+        log("No new files detected — check ~/Desktop/birds/")
 
     set_step("posting")
     log("Export done! Fill in the species below and click Post.")
@@ -478,10 +478,10 @@ def _caption_for(chunk: list, cap_date: str) -> str:
     return "\n".join(lines) + tail
 
 
-def _birbs_snapshot():
-    if not BIRBS_DIR.exists():
+def _birds_snapshot():
+    if not BIRDS_DIR.exists():
         return []
-    return [f.name for f in BIRBS_DIR.iterdir()
+    return [f.name for f in BIRDS_DIR.iterdir()
             if f.suffix.lower() in {".jpg", ".jpeg"}]
 
 
@@ -502,20 +502,20 @@ def index():
     return render_template("index.html")
 
 
-@app.get("/birb-img/<path:filename>")
-def serve_birb_image(filename):
+@app.get("/bird-img/<path:filename>")
+def serve_bird_image(filename):
     from flask import send_from_directory
-    return send_from_directory(str(BIRBS_DIR), filename)
+    return send_from_directory(str(BIRDS_DIR), filename)
 
 
-@app.get("/birb-thumb/<path:filename>")
-def serve_birb_thumb(filename):
+@app.get("/bird-thumb/<path:filename>")
+def serve_bird_thumb(filename):
     from flask import send_file
     from PIL import Image as PILImage
-    src = BIRBS_DIR / filename
+    src = BIRDS_DIR / filename
     if not src.exists():
         return "", 404
-    thumb_dir = BIRBS_DIR / ".thumbs"
+    thumb_dir = BIRDS_DIR / ".thumbs"
     thumb_dir.mkdir(exist_ok=True)
     thumb = thumb_dir / filename
     if not thumb.exists() or src.stat().st_mtime > thumb.stat().st_mtime:
@@ -559,7 +559,7 @@ def get_state():
             "batches":   sorted(state["batches"].values(), key=lambda b: b["date"], reverse=True),
             "active":    active_batch,
             "proc_step": state["proc_step"],
-            "new_birbs":  list(state["new_birbs"]),
+            "new_birds":  list(state["new_birds"]),
             "log":        list(state["log"])[-80:],
             "host_ok":    state["host_ok"],
             "last_post":  state["last_post"],
@@ -616,7 +616,7 @@ def resize_only():
 
     def _resize():
         import subprocess
-        cmd = ["/usr/local/bin/python", "/app/birb_post.py",
+        cmd = ["/usr/local/bin/python", "/app/bird_post.py",
                "--resize-only", "--file"] + files
         log(f"Resize-only: {len(files)} image(s)")
         r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
@@ -711,7 +711,7 @@ def post_to_buffer():
         for i, chunk in enumerate(chunks):
             caption_text = _caption_for(chunk, cap_date)
             chunk_files  = [p["file"] for p in chunk]
-            cmd = ["/usr/local/bin/python", "/app/birb_post.py",
+            cmd = ["/usr/local/bin/python", "/app/bird_post.py",
                    "--file"] + chunk_files + ["--text", caption_text]
             slot = slots[i] if i < len(slots) else ""
             if slot:
@@ -740,10 +740,10 @@ def post_to_buffer():
                 folder = state["active"]
                 if folder and folder in state["batches"]:
                     b = state["batches"][folder]
-                    cur = b.get("birbs", [])
-                    b["birbs"] = cur + [f for f in posted_files if f not in cur]   # accumulate posted
-                    state["new_birbs"] = [f for f in state["new_birbs"] if f not in posted_files]
-                    remaining_n = len(state["new_birbs"])
+                    cur = b.get("birds", [])
+                    b["birds"] = cur + [f for f in posted_files if f not in cur]   # accumulate posted
+                    state["new_birds"] = [f for f in state["new_birds"] if f not in posted_files]
+                    remaining_n = len(state["new_birds"])
                     if finalize or remaining_n == 0:   # done when told to, or nothing left to post
                         b["status"]     = "done"
                         b["posted_due"] = last_due
@@ -880,26 +880,26 @@ def skip_before(date: str):
     return jsonify({"ok": True, "count": count})
 
 
-@app.get("/api/birbs")
-def list_birbs():
-    if not BIRBS_DIR.exists():
+@app.get("/api/birds")
+def list_birds():
+    if not BIRDS_DIR.exists():
         return jsonify({"files": [], "assigned": {}})
     with lock:
-        assigned = {f: name for name, b in state["batches"].items() for f in b.get("birbs", [])}
+        assigned = {f: name for name, b in state["batches"].items() for f in b.get("birds", [])}
     files = sorted(
-        f.name for f in BIRBS_DIR.iterdir()
+        f.name for f in BIRDS_DIR.iterdir()
         if f.suffix.lower() in {".jpg", ".jpeg"} and not f.name.startswith(".")
     )
     return jsonify({"files": files, "assigned": assigned})
 
 
-@app.post("/api/assign-birbs/<folder_name>")
-def assign_birbs(folder_name: str):
-    birbs = (request.json or {}).get("birbs", [])
+@app.post("/api/assign-birds/<folder_name>")
+def assign_birds(folder_name: str):
+    birds = (request.json or {}).get("birds", [])
     with lock:
         if folder_name not in state["batches"]:
             return jsonify({"error": "unknown batch"}), 404
-        state["batches"][folder_name]["birbs"] = birbs
+        state["batches"][folder_name]["birds"] = birds
     save_state()
     return jsonify({"ok": True})
 
@@ -954,9 +954,9 @@ def force_advance():
             if step == "export_done":
                 import time as _time
                 cutoff = _time.time() - 7200  # files exported in the last 2 hours
-                recent = [f for f in _birbs_snapshot()
-                          if (BIRBS_DIR / f).stat().st_mtime >= cutoff]
-                state["new_birbs"] = recent if recent else _birbs_snapshot()
+                recent = [f for f in _birds_snapshot()
+                          if (BIRDS_DIR / f).stat().st_mtime >= cutoff]
+                state["new_birds"] = recent if recent else _birds_snapshot()
     if next_step:
         log(f"Force-advanced: {step} → {next_step}")
     save_state()
@@ -976,7 +976,7 @@ def reset_batch(folder_name: str):
             state["stop_requested"] = True
             state["active"]    = None
             state["proc_step"] = None
-            state["new_birbs"] = []
+            state["new_birds"] = []
     save_state()
     if was_active:
         # Clear the stop flag once the thread has had time to exit, so the next
@@ -1110,5 +1110,5 @@ if __name__ == "__main__":
         n for n, s in _saved.get("statuses", {}).items() if s == "done"}
     # Defer scanning to background so Flask starts immediately
     threading.Thread(target=scanner_loop, daemon=True).start()
-    log("Birb workflow server ready — scanning for batches…")
+    log("Bird workflow server ready — scanning for batches…")
     app.run(host="0.0.0.0", port=8765, debug=False)
