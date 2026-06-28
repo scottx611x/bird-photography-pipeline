@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 DOWNLOADS    = Path.home() / "Downloads"
-BIRDS_DIR    = Path.home() / "Desktop" / "birds"
+BIRDS_DIR    = Path.home() / "Desktop" / "birbs"   # Lightroom's "Export with Previous" target
 RAW_SUFFIXES = {".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".rw2", ".orf", ".pef"}
 
 

@@ -319,7 +319,7 @@ def _pick_export_post():
         return sorted(out)
 
     set_step("export_wait")
-    log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birds/ (or click Done).")
+    log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birbs/ (or click Done).")
     last_sig, stable = None, 0
     while True:
         time.sleep(1)
@@ -352,7 +352,7 @@ def _pick_export_post():
     for n in new:
         log(f"  ✓ {n}")
     if not new:
-        log("No new files detected — check ~/Desktop/birds/")
+        log("No new files detected — check ~/Desktop/birbs/")
 
     set_step("posting")
     log("Export done! Fill in the species below and click Post.")

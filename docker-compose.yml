@@ -6,7 +6,7 @@ services:
     volumes:
       - ~/Downloads:/downloads
       - ~/Desktop/bird_staging:/staging
-      - ~/Desktop/birds:/birds
+      - ~/Desktop/birbs:/birds
       - "~/Library/Application Support/Google/Chrome/Default/Cookies:/chrome-cookies/Cookies:ro"
 
     environment:

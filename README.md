@@ -41,7 +41,7 @@ Each batch moves through six stages, shown as a live progress bar you can rewind
 | **2 · Tone** | Select All → Auto Settings across the batch |
 | **3 · Denoise** | You set denoise + CA removal on one photo; it’s copied to all |
 | **4 · Pick** | You flag your keepers in Lightroom |
-| **5 · Export** | Export with Previous → `~/Desktop/birds/` (captured by modification time) |
+| **5 · Export** | Export with Previous → `~/Desktop/birbs/` (captured by modification time) |
 | **6 · Post** | Resize, caption, group into posts, and schedule to Buffer |
 
 ---

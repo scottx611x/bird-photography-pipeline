@@ -12,7 +12,7 @@ COPY templates/ templates/
 # Volumes mounted at runtime:
 #   /downloads  ← ~/Downloads
 #   /staging    ← ~/Desktop/bird_staging
-#   /birds      ← ~/Desktop/birds
+#   /birds      ← ~/Desktop/birbs
 
 ENV FLASK_APP=server.py
 ENV PYTHONUNBUFFERED=1
