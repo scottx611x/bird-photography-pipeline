@@ -383,6 +383,13 @@
     .syno-foot { text-align: center; font-size: 12px; color: var(--muted); padding: 12px; cursor: pointer; }
     .syno-foot:hover { color: var(--blue); }
     .syno-foot.err { color: var(--red); cursor: default; }
+    .syno-foot.busy { cursor: default; }
+    .syno-foot.busy:hover { color: var(--muted); }
+    /* Ghost (skeleton) album cards shown while the Synology list loads */
+    .batch-card.ghost { border-style: dashed; pointer-events: none; }
+    .skel { background: linear-gradient(90deg, rgba(255,255,255,.05) 25%, rgba(255,255,255,.13) 37%, rgba(255,255,255,.05) 63%);
+            background-size: 400% 100%; animation: skel 1.4s ease infinite; border-radius: 5px; }
+    @keyframes skel { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 
     /* ── Responsive ── */
     @media (max-width: 680px) {
@@ -484,6 +491,7 @@ let synoError       = '';    // last Synology load error
 let synoSkipped     = new Set(); // album names the user has skipped (synced from server)
 let synoDone        = new Set(); // album names already posted (hidden even if local folder is gone)
 let synoForceRefresh = false;    // bypass the server album cache on next load (Scan)
+let synoLoading      = false;    // a Synology album-list fetch is in flight (drives skeletons)
 const PER_POST      = 10;        // Instagram's max images per carousel post
 const fid = f => 'f_' + f.replace(/[^a-zA-Z0-9]/g, '_'); // safe element id from filename
 const flatFiles = () => postLanes.flat();
@@ -731,8 +739,15 @@ function renderBatches(data) {
         .map(a => ({ date: _normDate(a.name), html: _remoteCardHtml(a) }))
     : [];
 
+  // While the album list is loading for the first time, stand in ghost cards
+  // (on a re-scan we keep the real cards and just show a "scanning" footer).
+  const showGhosts = synoLoading && !synoAlbums.length
+    && (activeFilter === "all" || activeFilter === "open");
+
   if (!all.length && !remoteItems.length && !fetchingItems.length) {
-    list.innerHTML = `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads, or click Scan.</div>`
+    list.innerHTML = (showGhosts
+      ? _synoGhostHtml()
+      : `<div class="empty">📁 No batches found.<br>Drop a <code>YYYY-MM-DD-best</code> folder into ~/Downloads, or click Scan.</div>`)
       + _synoFooterHtml(localFolders);
     return;
   }
@@ -787,7 +802,9 @@ function renderBatches(data) {
 
   const merged = [...localItems, ...remoteItems, ...fetchingItems]
     .sort((x, y) => (y.date || '').localeCompare(x.date || ''));
-  list.innerHTML = merged.map(i => i.html).join("") + _synoFooterHtml(localFolders);
+  list.innerHTML = merged.map(i => i.html).join("")
+    + (showGhosts ? _synoGhostHtml() : "")
+    + _synoFooterHtml(localFolders);
 }
 
 // ── Log (SSE) ─────────────────────────────────────────────────────────────────
@@ -931,6 +948,8 @@ async function doScan()      { await fetch("/api/scan", {method:"POST"}); refres
 
 // ── Synology import (remote album cards in the batch list) ──────────────────────
 async function loadSynoAlbums() {
+  synoLoading = true;
+  if (lastState) renderBatches(lastState);   // surface skeletons / scanning state right away
   try {
     const r = await fetch('/api/syno/albums' + (synoForceRefresh ? '?refresh=1' : ''));
     const d = await r.json();
@@ -939,6 +958,7 @@ async function loadSynoAlbums() {
   } catch (e) {
     synoError = String(e);
   } finally {
+    synoLoading = false;
     if (lastState) renderBatches(lastState);
   }
 }
@@ -971,6 +991,20 @@ function _remoteAlbums(localFolders) {
     /^\d{4}-\d{1,2}-\d{1,2}/.test(a.name) &&
     !localFolders.has(a.name) &&
     (synoShowAll || !_albumHidden(a.name)));
+}
+
+// Skeleton placeholders shown while the Synology album list is loading (first load)
+function _synoGhostHtml() {
+  const card = `<div class="batch-card remote ghost">
+    <div class="batch-top">
+      <div style="flex:1">
+        <div class="skel" style="height:15px;width:52%"></div>
+        <div class="skel" style="height:11px;width:32%;margin-top:8px"></div>
+      </div>
+      <div class="skel" style="height:21px;width:78px;border-radius:20px"></div>
+    </div>
+  </div>`;
+  return card + card;
 }
 
 function _fetchingCardHtml(name, p) {
@@ -1036,6 +1070,7 @@ function _remoteCardHtml(a) {
 // Quiet footer: surface a Synology error, or a toggle for older/skipped albums
 function _synoFooterHtml(localFolders) {
   if (synoError) return `<div class="syno-foot err">☁ Synology: ${synoError}</div>`;
+  if (synoLoading && synoAlbums.length) return `<div class="syno-foot busy">☁ Scanning Synology…</div>`;
   if (!synoAlbums.length) return '';
   if (synoShowAll) return `<div class="syno-foot" onclick="toggleSynoOld(false)">☁ hide older / posted / skipped albums</div>`;
   const hidden = synoAlbums.filter(a =>
