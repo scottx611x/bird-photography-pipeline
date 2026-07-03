@@ -33,7 +33,9 @@ cmd_up() {
   # Extract Buffer session cookies with the pyenv python (has browser_cookie3)
   export BUFFER_COOKIES="$("$PYTHON" "$DIR/extract_buffer_cookies.py" 2>/dev/null)"
   [ -z "$BUFFER_COOKIES" ] && echo "  ⚠ couldn't read Buffer cookies from Chrome — uploads may fail"
-  BUFFER_TOKEN="${BUFFER_TOKEN:-}" docker compose up -d --build
+  # BUFFER_TOKEN and SYNO_* come from .env via env_file in docker-compose.yml —
+  # do NOT pass BUFFER_TOKEN here; a shell override would blank it in the container.
+  docker compose up -d --build
   _start_host
   echo ""
   echo "Open → http://localhost:8765"

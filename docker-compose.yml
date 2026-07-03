@@ -9,8 +9,11 @@ services:
       - ~/Desktop/birbs:/birds
       - "~/Library/Application Support/Google/Chrome/Default/Cookies:/chrome-cookies/Cookies:ro"
 
+    # BUFFER_TOKEN comes from .env via env_file (resolved relative to this
+    # file, so it works even when compose is invoked from another directory).
+    env_file:
+      - .env
     environment:
-      - BUFFER_TOKEN=${BUFFER_TOKEN}
       - BUFFER_COOKIES=${BUFFER_COOKIES}
       - MAC_HOME=/Users/scott
     restart: unless-stopped
