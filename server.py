@@ -728,21 +728,28 @@ def post_to_buffer():
                             for l in (r.stdout + r.stderr).splitlines()
                             if "Scheduled for:" in l), "")
                 last_due = due or last_due
+                # Record this chunk immediately — if a later chunk fails, its
+                # photos must not linger as "staged" (re-posting them from the
+                # UI would queue duplicates in Buffer).
+                with lock:
+                    folder = state["active"]
+                    if folder and folder in state["batches"]:
+                        b = state["batches"][folder]
+                        cur = b.get("birds", [])
+                        b["birds"] = cur + [f for f in chunk_files if f not in cur]   # accumulate posted
+                        state["new_birds"] = [f for f in state["new_birds"] if f not in chunk_files]
+                save_state()
             else:
                 all_ok = False
                 log(f"Post {i+1}/{n} failed — check log.")
                 break
 
         if all_ok:
-            posted_files = [p["file"] for g in chunks for p in g]
             finalized_folder, remaining_n = None, 0
             with lock:
                 folder = state["active"]
                 if folder and folder in state["batches"]:
                     b = state["batches"][folder]
-                    cur = b.get("birds", [])
-                    b["birds"] = cur + [f for f in posted_files if f not in cur]   # accumulate posted
-                    state["new_birds"] = [f for f in state["new_birds"] if f not in posted_files]
                     remaining_n = len(state["new_birds"])
                     if finalize or remaining_n == 0:   # done when told to, or nothing left to post
                         b["status"]     = "done"
