@@ -39,6 +39,7 @@ state = {
     "active":        None,
     "proc_step":     None,
     "new_birds":     [],
+    "arrangement":   None,   # posting screen layout: {"lanes": [[file,…],…], "excluded": [file,…], "meta": {file: {…}}}
     "log":           deque(maxlen=300),
     "host_ok":       None,
     "last_post":     None,
@@ -69,6 +70,7 @@ def save_state():
             "active":    state["active"],
             "proc_step": state["proc_step"],
             "new_birds": list(state["new_birds"]),
+            "arrangement": state.get("arrangement"),
             "syno_skipped": sorted(state["syno_skipped"]),
             "done_albums": sorted(state["done_albums"]),
         }
@@ -162,6 +164,7 @@ def scan_batches():
                 state["active"]    = saved["active"]
                 state["proc_step"] = saved.get("proc_step")
                 state["new_birds"] = saved.get("new_birds", [])
+                state["arrangement"] = saved.get("arrangement")
                 restored_msg = f"Restored active run: {state['active']} at step {state['proc_step']}"
         if restored_msg:
             log(restored_msg)
@@ -219,6 +222,7 @@ def process_batch(folder_name: str):
         batch["status"] = "processing"
         state["active"] = folder_name
         state["new_birds"] = []
+        state["arrangement"] = None
         state["stop_requested"] = False
         state["thread_active"] = True
     try:
@@ -560,6 +564,7 @@ def get_state():
             "active":    active_batch,
             "proc_step": state["proc_step"],
             "new_birds":  list(state["new_birds"]),
+            "arrangement": state.get("arrangement"),
             "log":        list(state["log"])[-80:],
             "host_ok":    state["host_ok"],
             "last_post":  state["last_post"],
@@ -756,6 +761,7 @@ def post_to_buffer():
                         b["posted_due"] = last_due
                         state["active"]    = None
                         state["proc_step"] = None
+                        state["arrangement"] = None
                         finalized_folder = folder
                 state["last_post"] = {"due": last_due, "url": "https://publish.buffer.com"}
             if finalized_folder:
@@ -887,6 +893,25 @@ def skip_before(date: str):
     return jsonify({"ok": True, "count": count})
 
 
+@app.post("/api/arrangement")
+def save_arrangement():
+    """Persist the posting screen's layout — lane grouping/order, excluded photos,
+    and per-photo species/location — so a page reload or server restart can't lose it."""
+    data = request.json or {}
+    lanes = data.get("lanes")
+    if not isinstance(lanes, list):
+        return jsonify({"error": "missing lanes"}), 400
+    arrangement = {
+        "lanes":    [[str(f) for f in lane] for lane in lanes if isinstance(lane, list)],
+        "excluded": [str(f) for f in (data.get("excluded") or [])],
+        "meta":     data.get("meta") if isinstance(data.get("meta"), dict) else {},
+    }
+    with lock:
+        state["arrangement"] = arrangement
+    save_state()
+    return jsonify({"ok": True})
+
+
 @app.get("/api/birds")
 def list_birds():
     if not BIRDS_DIR.exists():
@@ -964,6 +989,7 @@ def force_advance():
                 recent = [f for f in _birds_snapshot()
                           if (BIRDS_DIR / f).stat().st_mtime >= cutoff]
                 state["new_birds"] = recent if recent else _birds_snapshot()
+                state["arrangement"] = None
     if next_step:
         log(f"Force-advanced: {step} → {next_step}")
     save_state()
@@ -984,6 +1010,7 @@ def reset_batch(folder_name: str):
             state["active"]    = None
             state["proc_step"] = None
             state["new_birds"] = []
+            state["arrangement"] = None
     save_state()
     if was_active:
         # Clear the stop flag once the thread has had time to exit, so the next

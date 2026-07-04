@@ -594,12 +594,15 @@ function renderStepCard(step, batch, data) {
 // ── Post form ─────────────────────────────────────────────────────────────────
 function renderPostForm(batch, data) {
   const birds = data.new_birds || [];
-  // Re-init lanes only when the batch's photo set changes
+  // Re-init lanes only when the batch's photo set changes; prefer the
+  // server-persisted arrangement so reloads/restarts keep the user's layout
   const known = new Set([...flatFiles(), ...excludedFiles]);
   if (!known.size || !birds.every(f => known.has(f))) {
-    initLanes(birds);
-    excludedFiles.clear();
-    photoMeta = {};
+    if (!restoreArrangement(birds, data.arrangement)) {
+      initLanes(birds);
+      excludedFiles.clear();
+      photoMeta = {};
+    }
   }
 
   const defaultLoc = recentLocations[0] || localStorage.getItem('birdLocation') || 'Rea St.';
@@ -1145,6 +1148,39 @@ function initLanes(birds) {
   chunkToLanes([...birds].sort(byName));   // default order = natural filename order
 }
 
+// Rebuild lanes/excluded/meta from the server-persisted arrangement.
+// Photos that were posted meanwhile are dropped; photos the arrangement
+// doesn't know about (fresh exports) get appended as new posts of 10.
+function restoreArrangement(birds, arr) {
+  if (!arr || !Array.isArray(arr.lanes)) return false;
+  const bird  = new Set(birds);
+  const lanes = arr.lanes.map(l => (l || []).filter(f => bird.has(f))).filter(l => l.length);
+  const excluded = (arr.excluded || []).filter(f => bird.has(f));
+  if (!lanes.length && !excluded.length) return false;
+  const placed = new Set([...lanes.flat(), ...excluded]);
+  const leftovers = birds.filter(f => !placed.has(f)).sort(byName);
+  for (let i = 0; i < leftovers.length; i += PER_POST) lanes.push(leftovers.slice(i, i + PER_POST));
+  postLanes = lanes.length ? lanes : [[]];
+  excludedFiles = new Set(excluded);
+  photoMeta = {};
+  Object.entries(arr.meta || {}).forEach(([f, m]) => { if (bird.has(f) && m) photoMeta[f] = m; });
+  return true;
+}
+
+// Debounced push of the current arrangement to the server so it survives
+// page reloads and container restarts.
+let _arrTimer = null;
+function syncArrangement() {
+  clearTimeout(_arrTimer);
+  _arrTimer = setTimeout(() => {
+    if (lastState?.proc_step !== 'posting') return;
+    fetch('/api/arrangement', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ lanes: postLanes, excluded: [...excludedFiles], meta: photoMeta }),
+    }).catch(() => {});
+  }, 500);
+}
+
 function sortByName() {
   const lanesWithContent = postLanes.filter(l => l.length).length;
   if (lanesWithContent > 1 &&
@@ -1184,6 +1220,7 @@ function rerenderPhotoCards() {
     const newBtn = tmp.querySelector("#post-btn"), curBtn = document.getElementById("post-btn");
     if (newBtn && curBtn && !postingInFlight) { curBtn.textContent = newBtn.textContent; curBtn.disabled = newBtn.disabled; }
   }
+  syncArrangement();
 }
 
 // ── Drag & drop between lanes ───────────────────────────────────────────────────
@@ -1272,8 +1309,14 @@ function _spreadField(src, prefix) {
     if (!el.value.trim() || el.value.trim() === prev) el.value = val;
   });
   src.dataset.prev = val;
+  capturePhotoInputs();
+  syncArrangement();
 }
-function spreadOos(src) { if (src.checked) _spreadField(src, 'oos'); }
+function spreadOos(src) {
+  if (src.checked) { _spreadField(src, 'oos'); return; }
+  capturePhotoInputs();
+  syncArrangement();
+}
 let _locTimer = null;
 function spreadLocation(src) { clearTimeout(_locTimer); _locTimer = setTimeout(() => _spreadField(src, 'loc'), 300); }
 let _spreadTimer = null;
