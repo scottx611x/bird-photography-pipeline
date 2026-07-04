@@ -27,7 +27,7 @@ Env vars required:
 Requires Chrome with an active Buffer login (for S3 upload).
 """
 
-import os, sys, argparse
+import os, sys, argparse, time
 from pathlib import Path
 from io import BytesIO
 
@@ -123,36 +123,49 @@ def resize_for_instagram(src: Path, dst: Path):
 
 # ── Buffer / S3 ───────────────────────────────────────────────────────────────
 
+UPLOAD_ATTEMPTS = 3
+
+
 def upload_to_buffer_s3(path: Path, cookies: dict) -> str:
     """Upload to Buffer's own S3 bucket. Returns permanent public URL."""
-    r = httpx.post(
-        "https://graph.buffer.com/?_o=s3PreSignedURL",
-        headers={
-            "Content-Type": "application/json",
-            "x-buffer-client-id": "webapp-publishing",
-            "Origin": "https://publish.buffer.com",
-        },
-        cookies=cookies,
-        json={
-            "operationName": "s3PreSignedURL",
-            "variables": {"input": {
-                "organizationId": ORG_ID,
-                "fileName": path.name,
-                "mimeType": "image/jpeg",
-                "uploadType": "postAsset",
-            }},
-            "query": "query s3PreSignedURL($input: S3PreSignedURLInput!) { s3PreSignedURL(input: $input) { url key bucket } }",
-        },
-        timeout=15,
-    )
-    r.raise_for_status()
-    s3 = r.json()["data"]["s3PreSignedURL"]
+    last_exc = None
+    for attempt in range(1, UPLOAD_ATTEMPTS + 1):
+        try:
+            r = httpx.post(
+                "https://graph.buffer.com/?_o=s3PreSignedURL",
+                headers={
+                    "Content-Type": "application/json",
+                    "x-buffer-client-id": "webapp-publishing",
+                    "Origin": "https://publish.buffer.com",
+                },
+                cookies=cookies,
+                json={
+                    "operationName": "s3PreSignedURL",
+                    "variables": {"input": {
+                        "organizationId": ORG_ID,
+                        "fileName": path.name,
+                        "mimeType": "image/jpeg",
+                        "uploadType": "postAsset",
+                    }},
+                    "query": "query s3PreSignedURL($input: S3PreSignedURLInput!) { s3PreSignedURL(input: $input) { url key bucket } }",
+                },
+                timeout=15,
+            )
+            r.raise_for_status()
+            s3 = r.json()["data"]["s3PreSignedURL"]
 
-    with open(path, "rb") as f:
-        put_r = httpx.put(s3["url"], content=f.read(), headers={"Content-Type": "image/jpeg"}, timeout=60)
-    put_r.raise_for_status()
+            # A presigned URL is only valid briefly, so re-request it each attempt.
+            with open(path, "rb") as f:
+                put_r = httpx.put(s3["url"], content=f.read(), headers={"Content-Type": "image/jpeg"}, timeout=180)
+            put_r.raise_for_status()
 
-    return f"https://{s3['bucket']}.s3.amazonaws.com/{s3['key']}"
+            return f"https://{s3['bucket']}.s3.amazonaws.com/{s3['key']}"
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            if attempt < UPLOAD_ATTEMPTS:
+                print(f"  {path.name} upload attempt {attempt} failed ({type(exc).__name__}) — retrying …")
+                time.sleep(2 * attempt)
+    raise last_exc
 
 
 def queue_to_buffer(text: str, image_urls: list[str], scheduled_at: str = "", schedule_date: str = "") -> dict:
