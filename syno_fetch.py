@@ -5,7 +5,8 @@ bird-workflow batch folder.
 
 Runs Mac-side (where s-cubed-nas.local resolves over mDNS). Reads creds from env:
 
-  SYNO_HOST   e.g. http://s-cubed-nas.local:5000   (default)
+  SYNO_HOST           e.g. http://s-cubed-nas.local:5000   (default; tried first)
+  SYNO_HOST_FALLBACK  e.g. https://<name>.quickconnect.to  (used when the LAN host is unreachable)
   SYNO_USER   DSM service account
   SYNO_PASS   its password
   SYNO_OTP    optional one-time 2FA code (better: use a no-2FA service account)
@@ -40,11 +41,35 @@ def _load_env():
 
 _load_env()
 
-HOST  = os.environ.get("SYNO_HOST", "http://s-cubed-nas.local:5000").rstrip("/")
+# Hosts are tried in order: the LAN address first (fast at home), then the
+# QuickConnect relay so everything still works away from home.
+HOSTS = [h.rstrip("/") for h in (
+    os.environ.get("SYNO_HOST", "http://s-cubed-nas.local:5000"),
+    os.environ.get("SYNO_HOST_FALLBACK", ""),
+) if h.strip()]
 USER  = os.environ.get("SYNO_USER", "")
 PASS  = os.environ.get("SYNO_PASS", "")
 OTP   = os.environ.get("SYNO_OTP", "")
-ENTRY = f"{HOST}/webapi/entry.cgi"
+ENTRY = ""   # entry.cgi URL of the chosen host — resolved by _pick_host() at login
+
+
+def _pick_host() -> str:
+    """Probe each host in order and use the first that answers the DSM API."""
+    global ENTRY
+    for i, host in enumerate(HOSTS):
+        try:
+            r = httpx.get(f"{host}/webapi/query.cgi",
+                          params={"api": "SYNO.API.Info", "version": "1", "method": "query"},
+                          timeout=4 if i < len(HOSTS) - 1 else 15)
+            r.raise_for_status()
+            r.json()
+            if i:
+                print(f"  (LAN host unreachable — using {host})", file=sys.stderr)
+            ENTRY = f"{host}/webapi/entry.cgi"
+            return ENTRY
+        except Exception:
+            continue
+    raise SynoError("no Synology host reachable — tried: " + ", ".join(HOSTS))
 
 RAW_EXTS = {".arw", ".nef", ".cr2", ".cr3", ".raf", ".rw2", ".dng", ".orf", ".pef", ".srw"}
 
@@ -90,6 +115,8 @@ def login(client: httpx.Client) -> str:
     """
     if not (USER and PASS):
         raise SynoError("SYNO_USER / SYNO_PASS not set — add them to .env")
+    if not ENTRY:
+        _pick_host()
     did = _load_device_id()
     params = {
         "api": "SYNO.API.Auth", "version": "7", "method": "login",
@@ -119,7 +146,7 @@ def login(client: httpx.Client) -> str:
     new_did = dd.get("did") or dd.get("device_id")
     if new_did and new_did != did:
         _save_device_id(new_did)
-        print("  (saved device token — future logins won't need a 2FA code)")
+        print("  (saved device token — future logins won't need a 2FA code)", file=sys.stderr)
     return dd["sid"]
 
 

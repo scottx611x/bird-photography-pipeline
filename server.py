@@ -1034,7 +1034,10 @@ def syno_albums():
     if not r.get("ok"):
         return jsonify({"error": r.get("output", "lr_host error")}), 502
     try:
-        albums = json.loads(r.get("output", "[]"))
+        # lr_host merges stdout+stderr — the album JSON is the line starting with "["
+        out  = r.get("output", "")
+        line = next((l for l in out.splitlines() if l.lstrip().startswith("[")), "[]")
+        albums = json.loads(line)
     except Exception:
         return jsonify({"error": f"bad album response: {r.get('output','')[:200]}"}), 502
     _syno_cache["albums"] = albums
