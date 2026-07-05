@@ -555,6 +555,11 @@ def log_stream():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.get("/favicon.ico")
+def favicon():
+    return app.send_static_file("favicon.svg")
+
+
 @app.get("/api/state")
 def get_state():
     with lock:

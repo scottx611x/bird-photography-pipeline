@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY bird_post.py .
 COPY server.py .
 COPY templates/ templates/
+COPY static/ static/
 
 # Volumes mounted at runtime:
 #   /downloads  ← ~/Downloads
