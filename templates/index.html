@@ -268,6 +268,29 @@
     .img-modal-close:hover { background: rgba(255,255,255,.22); }
     .img-modal-name { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
       font-size: 11px; color: rgba(255,255,255,.4); font-family: 'Menlo', monospace; }
+    /* crop tool */
+    .img-modal-tools { position: absolute; top: 20px; left: 24px; display: flex; gap: 8px;
+      align-items: center; z-index: 2; cursor: default; }
+    .img-modal-tools button { background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22);
+      color: #fff; border-radius: 8px; padding: 6px 13px; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: background .15s; }
+    .img-modal-tools button:hover { background: rgba(255,255,255,.24); }
+    .img-modal-tools button.on { background: var(--blue); border-color: var(--blue); }
+    .img-modal-tools button.crop-apply { background: rgba(52,211,153,.25); border-color: rgba(52,211,153,.6); }
+    #modal-stage { position: relative; cursor: default; }
+    #modal-stage img { display: block; }
+    #crop-overlay { position: absolute; inset: 0; overflow: hidden; border-radius: 10px; touch-action: none; }
+    #crop-box { position: absolute; border: 2px dashed rgba(255,255,255,.95); border-radius: 2px;
+      box-shadow: 0 0 0 100vmax rgba(0,0,0,.6); cursor: move; touch-action: none; }
+    .crop-handle { position: absolute; width: 18px; height: 18px; background: #fff;
+      border-radius: 50%; box-shadow: 0 1px 5px rgba(0,0,0,.6); touch-action: none; }
+    .crop-handle[data-h="nw"] { left: -9px;  top: -9px;    cursor: nwse-resize; }
+    .crop-handle[data-h="ne"] { right: -9px; top: -9px;    cursor: nesw-resize; }
+    .crop-handle[data-h="sw"] { left: -9px;  bottom: -9px; cursor: nesw-resize; }
+    .crop-handle[data-h="se"] { right: -9px; bottom: -9px; cursor: nwse-resize; }
+    #crop-dims { position: absolute; left: 50%; transform: translateX(-50%); bottom: -28px;
+      font-size: 11px; color: #fff; background: rgba(0,0,0,.65); border-radius: 6px;
+      padding: 2px 8px; font-family: 'Menlo', monospace; white-space: nowrap; }
     .shared-fields { display: flex; flex-direction: column; gap: 7px; }
     .shared-fields .row { display: flex; gap: 8px; }
     .shared-fields .row > div { flex: 1; }
@@ -468,8 +491,22 @@
 <!-- Full-size image preview modal -->
 <div class="img-modal" id="img-modal" onclick="closeModal()">
   <button class="img-modal-close" onclick="closeModal()">✕</button>
+  <div class="img-modal-tools" id="modal-tools" onclick="event.stopPropagation()"></div>
   <button class="img-modal-nav" id="modal-prev" onclick="event.stopPropagation();modalStep(-1)">‹</button>
-  <img id="modal-img" src="" onclick="event.stopPropagation()" />
+  <div id="modal-stage" onclick="event.stopPropagation()">
+    <img id="modal-img" src="" />
+    <div id="crop-overlay" style="display:none">
+      <div id="crop-box"
+           onpointerdown="cropDown(event,'move')" onpointermove="cropMove(event)"
+           onpointerup="cropUp(event)" onpointercancel="cropUp(event)">
+        <div class="crop-handle" data-h="nw" onpointerdown="event.stopPropagation();cropDown(event,'nw')" onpointermove="cropMove(event)" onpointerup="cropUp(event)"></div>
+        <div class="crop-handle" data-h="ne" onpointerdown="event.stopPropagation();cropDown(event,'ne')" onpointermove="cropMove(event)" onpointerup="cropUp(event)"></div>
+        <div class="crop-handle" data-h="sw" onpointerdown="event.stopPropagation();cropDown(event,'sw')" onpointermove="cropMove(event)" onpointerup="cropUp(event)"></div>
+        <div class="crop-handle" data-h="se" onpointerdown="event.stopPropagation();cropDown(event,'se')" onpointermove="cropMove(event)" onpointerup="cropUp(event)"></div>
+        <div id="crop-dims"></div>
+      </div>
+    </div>
+  </div>
   <button class="img-modal-nav" id="modal-next" onclick="event.stopPropagation();modalStep(1)">›</button>
   <div class="img-modal-name" id="modal-name"></div>
 </div>
@@ -1429,22 +1466,153 @@ function thumbClick(event, idx) {
 function openModal(src, name, files, idx) {
   _modalFiles = files || [];
   _modalIdx   = idx  ?? 0;
+  exitCropMode();
   document.getElementById("modal-img").src = src;
   document.getElementById("modal-name").textContent = name;
   document.getElementById("img-modal").classList.add("open");
   const hasPrev = _modalFiles.length > 1;
   document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
   document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
+  updateModalTools();
 }
 function modalStep(dir) {
   if (!_modalFiles.length) return;
+  exitCropMode();
   _modalIdx = (_modalIdx + dir + _modalFiles.length) % _modalFiles.length;
   const f = _modalFiles[_modalIdx];
   document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(f)}`;
   document.getElementById("modal-name").textContent = f;
+  updateModalTools();
 }
 function closeModal() {
+  exitCropMode();
   document.getElementById("img-modal").classList.remove("open");
+}
+
+// ── Crop tool ─────────────────────────────────────────────────────────────────
+let cropMode  = false;
+let cropRatio = 0;        // target pixel aspect (w/h); 0 = free
+let cropBox   = {x:.05, y:.05, w:.9, h:.9};   // normalized to the image
+let _cropDrag = null;
+const _modalFile = () => document.getElementById("modal-name").textContent;
+
+function updateModalTools() {
+  const t = document.getElementById("modal-tools");
+  if (!cropMode) {
+    t.innerHTML = `<button onclick="startCrop()">✂ Crop</button>`;
+    return;
+  }
+  const chip = (r, lbl) => `<button class="${cropRatio === r ? 'on' : ''}" onclick="setCropRatio(${r})">${lbl}</button>`;
+  t.innerHTML = chip(0, 'Free') + chip(4/5, '4:5') + chip(1, '1:1') +
+    `<button class="crop-apply" onclick="applyCrop()">✓ Apply</button>` +
+    `<button onclick="exitCropMode()">Cancel</button>` +
+    `<button onclick="resetCrop()" title="Restore the uncropped export">↺ Original</button>`;
+}
+
+function startCrop() {
+  cropMode = true; cropRatio = 0;
+  cropBox = {x:.05, y:.05, w:.9, h:.9};
+  document.getElementById("crop-overlay").style.display = "";
+  positionCropBox(); updateModalTools();
+}
+function exitCropMode() {
+  cropMode = false; _cropDrag = null;
+  document.getElementById("crop-overlay").style.display = "none";
+  updateModalTools();
+}
+
+function positionCropBox() {
+  const b = document.getElementById("crop-box");
+  b.style.left   = (cropBox.x * 100) + "%";
+  b.style.top    = (cropBox.y * 100) + "%";
+  b.style.width  = (cropBox.w * 100) + "%";
+  b.style.height = (cropBox.h * 100) + "%";
+  const img = document.getElementById("modal-img");
+  const pw = Math.round(cropBox.w * img.naturalWidth), ph = Math.round(cropBox.h * img.naturalHeight);
+  document.getElementById("crop-dims").textContent = `${pw} × ${ph}`;
+}
+
+// Given a box, force its *pixel* aspect to cropRatio, anchored at (ax, ay)
+function _lockRatio(b, ax, ay) {
+  const img = document.getElementById("modal-img");
+  const W = img.naturalWidth, H = img.naturalHeight;
+  let h = (b.w * W) / (cropRatio * H);
+  if (h > 1) { h = 1; b.w = (cropRatio * H) / W; }
+  b.h = h;
+  b.x = Math.min(Math.max(ax === 1 ? (b.x + b.w > 1 ? 1 - b.w : b.x) : b.x, 0), 1 - b.w);
+  b.y = ay === 1 ? Math.min(Math.max(b.y + b.h > 1 ? 1 - b.h : b.y, 0), 1 - b.h)
+                 : Math.min(Math.max(b.y, 0), 1 - b.h);
+  return b;
+}
+
+function setCropRatio(r) {
+  cropRatio = r;
+  if (r) cropBox = _lockRatio({...cropBox}, 0, 0);
+  positionCropBox(); updateModalTools();
+}
+
+function cropDown(e, handle) {
+  e.preventDefault();
+  _cropDrag = {h: handle, sx: e.clientX, sy: e.clientY, box: {...cropBox}};
+  e.target.setPointerCapture(e.pointerId);
+}
+function cropUp(e) { _cropDrag = null; }
+function cropMove(e) {
+  if (!_cropDrag) return;
+  e.preventDefault();
+  const stage = document.getElementById("modal-stage").getBoundingClientRect();
+  const dx = (e.clientX - _cropDrag.sx) / stage.width;
+  const dy = (e.clientY - _cropDrag.sy) / stage.height;
+  const MIN = 0.04;
+  const b = {..._cropDrag.box};
+  if (_cropDrag.h === "move") {
+    b.x = Math.min(Math.max(b.x + dx, 0), 1 - b.w);
+    b.y = Math.min(Math.max(b.y + dy, 0), 1 - b.h);
+  } else {
+    let L = b.x, T = b.y, R = b.x + b.w, B = b.y + b.h;
+    if (_cropDrag.h.includes("w")) L = Math.min(Math.max(L + dx, 0), R - MIN);
+    if (_cropDrag.h.includes("e")) R = Math.min(Math.max(R + dx, L + MIN), 1);
+    if (_cropDrag.h.includes("n")) T = Math.min(Math.max(T + dy, 0), B - MIN);
+    if (_cropDrag.h.includes("s")) B = Math.min(Math.max(B + dy, T + MIN), 1);
+    b.x = L; b.y = T; b.w = R - L; b.h = B - T;
+    if (cropRatio) _lockRatio(b, _cropDrag.h.includes("w") ? 1 : 0, _cropDrag.h.includes("n") ? 1 : 0);
+  }
+  cropBox = b;
+  positionCropBox();
+}
+
+// Refresh every on-page <img> of this file so the new crop is visible at once
+function bustImages(f) {
+  const v = Date.now(), enc = encodeURIComponent(f);
+  document.querySelectorAll("img").forEach(i => {
+    if (i.src.includes(`/${enc}`)) i.src = i.src.split("?")[0] + "?v=" + v;
+  });
+}
+
+async function applyCrop() {
+  const f = _modalFile();
+  if (!f) return;
+  const r = await fetch("/api/crop", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({file: f, box: cropBox}),
+  });
+  const d = await r.json();
+  if (!d.ok) { alert(d.error || "Crop failed"); return; }
+  exitCropMode();
+  bustImages(f);
+}
+
+async function resetCrop() {
+  const f = _modalFile();
+  if (!f) return;
+  const r = await fetch("/api/crop", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({file: f, reset: true}),
+  });
+  const d = await r.json();
+  if (!d.ok) { alert(d.error || "No saved original"); return; }
+  exitCropMode();
+  bustImages(f);
 }
 document.addEventListener("keydown", e => {
   if (!document.getElementById("img-modal").classList.contains("open")) return;

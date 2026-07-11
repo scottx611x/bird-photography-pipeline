@@ -531,6 +531,62 @@ def serve_bird_thumb(filename):
 
 
 
+@app.post("/api/crop")
+def crop_image():
+    """Crop a photo in /birds using a normalized {x,y,w,h} box (0–1 fractions).
+    The pristine file is backed up to /birds/.originals on first crop, so
+    {"reset": true} can always restore it. Crops write back to the same
+    filename — posting and thumbnails pick them up automatically."""
+    from PIL import Image as PILImage, ImageOps as PILImageOps
+    import shutil
+    data = request.json or {}
+    name = (data.get("file") or "").strip()
+    src  = BIRDS_DIR / name
+    if not name or src.parent != BIRDS_DIR or not src.is_file():
+        return jsonify({"error": "unknown file"}), 404
+    orig_dir = BIRDS_DIR / ".originals"
+
+    if data.get("reset"):
+        backup = orig_dir / name
+        if not backup.exists():
+            return jsonify({"error": "no saved original for this photo"}), 404
+        backup.replace(src)
+        src.touch()   # bump mtime so the cached thumbnail regenerates
+        with PILImage.open(src) as img:
+            w, h = img.size
+        log(f"↺ Restored original {name} ({w}×{h})")
+        return jsonify({"ok": True, "width": w, "height": h, "cropped": False})
+
+    box = data.get("box") or {}
+    try:
+        x, y, w, h = (float(box[k]) for k in ("x", "y", "w", "h"))
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "bad crop box"}), 400
+    if not (0 <= x < 1 and 0 <= y < 1 and 0 < w <= 1 and 0 < h <= 1):
+        return jsonify({"error": "bad crop box"}), 400
+
+    img = PILImageOps.exif_transpose(PILImage.open(src))
+    W, H = img.size
+    left, top = max(0, round(x * W)), max(0, round(y * H))
+    right, bottom = min(W, round((x + w) * W)), min(H, round((y + h) * H))
+    if right - left < 100 or bottom - top < 100:
+        return jsonify({"error": "crop too small (min 100px per side)"}), 400
+
+    orig_dir.mkdir(exist_ok=True)
+    backup = orig_dir / name
+    if not backup.exists():
+        shutil.copy2(src, backup)
+
+    out = img.crop((left, top, right, bottom))
+    kwargs = {"quality": 97, "subsampling": 0}
+    icc = img.info.get("icc_profile")
+    if icc:
+        kwargs["icc_profile"] = icc
+    out.save(src, "JPEG", **kwargs)
+    log(f"✂ Cropped {name} → {out.width}×{out.height}")
+    return jsonify({"ok": True, "width": out.width, "height": out.height, "cropped": True})
+
+
 @app.get("/api/log-stream")
 def log_stream():
     def generate():
