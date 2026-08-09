@@ -69,6 +69,7 @@ def save_state():
             "posted_due":{name: b.get("posted_due","") for name, b in state["batches"].items()},
             "active":    state["active"],
             "proc_step": state["proc_step"],
+            "no_post":   state.get("no_post", False),
             "new_birds": list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
             "syno_skipped": sorted(state["syno_skipped"]),
@@ -163,6 +164,7 @@ def scan_batches():
             if not state["active"] and saved.get("active") and saved["active"] in state["batches"]:
                 state["active"]    = saved["active"]
                 state["proc_step"] = saved.get("proc_step")
+                state["no_post"]   = saved.get("no_post", False)
                 state["new_birds"] = saved.get("new_birds", [])
                 state["arrangement"] = saved.get("arrangement")
                 restored_msg = f"Restored active run: {state['active']} at step {state['proc_step']}"
@@ -213,20 +215,25 @@ def set_step(step: str):
     save_state()
 
 
-def process_batch(folder_name: str):
-    """Full automation sequence for one batch. Runs in a background thread."""
+def process_batch(folder_name: str, no_post: bool = False, start_step: str = "import"):
+    """Full automation sequence for one batch. Runs in a background thread.
+    no_post: run Lightroom + export only — mark the batch done instead of
+    entering the posting step (for albums that aren't going to Buffer/IG).
+    start_step: skip already-done Lightroom stages (e.g. "pick" to jump
+    straight to export after a reset)."""
     with lock:
         batch = state["batches"].get(folder_name)
         if not batch:
             return
         batch["status"] = "processing"
         state["active"] = folder_name
+        state["no_post"] = no_post
         state["new_birds"] = []
         state["arrangement"] = None
         state["stop_requested"] = False
         state["thread_active"] = True
     try:
-        _run_batch(folder_name)
+        _run_batch(folder_name, start_step=start_step)
     finally:
         with lock:
             state["thread_active"] = False
@@ -234,6 +241,12 @@ def process_batch(folder_name: str):
 
 def _run_batch(folder_name: str, start_step: str = "import"):
     mac_path = str(Path(MAC_HOME) / "Downloads" / folder_name)
+
+    if start_step == "collect":
+        # User drove Lightroom themselves — don't send it any commands, just
+        # adopt whatever they exported and continue to posting.
+        _pick_export_post(trigger=False)
+        return
 
     if start_step == "import":
         # ── Step 1: Import ────────────────────────────────────────────────────
@@ -268,7 +281,8 @@ def _run_batch(folder_name: str, start_step: str = "import"):
         log("Auto-tone done." if result.get("ok") else "Auto-tone may have failed — check Lightroom.")
 
     if start_step in ("import", "tone", "denoise"):
-        # ── Step 3: Denoise ───────────────────────────────────────────────────
+        # ── Step 3: Denoise (manual — auto-clicking LR's checkbox proved too
+        # flaky; the checkbox often isn't in the accessibility tree) ──────────
         set_step("denoise")
         log("Check Denoise on one photo in Lightroom, then click Continue.")
         while True:
@@ -279,6 +293,7 @@ def _run_batch(folder_name: str, start_step: str = "import"):
             if step_changed or stopped:
                 break
         if state.get("stop_requested"): return
+
         set_step("copy_pasting")
         log("Spreading Denoise settings to all photos…")
         result = call_host("copy-and-paste")
@@ -286,26 +301,51 @@ def _run_batch(folder_name: str, start_step: str = "import"):
             log(f"  {line}")
         log("Denoise applied to all photos." if result.get("ok") else "Paste may have failed — check Lightroom.")
 
-    # ── Step 4+: Pick → Export → Post (always runs) ───────────────────────────
+        # Wait for Lightroom's background AI-denoise queue to drain — exporting
+        # too early would write un-denoised JPEGs. LR pegs the CPU while
+        # enhancing; treat sustained-quiet as done. Skippable via Continue.
+        set_step("denoising")
+        log("Lightroom is denoising every photo — export starts automatically when it finishes.")
+        quiet, waited = 0, 0
+        while waited < 3600:
+            time.sleep(10); waited += 10
+            with lock:
+                step_changed = state["proc_step"] != "denoising"
+                stopped      = state["stop_requested"]
+            if step_changed or stopped:
+                break
+            if waited < 30:      # let the enhancement queue spin up first
+                continue
+            try:
+                cpu = float(call_host("lr-busy", timeout=15).get("output") or 0)
+            except (TypeError, ValueError):
+                continue
+            quiet = quiet + 1 if cpu < 25 else 0
+            if quiet >= 6:       # ~1 min of idle Lightroom
+                log("Lightroom looks idle — denoise finished.")
+                break
+        else:
+            log("Denoise wait hit the 60-minute cap — continuing to export.")
+        if state.get("stop_requested"): return
+
+    # ── Step 4+: Export → Post (always runs) ─────────────────────────────────
     _pick_export_post()
 
 
-def _pick_export_post():
-    """Picking → export → posting tail. Extracted so re-picking can reuse it."""
-    set_step("picking")
-    log("Select your best shot(s) in Lightroom — hold ⌘ for multiple. Click Done when ready.")
-    while True:
-        time.sleep(0.5)
-        with lock:
-            exporting = state["proc_step"] == "exporting"
-            stopped   = state["stop_requested"]
-        if exporting or stopped:
-            break
-    if state.get("stop_requested"): return
-
-    export_start = time.time() - 2  # small slack for filesystem/clock skew
-    log("Triggering export…")
-    result = call_host("export")
+def _pick_export_post(trigger: bool = True):
+    """Export → posting tail. Exports the whole batch — culling happens on the
+    posting screen (✕ to drop a photo), not in Lightroom.
+    trigger=False: don't command Lightroom at all — collect files the user
+    exported themselves (anything landing in /birds from the last 2 hours)."""
+    set_step("exporting")
+    if not trigger:
+        export_start = time.time() - 7200
+        log("Collecting your export — no Lightroom commands sent.")
+        result = {"ok": True, "output": ""}
+    else:
+        export_start = time.time() - 2  # small slack for filesystem/clock skew
+        log("Exporting all photos…")
+        result = call_host("export", body={"all": True})
     for line in result.get("output", "").splitlines():
         log(f"  {line}")
 
@@ -332,7 +372,10 @@ def _pick_export_post():
             stopped = state["stop_requested"]
         if done or stopped:
             break
-        # Auto-advance once exported files appear and stop growing for 8s
+        # Auto-advance once exported files appear and stop growing for 30s.
+        # Lightroom renders each photo to a temp file and renames it into
+        # place, so a single slow render (big denoised NEF) is >8s of
+        # apparent silence — 8s here once cut off an export after 4 of 58.
         new_files = _exported()
         if not new_files:
             continue
@@ -342,7 +385,7 @@ def _pick_export_post():
             continue
         if sig == last_sig:
             stable += 1
-            if stable >= 8:
+            if stable >= 30:
                 log("Export finished — continuing automatically.")
                 break
         else:
@@ -357,6 +400,23 @@ def _pick_export_post():
         log(f"  ✓ {n}")
     if not new:
         log("No new files detected — check ~/Desktop/birbs/")
+
+    with lock:
+        no_post = state.get("no_post", False)
+    if no_post:
+        with lock:
+            batch = state["batches"].get(folder_name)
+            if batch:
+                batch["status"] = "done"
+                batch["birds"]  = new
+            state["active"]      = None
+            state["proc_step"]   = None
+            state["no_post"]     = False
+            state["new_birds"]   = []
+            state["arrangement"] = None
+        save_state()
+        log(f"✓ Done — exported {len(new)} photo(s) to ~/Desktop/birbs. No posting (Lightroom-only run).")
+        return
 
     set_step("posting")
     log("Export done! Fill in the species below and click Post.")
@@ -482,6 +542,48 @@ def _caption_for(chunk: list, cap_date: str) -> str:
     return "\n".join(lines) + tail
 
 
+# ── Per-photo post records ────────────────────────────────────────────────────
+# The caption dedupes consecutive species for readability, which throws away
+# the photo→species mapping. Keep the full mapping here: one record per posted
+# chunk, appended locally and mirrored (best-effort, whole file each time) to
+# S3, where the website's Instagram sync matches records back to IG posts by
+# caption + image count and labels every carousel frame with certainty.
+RECORDS_FILE = DOWNLOADS / ".bird_post_records.json"
+RECORDS_BUCKET = os.environ.get("POST_RECORDS_BUCKET", "birds-scott-ouellette")
+RECORDS_KEY    = os.environ.get("POST_RECORDS_KEY", "birds/post_records.json")
+
+
+def record_post(chunk: list, caption_text: str, scheduled_at: str):
+    """Persist one posted chunk's per-photo truth locally, then mirror to S3.
+    Never raises — a failed upload just retries wholesale on the next post."""
+    try:
+        records = json.loads(RECORDS_FILE.read_text()) if RECORDS_FILE.exists() else []
+    except Exception:
+        records = []
+    from datetime import timezone
+    records.append({
+        "caption":      caption_text,
+        "files":        [p.get("file", "") for p in chunk],
+        "species":      [p.get("species", "") for p in chunk],
+        "locations":    [p.get("location", "") for p in chunk],
+        "scheduled_at": scheduled_at,
+        "recorded_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+    try:
+        RECORDS_FILE.write_text(json.dumps(records, indent=2))
+    except Exception as e:
+        log(f"  (couldn't save post record locally: {e})")
+    try:
+        import boto3
+        boto3.client("s3").put_object(
+            Bucket=RECORDS_BUCKET, Key=RECORDS_KEY,
+            Body=json.dumps(records, indent=2).encode(),
+            ContentType="application/json", CacheControl="no-store")
+        log(f"  📤 Post record shipped ({len(records)} total).")
+    except Exception as e:
+        log(f"  (post record kept locally; S3 push failed: {e})")
+
+
 def _birds_snapshot():
     if not BIRDS_DIR.exists():
         return []
@@ -529,6 +631,15 @@ def serve_bird_thumb(filename):
     return send_file(str(thumb), mimetype="image/jpeg")
 
 
+
+
+@app.get("/api/crop-status")
+def crop_status():
+    """Whether a photo has a saved pristine original (i.e. has been cropped)."""
+    name = (request.args.get("file") or "").strip()
+    if not name or (BIRDS_DIR / name).parent != BIRDS_DIR:
+        return jsonify({"error": "unknown file"}), 404
+    return jsonify({"hasOriginal": (BIRDS_DIR / ".originals" / name).is_file()})
 
 
 @app.post("/api/crop")
@@ -624,6 +735,7 @@ def get_state():
             "batches":   sorted(state["batches"].values(), key=lambda b: b["date"], reverse=True),
             "active":    active_batch,
             "proc_step": state["proc_step"],
+            "no_post":   state.get("no_post", False),
             "new_birds":  list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
             "log":        list(state["log"])[-80:],
@@ -646,7 +758,13 @@ def start_process(folder_name: str):
         if folder_name not in state["batches"]:
             return jsonify({"error": "Unknown batch"}), 404
 
-    threading.Thread(target=process_batch, args=(folder_name,), daemon=True).start()
+    body = request.get_json(silent=True) or {}
+    no_post = bool(body.get("no_post"))
+    start_step = body.get("start_step") or "import"
+    if start_step not in {"import", "tone", "denoise", "pick", "collect"}:
+        return jsonify({"error": "bad start_step"}), 400
+    threading.Thread(target=process_batch, args=(folder_name, no_post, start_step),
+                     daemon=True).start()
     return jsonify({"ok": True})
 
 
@@ -658,6 +776,9 @@ def continue_step():
             state["proc_step"] = "continue_toning"
         elif state["proc_step"] == "denoise":
             state["proc_step"] = "copy_pasting"
+        elif state["proc_step"] == "denoising":
+            # skip the denoise-queue wait and go straight to export
+            state["proc_step"] = "exporting"
     return jsonify({"ok": True})
 
 
@@ -749,6 +870,30 @@ def post_to_buffer():
     if not cap_date or not (groups or photos or files):
         return jsonify({"error": "missing fields"}), 400
 
+    # Drop anything already queued to Buffer for this batch — a stale tab can
+    # re-submit lanes for chunks that already succeeded, which would duplicate
+    # posts. batch["birds"] accumulates each chunk the moment it's queued.
+    with lock:
+        folder = state["active"]
+        posted = set((state["batches"].get(folder) or {}).get("birds", [])) if folder else set()
+    if posted:
+        dropped = 0
+        if groups:
+            kept = [[p for p in g if p["file"] not in posted] for g in groups]
+            dropped = sum(len(g) for g in groups) - sum(len(g) for g in kept)
+            groups = [g for g in kept if g]
+        elif photos:
+            kept   = [p for p in photos if p["file"] not in posted]
+            dropped, photos = len(photos) - len(kept), kept
+            files  = [p["file"] for p in photos]
+        else:
+            kept   = [f for f in files if f not in posted]
+            dropped, files = len(files) - len(kept), kept
+        if dropped:
+            log(f"Skipping {dropped} photo(s) already queued to Buffer.")
+        if not (groups or photos or files):
+            return jsonify({"error": "All selected photos were already posted"}), 400
+
     def _post():
         import subprocess
         with lock:
@@ -790,6 +935,7 @@ def post_to_buffer():
                 log(line)
             if r.returncode == 0:
                 log("🐦 Posted to Buffer!" if n == 1 else f"🐦 Post {i+1}/{n} queued!")
+                record_post(chunk, caption_text, slot)
                 due = next((l.split("Scheduled for:")[-1].strip()
                             for l in (r.stdout + r.stderr).splitlines()
                             if "Scheduled for:" in l), "")
@@ -931,6 +1077,48 @@ def manual_scan():
     return jsonify({"ok": True, "count": len(state["batches"])})
 
 
+@app.get("/api/lr-status")
+def lr_status():
+    """What Lightroom is showing right now — windows, progress dialogs, CPU.
+    Read via macOS accessibility on the host; no Screen Recording needed."""
+    busy = call_host("lr-busy", timeout=15)
+    stat = call_host("lr-status", timeout=90)
+    return jsonify({
+        "ok":     bool(stat.get("ok")),
+        "cpu":    (busy.get("output") or "?").strip(),
+        "status": stat.get("output", "") or "(no window info)",
+    })
+
+
+@app.post("/api/refresh-birds")
+def refresh_birds():
+    """Pull freshly exported photos into the active posting session.
+    Adds any /birds JPEG modified in the last 2 hours that isn't already part
+    of new_birds — for the "oops, exported two more" case. The frontend
+    appends unknown files to the saved arrangement automatically."""
+    with lock:
+        if state["proc_step"] != "posting":
+            return jsonify({"error": "not on the posting step"}), 400
+        current = set(state["new_birds"])
+    cutoff = time.time() - 7200
+    fresh = []
+    for f in _birds_snapshot():
+        if f in current:
+            continue
+        try:
+            if (BIRDS_DIR / f).stat().st_mtime >= cutoff:
+                fresh.append(f)
+        except OSError:
+            pass
+    fresh.sort()
+    if fresh:
+        with lock:
+            state["new_birds"].extend(fresh)
+        save_state()
+        log(f"⟳ Added {len(fresh)} fresh export(s): {', '.join(fresh)}")
+    return jsonify({"ok": True, "added": fresh})
+
+
 @app.post("/api/skip/<folder_name>")
 def skip_batch(folder_name: str):
     with lock:
@@ -999,7 +1187,7 @@ def assign_birds(folder_name: str):
 
 @app.post("/api/goto-step")
 def goto_step():
-    VALID = {"tone", "denoise", "pick"}
+    VALID = {"tone", "denoise", "pick", "collect"}
     data  = request.json or {}
     step  = data.get("step", "")
     if step not in VALID:
@@ -1038,7 +1226,8 @@ def force_advance():
             "importing":       "continue_toning",
             "continue_toning": "toning",
             "toning":          "denoise",
-            "copy_pasting":    "picking",
+            "copy_pasting":    "denoising",
+            "denoising":       "exporting",
             "exporting":       "export_wait",
             "export_done":     "posting",
         }.get(step)
@@ -1070,6 +1259,7 @@ def reset_batch(folder_name: str):
             state["stop_requested"] = True
             state["active"]    = None
             state["proc_step"] = None
+            state["no_post"]   = False
             state["new_birds"] = []
             state["arrangement"] = None
     save_state()

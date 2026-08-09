@@ -420,6 +420,28 @@
       .log-col { display: none; }
       .batch-col { padding: 12px 12px 80px; }
       .batch-name { font-size: 16px; }
+
+      /* Header: tagline + log toggle are noise on a phone (log col is hidden) */
+      nav { padding: 10px 14px; gap: 8px; }
+      .logo-sub { display: none; }
+      .btn-log { display: none; }
+      .btn-log.lr-peek { display: block; }  /* the LR peek matters most on mobile */
+
+      /* Filters: one row that scrolls sideways instead of wrapping/clipping */
+      .panel-header { flex-wrap: wrap; gap: 8px; }
+      .filter-bar { overflow-x: auto; -webkit-overflow-scrolling: touch;
+        scrollbar-width: none; max-width: 100%; padding-bottom: 2px; }
+      .filter-bar::-webkit-scrollbar { display: none; }
+      .chip { white-space: nowrap; padding: 4px 10px; flex-shrink: 0; }
+
+      /* Progress bar: smaller dots so labels like “Denoise” fit untruncated */
+      .prog-dot { width: 22px; height: 22px; font-size: 10px; }
+      .prog-dot.active { box-shadow: 0 0 0 3px rgba(91,154,255,.22), 0 0 16px rgba(91,154,255,.35); }
+      .prog-lbl { font-size: 9px; letter-spacing: 0; }
+
+      /* Step buttons: equal-width rows, no orphaned right-aligned Reset */
+      .step-btns { gap: 6px; }
+      .step-btns button { flex: 1 1 auto; margin-left: 0 !important; }
     }
   </style>
 </head>
@@ -428,6 +450,7 @@
   <nav>
     <div class="logo">🐦 <span>Bird Photography Pipeline</span><span class="logo-sub">Synology → Lightroom → Buffer → Instagram</span></div>
     <div class="nav-right">
+      <button class="btn-log lr-peek" onclick="showLrStatus()">👁 LR</button>
       <button class="btn-log" id="log-toggle" onclick="toggleLog()">Hide log</button>
       <div class="host-pill">
         <div class="host-dot" id="host-dot"></div>
@@ -488,6 +511,23 @@
   <button class="post-toast-close" onclick="dismissToast()">✕</button>
 </div>
 
+<!-- Lightroom status peek -->
+<div id="lr-status-modal" style="display:none; position:fixed; inset:0; z-index:60;
+     background:rgba(0,0,0,.7); align-items:center; justify-content:center; padding:16px"
+     onclick="this.style.display='none'">
+  <div style="background:var(--card,#141a26); border:1px solid rgba(255,255,255,.12); border-radius:12px;
+       max-width:560px; width:100%; max-height:80vh; display:flex; flex-direction:column; padding:14px"
+       onclick="event.stopPropagation()">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px">
+      <b style="flex:1">👁 Lightroom status</b>
+      <button class="btn btn-neutral btn-sm" onclick="showLrStatus()">⟳ Refresh</button>
+      <button class="btn btn-neutral btn-sm" onclick="document.getElementById('lr-status-modal').style.display='none'">✕</button>
+    </div>
+    <pre id="lr-status-text" style="margin:0; overflow:auto; font-size:12px; line-height:1.5;
+         white-space:pre-wrap; color:var(--muted)">…</pre>
+  </div>
+</div>
+
 <!-- Full-size image preview modal -->
 <div class="img-modal" id="img-modal" onclick="closeModal()">
   <button class="img-modal-close" onclick="closeModal()">✕</button>
@@ -539,12 +579,11 @@ let expandedDone     = new Set(); // folders whose done-thumbnails are loaded on
 
 // ── Pipeline stages ───────────────────────────────────────────────────────────
 const STAGES = [
-  { label: "Import",  steps: ["importing","continue_toning"], back: null   },
-  { label: "Tone",    steps: ["toning"],                      back: "tone"   },
-  { label: "Denoise", steps: ["denoise"],                     back: "denoise"},
-  { label: "Pick",    steps: ["picking"],                     back: "pick"   },
-  { label: "Export",  steps: ["exporting"],                   back: null   },
-  { label: "Post",    steps: ["posting"],                     back: null   },
+  { label: "Import",  steps: ["importing","continue_toning"],           back: null   },
+  { label: "Tone",    steps: ["toning"],                                back: "tone"   },
+  { label: "Denoise", steps: ["denoise","copy_pasting","denoising"],    back: "denoise"},
+  { label: "Export",  steps: ["exporting","export_wait","export_done"], back: "pick"   },
+  { label: "Post",    steps: ["posting"],                               back: null   },
 ];
 
 // Steps that trigger the "automation running" overlay
@@ -560,10 +599,10 @@ const STEP_INFO = {
   importing:       { label: "Importing",   msg: "Lightroom is loading photos. Click Continue when all appear in the grid.", btns: true, pulse: true },
   continue_toning: { label: "Importing",   msg: "Finishing up…", pulse: true },
   toning:          { label: "Auto-tone",   msg: "Applying Auto Settings to all photos…", pulse: true },
-  denoise:         { label: "Denoise",     msg: "Check <b>Denoise</b> on one photo in Lightroom's Edit panel → Detail section. Then click Continue — settings will spread to all.", btns: true },
+  denoise:         { label: "Denoise",     msg: "Check <b>Denoise</b> on one photo in Lightroom's Edit panel → Detail section, then click Continue — settings will spread to all.", btns: true, collect: true },
   copy_pasting:    { label: "Denoise",     msg: "Spreading settings to all photos…", pulse: true },
-  picking:         { label: "Pick shots",  msg: "Select your best photo(s) in Lightroom — ⌘-click for multiple. Click Done when ready.", done: true },
-  exporting:       { label: "Exporting",   msg: "Export triggered — waiting for Lightroom…", pulse: true },
+  denoising:       { label: "Denoise",     msg: "Lightroom is denoising every photo — export starts automatically when it goes quiet. Continue skips the wait.", btns: true, collect: true, pulse: true },
+  exporting:       { label: "Exporting",   msg: "Exporting all photos — cull on the posting screen with ✕ once they land.", pulse: true },
   export_wait:     { label: "Export",      msg: "Lightroom is exporting. Click Done when it finishes.", done: true },
   export_done:     { label: "Export",      msg: "Export complete — interrupted before posting. Click Resume.", resume: true },
   posting:         { label: "Post",        form: true },
@@ -572,10 +611,12 @@ const STEP_INFO = {
 // ── Progress bar ──────────────────────────────────────────────────────────────
 function renderProgress(step) {
   if (!step) return "";
+  // LR-only runs never post — drop the Post stage from the bar
+  const STAGES_SHOWN = lastState?.no_post ? STAGES.filter(s => s.label !== "Post") : STAGES;
   let cur = -1;
-  STAGES.forEach((s, i) => { if (s.steps.includes(step)) cur = i; });
+  STAGES_SHOWN.forEach((s, i) => { if (s.steps.includes(step)) cur = i; });
   let h = '<div class="prog">';
-  STAGES.forEach((s, i) => {
+  STAGES_SHOWN.forEach((s, i) => {
     const done   = i < cur;
     const active = i === cur;
     const clickable = done && s.back;
@@ -584,7 +625,7 @@ function renderProgress(step) {
       <div class="prog-dot ${done?"done":active?"active pulsing":""}">${done?"✓":i+1}</div>
       <div class="prog-lbl ${done?"done":active?"active":""}">${s.label}</div>
     </div>`;
-    if (i < STAGES.length-1) h += `<div class="prog-line ${done||active?"done":""}"></div>`;
+    if (i < STAGES_SHOWN.length-1) h += `<div class="prog-line ${done||active?"done":""}"></div>`;
   });
   return h + "</div>";
 }
@@ -615,6 +656,7 @@ function renderStepCard(step, batch, data) {
 
   let btns = "";
   if (s.btns)   btns += `<button class="btn btn-primary btn-sm" onclick="doContinue()">Continue →</button>`;
+  if (s.collect) btns += `<button class="btn btn-neutral btn-sm" onclick="gotoStep('collect')" title="Skip all Lightroom automation and pick up files you exported yourself">I exported manually →</button>`;
   if (s.done)   btns += `<button class="btn btn-success btn-sm" onclick="doDone()">✓ Done</button>`;
   if (s.resume) btns += `<button class="btn btn-primary btn-sm" onclick="forceAdvance()">↗ Resume</button>`;
   btns += `<button class="btn btn-neutral btn-sm" style="margin-left:auto" onclick="doReset('${batch.folder}')">↺ Reset</button>`;
@@ -651,7 +693,7 @@ function renderPostForm(batch, data) {
   const willSplit = nPosts > 1 || postLanes.length > 1;
   const overfull = postLanes.some(l => l.length > PER_POST);
 
-  const banner = `<div class="split-banner">📦 <b>${flatFiles().length} photos</b> in <b>${lanes.length} post${lanes.length === 1 ? '' : 's'}</b> · Instagram allows ${PER_POST} per post.<br>Drag photos between posts to regroup; “＋ Add post” for a new one. Each post is scheduled on the next open day.</div>`;
+  const banner = `<div class="split-banner">📦 <b>${flatFiles().length} photos</b> in <b>${lanes.length} post${lanes.length === 1 ? '' : 's'}</b> · Instagram allows ${PER_POST} per post. <button class="btn btn-neutral btn-sm" onclick="rescanExports(this)">⟳ Rescan exports</button><br>Drag photos between posts to regroup; “＋ Add post” for a new one. Each post is scheduled on the next open day.</div>`;
 
   let gi = 0; // running index across all included photos (for modal nav)
   const card = (f) => {
@@ -730,7 +772,8 @@ function renderPostForm(batch, data) {
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
   const schedDefault = tomorrow.toISOString().split('T')[0];
   return `<div class="post-form">
-    ${birds.length ? `<div class="lanes-wrap" id="photo-cards-list">${banner}${laneHtml}<div class="lane-actions"><button class="add-post-btn" onclick="addLane()">＋ Add post</button><button class="add-post-btn" onclick="sortByName()" title="Reorder all photos by filename and regroup into posts of 10">⇅ Sort by name</button></div>${excludedHtml}</div>` : ""}
+    ${birds.length ? `<div class="lanes-wrap" id="photo-cards-list">${banner}${laneHtml}<div class="lane-actions"><button class="add-post-btn" onclick="addLane()">＋ Add post</button><button class="add-post-btn" onclick="sortByName()" title="Reorder all photos by filename and regroup into posts of 10">⇅ Sort by name</button></div>${excludedHtml}</div>`
+                   : `<div class="split-banner">📦 <b>No photos yet</b> — export from Lightroom into ~/Desktop/birbs, then <button class="btn btn-neutral btn-sm" onclick="rescanExports(this)">⟳ Rescan exports</button></div>`}
     <div class="shared-fields">
       <div class="row">
         <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.cap_date||''}" placeholder="5-14-26" /></div>
@@ -805,6 +848,8 @@ function renderBatches(data) {
     let actions = "";
     if (b.status === "pending")
       actions = `<button class="btn btn-primary btn-sm" onclick="doProcess('${b.folder}')">▶ Process</button>
+                 <button class="btn btn-neutral btn-sm" onclick="doProcess('${b.folder}', true)"
+                         title="Run Lightroom + export, then finish — no Buffer/Instagram posting">▶ LR only</button>
                  <button class="btn btn-neutral btn-sm" onclick="doSkip('${b.folder}')">Skip</button>`;
     else if (b.status === "done")
       actions = `<button class="btn btn-neutral btn-sm" onclick="doReset('${b.folder}')">↺ Reprocess</button>`;
@@ -980,7 +1025,25 @@ function dismissToast() {
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-async function doProcess(f) { await fetch(`/api/process/${enc(f)}`, {method:"POST"}); }
+async function doProcess(f, noPost) {
+  await fetch(`/api/process/${enc(f)}`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({no_post: !!noPost}),
+  });
+}
+async function showLrStatus() {
+  const m = document.getElementById('lr-status-modal');
+  m.style.display = 'flex';
+  const t = document.getElementById('lr-status-text');
+  t.textContent = 'Reading Lightroom…';
+  try {
+    const d = await (await fetch('/api/lr-status')).json();
+    t.textContent = `Lightroom CPU: ${d.cpu}%  ${Number(d.cpu) > 50 ? '(busy — probably denoising or exporting)' : '(idle)'}\n\n${d.status}`;
+  } catch (e) {
+    t.textContent = 'Could not reach lr_host on the Mac.';
+  }
+}
+
 async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
 async function doDone()      { await fetch("/api/done", {method:"POST"}); }
 async function doReset(f)    { await fetch(`/api/reset/${enc(f)}`, {method:"POST"}); }
@@ -1203,6 +1266,21 @@ function restoreArrangement(birds, arr) {
   photoMeta = {};
   Object.entries(arr.meta || {}).forEach(([f, m]) => { if (bird.has(f) && m) photoMeta[f] = m; });
   return true;
+}
+
+// Pull late exports (last 2h) into the posting session; the poll refresh
+// appends any new files to the arrangement as fresh posts.
+async function rescanExports(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Scanning…'; }
+  try {
+    const r = await fetch('/api/refresh-birds', {method: 'POST'});
+    const d = await r.json();
+    if (!d.ok) { alert(d.error || 'Rescan failed'); return; }
+    if (!d.added.length) alert('No new exports found in ~/Desktop/birbs (last 2 hours).');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⟳ Rescan exports'; }
+    poll();
+  }
 }
 
 // Debounced push of the current arrangement to the server so it survives
@@ -1489,6 +1567,24 @@ function closeModal() {
   document.getElementById("img-modal").classList.remove("open");
 }
 
+// ✕ in the carousel — same path as the card ✕ (order-safe, restorable),
+// then advance to the next photo so culling flows without leaving the modal
+function excludeFromModal() {
+  const f = _modalFile();
+  if (!f || lastState?.proc_step !== 'posting' || !flatFiles().includes(f)) return;
+  excludeCard(f);
+  _modalFiles = _modalFiles.filter(x => x !== f);
+  if (!_modalFiles.length) { closeModal(); return; }
+  _modalIdx = _modalIdx % _modalFiles.length;
+  const nf = _modalFiles[_modalIdx];
+  document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(nf)}`;
+  document.getElementById("modal-name").textContent = nf;
+  const hasPrev = _modalFiles.length > 1;
+  document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
+  document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
+  updateModalTools();
+}
+
 // ── Crop tool ─────────────────────────────────────────────────────────────────
 let cropMode  = false;
 let cropRatio = 0;        // target pixel aspect (w/h); 0 = free
@@ -1499,11 +1595,23 @@ const _modalFile = () => document.getElementById("modal-name").textContent;
 function updateModalTools() {
   const t = document.getElementById("modal-tools");
   if (!cropMode) {
-    t.innerHTML = `<button onclick="startCrop()">✂ Crop</button>`;
+    let h = `<button onclick="startCrop()">✂ Crop</button>`;
+    const cur = _modalFile();
+    if (lastState?.proc_step === 'posting' && cur && flatFiles().includes(cur))
+      h += `<button onclick="excludeFromModal()" title="Exclude from posting — moves to the Excluded strip, order of the rest is untouched">✕ Remove</button>`;
+    t.innerHTML = h;
+    const f = cur;
+    if (!f) return;
+    fetch(`/api/crop-status?file=${encodeURIComponent(f)}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.hasOriginal && !cropMode && _modalFile() === f)
+          t.innerHTML += `<button onclick="resetCrop()" title="Restore the uncropped export">↺ Original</button>`;
+      }).catch(() => {});
     return;
   }
   const chip = (r, lbl) => `<button class="${cropRatio === r ? 'on' : ''}" onclick="setCropRatio(${r})">${lbl}</button>`;
-  t.innerHTML = chip(0, 'Free') + chip(4/5, '4:5') + chip(1, '1:1') +
+  t.innerHTML = chip(0, 'Free') + chip(4/5, '4:5') + chip(1, '1:1') + chip(3/2, '3:2') +
     `<button class="crop-apply" onclick="applyCrop()">✓ Apply</button>` +
     `<button onclick="exitCropMode()">Cancel</button>` +
     `<button onclick="resetCrop()" title="Restore the uncropped export">↺ Original</button>`;
@@ -1589,17 +1697,21 @@ function bustImages(f) {
   });
 }
 
+let _cropBusy = false;
 async function applyCrop() {
   const f = _modalFile();
-  if (!f) return;
-  const r = await fetch("/api/crop", {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({file: f, box: cropBox}),
-  });
-  const d = await r.json();
-  if (!d.ok) { alert(d.error || "Crop failed"); return; }
-  exitCropMode();
-  bustImages(f);
+  if (!f || _cropBusy) return;
+  _cropBusy = true;
+  try {
+    const r = await fetch("/api/crop", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({file: f, box: cropBox}),
+    });
+    const d = await r.json();
+    if (!d.ok) { alert(d.error || "Crop failed"); return; }
+    exitCropMode();
+    bustImages(f);
+  } finally { _cropBusy = false; }
 }
 
 async function resetCrop() {
@@ -1616,7 +1728,9 @@ async function resetCrop() {
 }
 document.addEventListener("keydown", e => {
   if (!document.getElementById("img-modal").classList.contains("open")) return;
-  if (e.key === "Escape")      closeModal();
+  if (e.key === "Enter" && cropMode) { e.preventDefault(); applyCrop(); }
+  if ((e.key === "x" || e.key === "Backspace") && !cropMode) { e.preventDefault(); excludeFromModal(); }
+  if (e.key === "Escape")      cropMode ? exitCropMode() : closeModal();
   if (e.key === "ArrowLeft")   modalStep(-1);
   if (e.key === "ArrowRight")  modalStep(1);
 });

@@ -8,6 +8,9 @@ services:
       - ~/Desktop/bird_staging:/staging
       - ~/Desktop/birbs:/birds
       - "~/Library/Application Support/Google/Chrome/Default/Cookies:/chrome-cookies/Cookies:ro"
+      # Read-only AWS creds so posting can ship per-photo species records to S3
+      # (the website reads them back to label each carousel frame).
+      - ~/.aws:/root/.aws:ro
 
     # BUFFER_TOKEN comes from .env via env_file (resolved relative to this
     # file, so it works even when compose is invoked from another directory).
