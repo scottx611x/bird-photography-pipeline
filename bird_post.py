@@ -61,6 +61,14 @@ def get_buffer_cookies() -> dict:
 
         return cookies
 
+    if BIRDS_DIR.exists():
+        # In Docker there's no Chrome to fall back to — cookies must come in
+        # via the environment. Empty means the container was recreated by a
+        # bare `docker compose up` instead of `./bird up`.
+        print("BUFFER_COOKIES is empty — restart the stack with ./bird up "
+              "(a bare `docker compose up` loses the cookie env var).")
+        sys.exit(1)
+
     # Local non-Docker fallback
     jar = browser_cookie3.chrome(domain_name=".buffer.com")
     cookies = {c.name: c.value for c in jar}
@@ -288,17 +296,38 @@ def main():
         image_urls.append(url)
         print(f"  {ready.name} ✓")
 
-    # Queue
+    # Buffer fetches every image the moment the post is created, and a
+    # just-uploaded S3 object can briefly 404 (read-after-write lag) —
+    # "Invalid post: Image could not be read from its URL." Wait until each
+    # URL actually serves before queuing.
+    for url in image_urls:
+        for _ in range(10):
+            try:
+                if httpx.head(url, timeout=10).is_success:
+                    break
+            except httpx.HTTPError:
+                pass
+            time.sleep(1)
+        else:
+            print(f"  ⚠ still unreadable after 10s: {url}")
+
+    # Queue — retry the create when Buffer's fetch races the S3 propagation
     print("Queuing to Buffer …")
-    result = queue_to_buffer(caption, image_urls,
-                             scheduled_at=getattr(args, 'scheduled_at', None) or "",
-                             schedule_date=args.schedule_date or "")
+    for attempt in range(1, 4):
+        result = queue_to_buffer(caption, image_urls,
+                                 scheduled_at=getattr(args, 'scheduled_at', None) or "",
+                                 schedule_date=args.schedule_date or "")
+        inner = result.get("data", {}).get("createPost", {}) or {}
+        if "could not be read" in inner.get("message", "") and attempt < 3:
+            print(f"  Buffer couldn't read an image yet — retrying ({attempt}/3) …")
+            time.sleep(3 * attempt)
+            continue
+        break
 
     if "errors" in result:
         print(f"Buffer API error: {result['errors']}")
         sys.exit(1)
 
-    inner = result.get("data", {}).get("createPost", {})
     if "message" in inner:
         print(f"Buffer rejected: {inner['message']}")
         sys.exit(1)

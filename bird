@@ -13,7 +13,9 @@ _start_host() {
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
     rm -f "$PID_FILE"
   fi
-  lsof -ti:8766 | xargs kill -9 2>/dev/null || true
+  # -sTCP:LISTEN: only the process bound to the port — a bare -ti:8766 also
+  # matches Docker's proxy, whose client connections land on this port
+  lsof -ti tcp:8766 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
   sleep 0.5
   "$PYTHON" "$DIR/lr_host.py" >> "$HOME/.bird_host.log" 2>&1 &
   echo $! > "$PID_FILE"
@@ -32,7 +34,17 @@ cmd_up() {
   cd "$DIR"
   # Extract Buffer session cookies with the pyenv python (has browser_cookie3)
   export BUFFER_COOKIES="$("$PYTHON" "$DIR/extract_buffer_cookies.py" 2>/dev/null)"
-  [ -z "$BUFFER_COOKIES" ] && echo "  ⚠ couldn't read Buffer cookies from Chrome — uploads may fail"
+  # Empty cookies would bake a broken container (posting fails at upload) —
+  # retry once, then abort rather than recreate without them.
+  if [ -z "$BUFFER_COOKIES" ]; then
+    sleep 2
+    export BUFFER_COOKIES="$("$PYTHON" "$DIR/extract_buffer_cookies.py" 2>/dev/null)"
+  fi
+  if [ -z "$BUFFER_COOKIES" ]; then
+    echo "  ✗ couldn't read Buffer cookies from Chrome — aborting (container left as-is)."
+    echo "    Is Chrome open? Try again, or run: $PYTHON $DIR/extract_buffer_cookies.py"
+    exit 1
+  fi
   # BUFFER_TOKEN and SYNO_* come from .env via env_file in docker-compose.yml —
   # do NOT pass BUFFER_TOKEN here; a shell override would blank it in the container.
   docker compose up -d --build
