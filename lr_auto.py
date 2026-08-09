@@ -159,60 +159,83 @@ end tell
     print("Auto-tone done.")
 
 
-def cmd_ai_denoise(args):
-    """Check the Denoise checkbox in Lightroom's Edit panel for all photos."""
-    if not lr_is_running():
-        print("Lightroom is not running.")
-        sys.exit(1)
-
-    # Try accessibility first — recursive search for Denoise checkbox
-    result = run_applescript('''
+FIND_AND_CLICK = '''
 on findAndClick(root, targetName, depth)
-  if depth > 8 then return "deep"
-  try
-    set n to name of root
-    if n is targetName then
-      set v to value of root
-      if v is 0 then
-        click root
-        return "clicked"
-      else
-        return "already_on"
+  if depth > 12 then return "deep"
+  -- System Events terminology (click, UI element, …) only compiles inside
+  -- a tell block, so the handler body lives in one
+  tell application "System Events"
+    try
+      set n to name of root
+      if n is targetName then
+        set v to value of root
+        if v is 0 then
+          click root
+          return "clicked"
+        else
+          return "already_on"
+        end if
       end if
-    end if
-  end try
-  try
-    repeat with child in every UI element of root
-      set r to my findAndClick(child, targetName, depth + 1)
-      if r is "clicked" or r is "already_on" then return r
-    end repeat
-  end try
+    end try
+    try
+      repeat with child in every UI element of root
+        set r to my findAndClick(child, targetName, depth + 1)
+        if r is "clicked" or r is "already_on" then return r
+      end repeat
+    end try
+  end tell
   return "not_found"
 end findAndClick
 
 tell application "System Events"
   tell process "Adobe Lightroom"
-    return my findAndClick(window 1, "Denoise", 0)
+    repeat with w in every window
+      set r to my findAndClick(w, "%s", 0)
+      if r is "clicked" or r is "already_on" then return r
+    end repeat
+    return "not_found"
+  end tell
+end tell
+'''
+
+
+def _toggle_checkbox(name: str) -> str:
+    """Find a named checkbox in LR's window and turn it on. Returns the result."""
+    return run_applescript(FIND_AND_CLICK % name)
+
+
+def cmd_ai_denoise(args):
+    """Enable Denoise (and Remove Chromatic Aberration) on the current photo.
+    Exits nonzero unless Denoise is verifiably ON, so the server can fall back
+    to the manual step instead of silently exporting noisy photos."""
+    if not lr_is_running():
+        print("Lightroom is not running.")
+        sys.exit(1)
+
+    run_applescript('tell application "Adobe Lightroom" to activate')
+    time.sleep(0.3)
+    # Detail view — the Edit panel (and its Denoise checkbox) lives there
+    run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    keystroke "e"
+    delay 0.8
   end tell
 end tell
 ''')
-    print(f"Accessibility result: {result}")
 
-    if result in ("clicked", "already_on"):
-        if result == "clicked":
-            print("Denoise enabled via accessibility. Processing…")
-        else:
-            print("Denoise was already enabled.")
-        return
+    result = _toggle_checkbox("Denoise")
+    print(f"Denoise accessibility result: {result}")
 
-    # Fallback: cliclick on the Denoise checkbox position in the right panel
-    print("Accessibility search failed — trying coordinate-based click…")
-    CLICLICK = "/opt/homebrew/bin/cliclick"
-    if not Path(CLICLICK).exists():
-        print("cliclick not found — run: brew install cliclick")
-        sys.exit(1)
+    if result == "not_found":
+        # Fallback: cliclick on the Denoise checkbox position in the right panel
+        print("Accessibility search failed — trying coordinate-based click…")
+        CLICLICK = "/opt/homebrew/bin/cliclick"
+        if not Path(CLICLICK).exists():
+            print("cliclick not found — run: brew install cliclick")
+            sys.exit(1)
 
-    bounds = run_applescript('''
+        bounds = run_applescript('''
 tell application "System Events"
   tell process "Adobe Lightroom"
     set p to position of window 1
@@ -221,16 +244,32 @@ tell application "System Events"
   end tell
 end tell
 ''')
-    wx, wy, ww, wh = (int(v.strip()) for v in bounds.split(","))
+        wx, wy, ww, wh = (int(v.strip()) for v in bounds.split(","))
 
-    # Denoise checkbox is in the right Edit panel, Detail section
-    # Right panel is ~265px wide; checkbox is roughly 60% down the panel height
-    cx = wx + ww - 250   # near left edge of right panel
-    cy = wy + int(wh * 0.55)   # rough vertical position of Detail section
-    print(f"Clicking at ({cx}, {cy}) for Denoise checkbox…")
-    subprocess.run([CLICLICK, f"c:{cx},{cy}"])
-    time.sleep(0.5)
-    print("Denoise click sent. Check Lightroom to confirm.")
+        # Denoise checkbox is in the right Edit panel, Detail section
+        # Right panel is ~265px wide; checkbox is roughly 60% down the panel height
+        cx = wx + ww - 250   # near left edge of right panel
+        cy = wy + int(wh * 0.55)   # rough vertical position of Detail section
+        print(f"Clicking at ({cx}, {cy}) for Denoise checkbox…")
+        subprocess.run([CLICLICK, f"c:{cx},{cy}"])
+        time.sleep(1.0)
+        # Trust but verify — a missed click must not read as success
+        result = _toggle_checkbox("Denoise")
+        print(f"Post-click verification: {result}")
+
+    if result not in ("clicked", "already_on"):
+        print("Could not confirm Denoise is enabled.")
+        sys.exit(1)
+
+    # Best-effort: CA removal checkbox too (Lens Corrections section). Failure
+    # is fine — it may be collapsed; denoise is the part that matters.
+    try:
+        ca = _toggle_checkbox("Remove Chromatic Aberration")
+        print(f"Chromatic Aberration result: {ca}")
+    except RuntimeError as e:
+        print(f"Chromatic Aberration skipped: {e}")
+
+    print("Denoise enabled. Processing…")
 
 
 def cmd_copy_and_paste(args):
@@ -329,9 +368,74 @@ def cmd_export(args):
     run_applescript('tell application "Adobe Lightroom" to activate')
     time.sleep(0.3)
 
+    if args.all:
+        # Hands-off mode: export the whole batch — culling happens later on
+        # the posting screen. Grid view first so Select All grabs every photo.
+        print("Selecting all photos…")
+        run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    keystroke "g"
+    delay 0.8
+  end tell
+end tell
+''')
+        lr_menu_click("Edit", "Select All")
+        time.sleep(0.5)
+
     print("Triggering Export with Previous…")
     lr_menu_click("File", "Export with Previous...")
     print(f"Export started → check {BIRDS_DIR}")
+
+
+def cmd_status(args):
+    """Dump Lightroom's visible state via accessibility: windows, progress
+    dialogs (with their text and %), and any dialog buttons. Lets the web UI
+    show what Lightroom is doing when you can't see the screen."""
+    if not lr_is_running():
+        print("Lightroom is not running.")
+        return
+    out = run_applescript('''
+tell application "System Events"
+  set frontApp to name of first process whose frontmost is true
+  tell process "Adobe Lightroom"
+    set out to "frontmost app: " & frontApp & linefeed
+    repeat with w in every window
+      set wn to name of w
+      if wn is missing value or wn is "" then set wn to "(unnamed)"
+      set out to out & "window: " & wn & linefeed
+      try
+        repeat with t in every static text of w
+          set tv to value of t
+          if tv is not missing value and tv is not "" then set out to out & "    " & tv & linefeed
+        end repeat
+      end try
+      try
+        repeat with b in every button of w
+          set bn to name of b
+          if bn is not missing value then set out to out & "    [button: " & bn & "]" & linefeed
+        end repeat
+      end try
+      try
+        repeat with sh in every sheet of w
+          set out to out & "  dialog open:" & linefeed
+          try
+            repeat with t in every static text of sh
+              set out to out & "    " & (value of t) & linefeed
+            end repeat
+          end try
+          try
+            repeat with b in every button of sh
+              set out to out & "    [button: " & (name of b) & "]" & linefeed
+            end repeat
+          end try
+        end repeat
+      end try
+    end repeat
+    return out
+  end tell
+end tell''')
+    print(out)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -350,6 +454,8 @@ def _latest_batch() -> Path | None:
 def main():
     p = argparse.ArgumentParser(description="Lightroom UI automation for bird photos")
     p.add_argument("--folder", help="Path to batch folder (for import command)")
+    p.add_argument("--all", action="store_true",
+                   help="export: Select All before Export with Previous")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("import",         help="Open a batch folder in Lightroom's Add Photos dialog")
@@ -357,6 +463,7 @@ def main():
     sub.add_parser("ai-denoise",     help="Trigger AI Denoise via right-click → Enhance")
     sub.add_parser("copy-and-paste", help="Copy edits from current photo → paste to all selected")
     sub.add_parser("export",         help="Export with Previous settings in Lightroom")
+    sub.add_parser("status",         help="Dump Lightroom windows/dialogs via accessibility")
 
     args = p.parse_args()
     {
@@ -365,6 +472,7 @@ def main():
         "ai-denoise":     cmd_ai_denoise,
         "copy-and-paste": cmd_copy_and_paste,
         "export":         cmd_export,
+        "status":         cmd_status,
     }[args.cmd](args)
 
 
