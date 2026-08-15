@@ -739,6 +739,12 @@ function renderPostForm(batch, data) {
 
   const laneHtml = postLanes.map((lane, i) => {
     const over = lane.length > PER_POST;
+    // The website dates every frame of a post from the caption's FIRST date —
+    // a lane mixing days would mislabel the later day's frames there.
+    const pd = lastState?.photo_dates || {};
+    const laneDates = new Set(lane.map(f => pd[f]).filter(Boolean));
+    const mixedWarn = laneDates.size > 1
+      ? `<span class="lane-count bad" title="This post mixes capture dates — the website will date all its frames from the first (${[...laneDates].join(', ')}). Split by day.">⚠ mixed dates</span>` : '';
     const removeBtn = postLanes.length > 1
       ? `<button class="lane-remove" onclick="removeLane(${i})" title="Remove this post (photos move to Excluded)">✕</button>` : '';
     // "Post this" lets you schedule one of several posts now, leaving the rest staged
@@ -749,7 +755,7 @@ function renderPostForm(batch, data) {
            ondragover="onLaneOver(event)" ondragleave="onLaneLeave(event)" ondrop="onLaneDrop(event,${i})">
         <div class="post-lane-head">
           <span class="lane-title">📦 Post ${i + 1}</span>
-          <span class="lane-count ${over ? 'bad' : ''}">${lane.length}/${PER_POST}</span>
+          <span class="lane-count ${over ? 'bad' : ''}">${lane.length}/${PER_POST}</span>${mixedWarn}
           <span class="lane-actions-r">${postOneBtn}${removeBtn}</span>
         </div>
         <div class="lane-cards">
