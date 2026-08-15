@@ -134,7 +134,8 @@ def scan_batches():
             raws = [f for f in d.iterdir() if f.suffix.lower() in RAW_SUFFIXES]
         except Exception:
             raws = []
-        location = "Rea St." if (suffix == "best" or suffix.startswith("best")) else suffix.replace("-", " ").title()
+        location = "Rea St." if (suffix == "best" or suffix.startswith("best") or suffix == "multi") \
+                   else suffix.replace("-", " ").title()
         # Normalize date before parsing (handles both 2026-5-3 and 2026-05-03)
         y, mo, day = date_str.split("-")
         date_norm = f"{y}-{mo.zfill(2)}-{day.zfill(2)}"
