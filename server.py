@@ -566,11 +566,15 @@ def record_post(chunk: list, caption_text: str, scheduled_at: str):
     except Exception:
         records = []
     from datetime import timezone
+    with lock:
+        _pd = state.get("photo_dates", {})
+        dates = [_pd.get(p.get("file", ""), "") for p in chunk]
     records.append({
         "caption":      caption_text,
         "files":        [p.get("file", "") for p in chunk],
         "species":      [p.get("species", "") for p in chunk],
         "locations":    [p.get("location", "") for p in chunk],
+        "dates":        dates,   # per-photo EXIF capture dates ("M-D-YY", "" if unknown)
         "scheduled_at": scheduled_at,
         "recorded_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
