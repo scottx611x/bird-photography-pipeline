@@ -48,6 +48,7 @@ state = {
     "syno_skipped":    set(),   # Synology album names hidden from the list
     "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
     "syno_fetching":   {},      # album -> {got, total} while a download is in progress
+    "photo_dates":     {},      # exported file -> capture date "M-D-YY" (EXIF) for combined batches
 }
 
 # In-memory cache of the Synology album list (avoid hammering the NAS each load)
@@ -72,6 +73,7 @@ def save_state():
             "no_post":   state.get("no_post", False),
             "new_birds": list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
+            "photo_dates": state.get("photo_dates", {}),
             "syno_skipped": sorted(state["syno_skipped"]),
             "done_albums": sorted(state["done_albums"]),
         }
@@ -167,6 +169,7 @@ def scan_batches():
                 state["no_post"]   = saved.get("no_post", False)
                 state["new_birds"] = saved.get("new_birds", [])
                 state["arrangement"] = saved.get("arrangement")
+                state["photo_dates"] = saved.get("photo_dates", {})
                 restored_msg = f"Restored active run: {state['active']} at step {state['proc_step']}"
         if restored_msg:
             log(restored_msg)
@@ -393,6 +396,7 @@ def _pick_export_post(trigger: bool = True):
     if state.get("stop_requested"): return
 
     new = _exported()
+    _record_photo_dates(new)
     with lock:
         state["new_birds"] = new
     save_state()
@@ -584,6 +588,25 @@ def record_post(chunk: list, caption_text: str, scheduled_at: str):
         log(f"  (post record kept locally; S3 push failed: {e})")
 
 
+def _exif_date(fname: str) -> str:
+    """Capture date of an exported /birds JPEG as M-D-YY (EXIF survives Lightroom)."""
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(BIRDS_DIR / fname) as img:
+            ex = img.getexif()
+            dt = ex.get_ifd(0x8769).get(36867) or ex.get(306)   # DateTimeOriginal, else DateTime
+        d = datetime.strptime(str(dt)[:10], "%Y:%m:%d")
+        return f"{d.month}-{d.day}-{str(d.year)[2:]}"
+    except Exception:
+        return ""
+
+
+def _record_photo_dates(files: list):
+    dates = {f: _exif_date(f) for f in files}
+    with lock:
+        state.setdefault("photo_dates", {}).update({f: d for f, d in dates.items() if d})
+
+
 def _birds_snapshot():
     if not BIRDS_DIR.exists():
         return []
@@ -738,6 +761,7 @@ def get_state():
             "no_post":   state.get("no_post", False),
             "new_birds":  list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
+            "photo_dates": state.get("photo_dates", {}),
             "log":        list(state["log"])[-80:],
             "host_ok":    state["host_ok"],
             "last_post":  state["last_post"],
@@ -867,7 +891,7 @@ def post_to_buffer():
     # groups is the user's explicit per-post grouping (list of lists of photos).
     groups = data.get("groups")
 
-    if not cap_date or not (groups or photos or files):
+    if not (groups or photos or files):
         return jsonify({"error": "missing fields"}), 400
 
     # Drop anything already queued to Buffer for this batch — a stale tab can
@@ -918,10 +942,17 @@ def post_to_buffer():
         slots = (get_next_open_scheduled_ats(n) if n > 1
                  else [scheduled_at or get_next_open_scheduled_at()])
 
+        with lock:
+            photo_dates = dict(state.get("photo_dates", {}))
+            batch_cap = (state["batches"].get(state["active"]) or {}).get("cap_date", "")
         all_ok, last_due = True, ""
         for i, chunk in enumerate(chunks):
-            caption_text = _caption_for(chunk, cap_date)
             chunk_files  = [p["file"] for p in chunk]
+            # Explicit date wins; else each post is dated from its photos' EXIF
+            # (a combined multi-day batch gets the right date per post).
+            exif_dates = list(dict.fromkeys(d for d in (photo_dates.get(f) for f in chunk_files) if d))
+            chunk_cap = cap_date or " & ".join(exif_dates) or batch_cap
+            caption_text = _caption_for(chunk, chunk_cap)
             cmd = ["/usr/local/bin/python", "/app/bird_post.py",
                    "--file"] + chunk_files + ["--text", caption_text]
             slot = slots[i] if i < len(slots) else ""
@@ -1205,6 +1236,7 @@ def refresh_birds():
             pass
     fresh.sort()
     if fresh:
+        _record_photo_dates(fresh)
         with lock:
             state["new_birds"].extend(fresh)
         save_state()
@@ -1393,8 +1425,15 @@ def syno_albums():
 def syno_fetch():
     """Download a Synology album's originals into ~/Downloads/<album> (background)."""
     data  = request.json or {}
+    albums = [a.strip() for a in (data.get("albums") or []) if a.strip()]
     album = (data.get("album") or "").strip()
-    if not album:
+    if albums:
+        # Combined batch: several (small) albums fetched into one dated folder.
+        # Per-photo capture dates keep captions correct at posting time.
+        newest = max(re.match(r"\d{4}-\d{1,2}-\d{1,2}", a).group(0)
+                     for a in albums if re.match(r"\d{4}-\d{1,2}-\d{1,2}", a))
+        album = f"{newest}-multi"
+    elif not album:
         return jsonify({"error": "no album"}), 400
 
     then_process = bool(data.get("then_process"))
@@ -1427,8 +1466,18 @@ def syno_fetch():
         stop = {"done": False}
         threading.Thread(target=_watch_progress, args=(stop,), daemon=True).start()
         try:
-            r = call_host("syno-fetch", body={"album": album, "raw_only": bool(data.get("raw_only"))},
-                          timeout=3600)
+            if albums:
+                r = {"ok": True, "output": ""}
+                for a in albums:
+                    log(f"  ⤷ '{a}' → {album}/")
+                    r = call_host("syno-fetch",
+                                  body={"album": a, "raw_only": bool(data.get("raw_only")),
+                                        "dest": batch_host_path(album)}, timeout=3600)
+                    if not r.get("ok"):
+                        break
+            else:
+                r = call_host("syno-fetch", body={"album": album, "raw_only": bool(data.get("raw_only"))},
+                              timeout=3600)
         finally:
             stop["done"] = True
             with lock:

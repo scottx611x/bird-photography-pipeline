@@ -404,6 +404,13 @@
     .fetch-bar-fill { height: 100%; background: var(--blue); transition: width .4s ease; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
     .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
+    .combine-box { display:flex; align-items:center; gap:4px; font-size:11px; color:var(--muted);
+      margin-left:auto; cursor:pointer; user-select:none; }
+    .combine-bar { display:flex; align-items:center; gap:10px; padding:10px 14px; margin:8px 0;
+      background: color-mix(in srgb, var(--accent, #4a8) 12%, transparent);
+      border:1px dashed var(--muted); border-radius:10px; font-size:13px; }
+    .date-chip { font-size:10px; color:var(--muted); background:rgba(128,128,128,.15);
+      border-radius:4px; padding:1px 5px; margin-left:6px; white-space:nowrap; }
     .syno-foot { text-align: center; font-size: 12px; color: var(--muted); padding: 12px; cursor: pointer; }
     .syno-foot:hover { color: var(--blue); }
     .syno-foot.err { color: var(--red); cursor: default; }
@@ -673,6 +680,11 @@ function renderStepCard(step, batch, data) {
 }
 
 // ── Post form ─────────────────────────────────────────────────────────────────
+function _dateChip(f) {
+  const pd = lastState?.photo_dates || {};
+  const dates = new Set((lastState?.new_birds||[]).map(x => pd[x]).filter(Boolean));
+  return (dates.size > 1 && pd[f]) ? `<span class="date-chip">📅 ${pd[f]}</span>` : '';
+}
 function renderPostForm(batch, data) {
   const birds = data.new_birds || [];
   // Re-init lanes only when the batch's photo set changes; prefer the
@@ -713,7 +725,7 @@ function renderPostForm(batch, data) {
         </div>
         <div class="photo-card-fields">
           <div class="photo-card-header">
-            <div class="photo-fname">${f}</div>
+            <div class="photo-fname">${f}${_dateChip(f)}</div>
             <button class="photo-card-remove" onclick="excludeCard('${f}')" title="Exclude">✕</button>
           </div>
           <input list="species-list" id="sp-${fid(f)}" data-file="${f}" placeholder="Species…"
@@ -777,7 +789,7 @@ function renderPostForm(batch, data) {
                    : `<div class="split-banner">📦 <b>No photos yet</b> — export from Lightroom into ~/Desktop/birbs, then <button class="btn btn-neutral btn-sm" onclick="rescanExports(this)">⟳ Rescan exports</button></div>`}
     <div class="shared-fields">
       <div class="row">
-        <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.cap_date||''}" placeholder="5-14-26" /></div>
+        <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.folder.endsWith('-multi') ? '' : (batch.cap_date||'')}" placeholder="auto (per-photo EXIF)" /></div>
         <div>
           <div class="fld-lbl">Post on <span id="pf-schedule-hint" style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.6"></span></div>
           <input id="pf-schedule" type="date" value="${schedDefault}" ${willSplit ? 'disabled title="Split posts auto-schedule across consecutive open days"' : ''} />
@@ -1168,13 +1180,24 @@ function _remoteCardHtml(a) {
       <button class="btn btn-primary btn-sm" id="sfr-${fid(a.name)}" onclick="synoFetchRun('${safe}', true, ${a.item_count})">⬇ Fetch &amp; run</button>
       <button class="btn btn-neutral btn-sm" onclick="synoFetchRun('${safe}', false, ${a.item_count})">⬇ Fetch only</button>
       <button class="btn btn-neutral btn-sm" onclick="synoSkip('${safe}')">Skip</button>
+      <label class="combine-box" title="Select to fetch several small albums as one combined batch">
+        <input type="checkbox" ${synoCombine.has(a.name)?'checked':''} onchange="toggleCombine('${safe}', this.checked, ${a.item_count})"> combine
+      </label>
     </div>
   </div>`;
 }
 
 // Quiet footer: surface a Synology error, or a toggle for older/skipped albums
 function _synoFooterHtml(localFolders) {
-  if (synoError) return `<div class="syno-foot err">☁ Synology: ${synoError}</div>`;
+  let bar = '';
+  if (synoCombine.size >= 2) {
+    const total = [...synoCombine.values()].reduce((s,n)=>s+n, 0);
+    bar = `<div class="combine-bar">📦 ${synoCombine.size} albums selected (${total} photos) — captions keep each photo's own date
+      <button class="btn btn-primary btn-sm" onclick="fetchCombined(true)">⬇ Fetch &amp; run combined</button>
+      <button class="btn btn-neutral btn-sm" onclick="fetchCombined(false)">⬇ Fetch only</button>
+      <button class="btn btn-neutral btn-sm" onclick="synoCombine.clear(); lastState && renderBatches(lastState)">✕</button></div>`;
+  }
+  if (synoError) return bar + `<div class="syno-foot err">☁ Synology: ${synoError}</div>`;
   if (synoLoading && synoAlbums.length) return `<div class="syno-foot busy">☁ Scanning Synology…</div>`;
   if (!synoAlbums.length) return '';
   if (synoShowAll) return `<div class="syno-foot" onclick="toggleSynoOld(false)">☁ hide older / posted / skipped albums</div>`;
@@ -1196,6 +1219,21 @@ async function synoUnskip(album) {
   await fetch('/api/syno/unskip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ album }) });
 }
 
+const synoCombine = new Map();   // album name -> photo count
+function toggleCombine(album, on, n) {
+  on ? synoCombine.set(album, n||0) : synoCombine.delete(album);
+  if (lastState) renderBatches(lastState);
+}
+async function fetchCombined(run) {
+  const albums = [...synoCombine.keys()];
+  const total = [...synoCombine.values()].reduce((s,n)=>s+n, 0);
+  synoCombine.clear();
+  if (!logVisible) toggleLog();
+  await fetch('/api/syno/fetch', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ albums, then_process: run, total }),
+  });
+}
 async function synoFetchRun(album, run, total) {
   const btn = document.getElementById('sfr-' + fid(album));
   if (btn) { btn.disabled = true; btn.textContent = '⬇ Fetching…'; }
@@ -1471,7 +1509,7 @@ async function doPost() {
   const over = groups.find(g => g.length > PER_POST);
   if (over) { alert(`A post has ${over.length} photos — max is ${PER_POST}. Move some into another post.`); return; }
   const first = groups[0][0];
-  if (!first.location || !date) { alert("Fill in location and date."); return; }
+  if (!first.location) { alert("Fill in location."); return; }
   if (!first.species.replace("⚠️ ", "").trim()) { alert("Fill in species for at least the first photo."); return; }
 
   localStorage.setItem('birdLocation', first.location);

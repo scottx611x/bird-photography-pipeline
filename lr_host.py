@@ -110,6 +110,8 @@ class Handler(BaseHTTPRequestHandler):
             album = body.get("album", "")
             print(f"→ syno_fetch.py fetch --album {album}")
             args = [PYTHON, str(TOOLS / "syno_fetch.py"), "fetch", "--album", album]
+            if body.get("dest"):
+                args += ["--dest", body["dest"]]   # combined multi-album batches
             if body.get("raw_only"):
                 args.append("--raw-only")
         else:
