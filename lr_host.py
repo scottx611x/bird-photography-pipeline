@@ -35,10 +35,52 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._json({"ok": True, "host": "lr_host.py"})
+        elif self.path.startswith("/curate/"):
+            self._curate_get()
         else:
             self._json({"error": "not found"}, 404)
 
+    def _curate_get(self):
+        """Album-curator bridge: Synology runs Mac-side (mDNS), Docker proxies here."""
+        import syno_curate
+        from urllib.parse import urlparse, parse_qs
+        u = urlparse(self.path)
+        parts = u.path.strip("/").split("/")
+        try:
+            if parts[1] == "days":
+                since = parse_qs(u.query).get("since", ["2026-07-01"])[0]
+                self._json({"ok": True, "days": syno_curate.days(since)})
+            elif parts[1] == "thumb":          # /curate/thumb/<size>/<id>
+                data = syno_curate.thumb(int(parts[3]), parts[2])
+                if not data:
+                    self._json({"error": "no thumbnail"}, 404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "max-age=86400")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            elif parts[1] == "exif":           # /curate/exif/<id>
+                self._json(syno_curate.exif(int(parts[2])))
+            else:
+                self._json({"error": "unknown"}, 404)
+        except Exception as e:
+            self._json({"ok": False, "error": str(e)}, 500)
+
     def do_POST(self):
+        if self.path == "/curate/sync":
+            import syno_curate
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length else {}
+            try:
+                log = syno_curate.sync(body.get("albums", {}))
+                for line in log:
+                    print(f"  curate sync: {line}")
+                self._json({"ok": True, "log": log})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)}, 500)
+            return
         parts = self.path.strip("/").split("/")
         if len(parts) != 2 or parts[0] != "run" or parts[1] not in ALLOWED:
             self._json({"error": f"unknown: {self.path}"}, 400)

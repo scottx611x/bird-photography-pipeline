@@ -1077,6 +1077,99 @@ def manual_scan():
     return jsonify({"ok": True, "count": len(state["batches"])})
 
 
+# ── Album curator (/curate) ───────────────────────────────────────────────────
+# Carousel review of recent shooting days on the Synology; picks persist in
+# ~/Downloads/.curate_picks.json and sync replaces the day's -best/-wildlife/
+# -sadie/-family albums. All NAS traffic proxies through lr_host (mDNS).
+
+CURATE_FILE  = DOWNLOADS / ".curate_picks.json"
+CURATE_KINDS = ("best", "wildlife", "sadie", "family")
+
+def _curate_picks() -> dict:
+    try:
+        return json.loads(CURATE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+@app.get("/curate")
+def curate_page():
+    return render_template("curate.html")
+
+
+@app.get("/api/curate/state")
+def curate_state():
+    since = request.args.get("since", "2026-07-01")
+    try:
+        with httpx.Client(timeout=180) as client:
+            r = client.get(f"{HOST_BRIDGE}/curate/days", params={"since": since})
+        data = r.json()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"host bridge: {e}"}), 502
+    if not data.get("ok"):
+        return jsonify(data), 502
+    picks = _curate_picks()
+    for d in data["days"]:
+        local = picks.get(d["day"], {})
+        # local edits win; otherwise seed selection from the actual albums
+        d["sel"] = {k: local.get(k, d["albums"].get(k, [])) for k in CURATE_KINDS}
+    return jsonify({"ok": True, "days": data["days"]})
+
+
+@app.post("/api/curate/set")
+def curate_set():
+    body = request.json or {}
+    day, kind = body.get("day"), body.get("kind", "best")
+    if not day or kind not in CURATE_KINDS:
+        return jsonify({"error": "bad day/kind"}), 400
+    picks = _curate_picks()
+    picks.setdefault(day, {})[kind] = body.get("ids", [])
+    CURATE_FILE.write_text(json.dumps(picks))
+    return jsonify({"ok": True})
+
+
+@app.post("/api/curate/sync")
+def curate_sync():
+    picks = _curate_picks()
+    albums = {}
+    for day, kinds in picks.items():
+        for kind, ids in kinds.items():
+            if kind in CURATE_KINDS:
+                albums[f"{day}-{kind}"] = ids
+    if not albums:
+        return jsonify({"ok": True, "log": ["nothing to sync"]})
+    try:
+        with httpx.Client(timeout=600) as client:
+            r = client.post(f"{HOST_BRIDGE}/curate/sync", json={"albums": albums})
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+
+@app.get("/curate-thumb/<size>/<int:iid>")
+def curate_thumb(size, iid):
+    from flask import Response
+    try:
+        with httpx.Client(timeout=60) as client:
+            r = client.get(f"{HOST_BRIDGE}/curate/thumb/{size}/{iid}")
+        if r.headers.get("content-type", "").startswith("image"):
+            return Response(r.content, mimetype="image/jpeg",
+                            headers={"Cache-Control": "max-age=86400"})
+    except Exception:
+        pass
+    return "", 404
+
+
+@app.get("/api/curate/exif/<int:iid>")
+def curate_exif(iid):
+    try:
+        with httpx.Client(timeout=30) as client:
+            r = client.get(f"{HOST_BRIDGE}/curate/exif/{iid}")
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({}), 502
+
+
 @app.get("/api/lr-status")
 def lr_status():
     """What Lightroom is showing right now — windows, progress dialogs, CPU.

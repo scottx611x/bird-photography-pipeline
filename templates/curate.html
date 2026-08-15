@@ -1,0 +1,158 @@
+<!doctype html><meta charset=utf-8><title>Album curator</title>
+<style>
+body{background:#0b0b0d;color:#ddd;font:14px system-ui;margin:0;overflow:hidden}
+#top{display:flex;gap:14px;align-items:center;padding:8px 14px;background:#16161a}
+#top b{color:#8cf} button{background:#2b6;color:#fff;border:0;border-radius:6px;padding:7px 14px;font-weight:700;cursor:pointer}
+button.gray{background:#444} #msg{color:#9a9;white-space:pre-wrap;font-size:12px;max-height:80px;overflow:auto;padding:0 14px}
+a.back{color:#8cf;text-decoration:none;font-weight:700}
+#stage{display:flex;flex-direction:row;align-items:center;height:calc(100vh - 118px);justify-content:center;gap:14px;overflow:hidden}
+#imgcol{display:flex;flex-direction:column;align-items:center}
+#exif{min-width:170px;max-width:210px;background:#16161a;border-radius:8px;padding:12px;font-size:13px;line-height:1.55}
+#exif b{color:#8cf;display:block;font-size:15px;margin-bottom:2px}
+#exif .lens{color:#888;font-size:11px;line-height:1.3;margin-top:6px}
+#big{max-width:82vw;max-height:calc(100vh - 190px);border:5px solid #333;border-radius:8px;cursor:zoom-in;transition:transform .12s}
+#big.sel{border-color:#3c3}
+#big.wild{border-color:#e90}
+#big.sadie{border-color:#e6e}
+#big.family{border-color:#48f}
+#big.zoomed{transform:scale(2.4);cursor:zoom-out}
+#cap{margin:6px 0 2px;font-size:15px}
+#cap .keep{color:#6f6;font-weight:800} #cap .wild{color:#fb4;font-weight:800}
+#cap .sadie{color:#f8f;font-weight:800} #cap .family{color:#7af;font-weight:800}
+#strip{display:flex;gap:4px;padding:6px 10px;overflow-x:hidden}
+#strip img{height:64px;border-radius:4px;opacity:.45;border:2px solid transparent}
+#strip img.cur{opacity:1;border-color:#8cf} #strip img.sel{opacity:.9;border-color:#3c3}
+kbd{background:#26262c;border-radius:4px;padding:1px 6px;margin:0 2px}
+#load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0b0b0d;font-size:18px;color:#8cf}
+</style>
+<body>
+<div id=top>
+  <a class=back href="/">← workflow</a>
+  <b id=daylbl></b><span id=poslbl></span><span id=keptlbl></span>
+  <span style="flex:1;text-align:center;color:#888">
+    <kbd>→</kbd> skip <kbd>space</kbd>/<kbd>K</kbd> keep <kbd>W</kbd> 🦌 <kbd>S</kbd> 🐕 <kbd>F</kbd> 👨‍👩‍👧 <kbd>X</kbd> unkeep <kbd>Z</kbd> zoom <kbd>N</kbd> next day
+  </span>
+  <button class=gray onclick="setWild()">🦌</button>
+  <button class=gray onclick="setSadie()">🐕</button>
+  <button class=gray onclick="setFamily()">👨‍👩‍👧</button>
+  <button class=gray onclick="jumpDay(-1)">◀ day</button>
+  <button class=gray onclick="jumpDay(1)">day ▶</button>
+  <button id=syncbtn onclick="doSync()">⬆ Sync albums</button>
+</div>
+<div id=stage><div id=imgcol><img id=big><div id=cap></div></div><div id=exif></div></div>
+<div id=strip></div>
+<div id=msg></div>
+<div id=load>Loading days from Synology…</div>
+<script>
+let flat=[], idx=0, sel={}, wl={}, sd={}, fm={};
+async function q(u,o){const r=await fetch(u,o);return r.json()}
+async function boot(){
+  const st=await q('/api/curate/state');
+  if(!st.ok){document.getElementById('load').textContent='Failed: '+(st.error||'?');return}
+  for(const d of st.days){
+    sel[d.day]=new Set(d.sel.best); wl[d.day]=new Set(d.sel.wildlife);
+    sd[d.day]=new Set(d.sel.sadie); fm[d.day]=new Set(d.sel.family);
+    d.items.forEach(it=>flat.push({day:d.day, ...it}));
+  }
+  document.getElementById('load').remove();
+  const last=parseInt(localStorage.getItem('curate_last_id')||'-1');
+  const i=flat.findIndex(f=>f.id===last);
+  idx=i>=0?i:0; render();
+}
+function cur(){return flat[idx]}
+let zoomed=false;
+function render(){
+  const c=cur(); if(!c) return;
+  localStorage.setItem('curate_last_id', c.id);
+  zoomed=false;
+  const s=sel[c.day].has(c.id), w=wl[c.day].has(c.id), sda=sd[c.day].has(c.id), fam=fm[c.day].has(c.id);
+  const big=document.getElementById('big');
+  big.onerror=()=>{big.onerror=null;big.src='/curate-thumb/m/'+c.id};
+  big.src='/curate-thumb/xl/'+c.id;
+  big.className=(s?'sel ':'')+(w?'wild ':'')+(sda?'sadie ':'')+(fam?'family':'');
+  document.getElementById('daylbl').textContent=c.day;
+  const di=flat.filter(f=>f.day===c.day), pos=di.findIndex(f=>f.id===c.id);
+  document.getElementById('poslbl').textContent=(pos+1)+' / '+di.length;
+  document.getElementById('keptlbl').textContent=
+    'kept: '+sel[c.day].size+' · wild: '+wl[c.day].size+' · sadie: '+sd[c.day].size+' · fam: '+fm[c.day].size;
+  document.getElementById('cap').innerHTML=c.fn+
+    (s?' <span class=keep>✓ KEEP</span>':'')+(w?' <span class=wild>🦌</span>':'')+
+    (sda?' <span class=sadie>🐕</span>':'')+(fam?' <span class=family>👨‍👩‍👧</span>':'');
+  const eid=c.id;
+  q('/api/curate/exif/'+eid).then(x=>{
+    if(cur().id!==eid) return;
+    document.getElementById('exif').innerHTML = !x||!x.shutter&&!x.camera ? '' :
+      `<b>${x.shutter}</b><b>${x.aperture}</b><b>ISO ${x.iso}</b>`+
+      `${x.focal}<br>${x.time}<br>${x.res}`+
+      `<div class=lens>${x.camera}<br>${x.lens}</div>`;
+  });
+  const strip=document.getElementById('strip'); strip.innerHTML='';
+  for(let i=Math.max(0,idx-3); i<Math.min(flat.length, idx+12); i++){
+    const f=flat[i], im=document.createElement('img');
+    im.src='/curate-thumb/m/'+f.id; im.loading='lazy';
+    im.className=(i===idx?'cur ':'')+(sel[f.day].has(f.id)?'sel':'');
+    im.onclick=()=>{idx=i;render()};
+    strip.appendChild(im);
+  }
+  for(let i=idx+1;i<Math.min(flat.length,idx+5);i++){(new Image()).src='/curate-thumb/xl/'+flat[i].id}
+}
+async function push(kind, set, day){
+  await q('/api/curate/set',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({day:day,kind:kind,ids:[...set]})});
+}
+async function setPick(on){
+  const c=cur(); on?sel[c.day].add(c.id):sel[c.day].delete(c.id);
+  render(); await push('best', sel[c.day], c.day);
+}
+async function setWild(){
+  const c=cur(); wl[c.day].has(c.id)?wl[c.day].delete(c.id):wl[c.day].add(c.id);
+  render(); await push('wildlife', wl[c.day], c.day);
+}
+async function setSadie(){
+  const c=cur(); sd[c.day].has(c.id)?sd[c.day].delete(c.id):sd[c.day].add(c.id);
+  render(); await push('sadie', sd[c.day], c.day);
+}
+async function setFamily(){
+  const c=cur(); fm[c.day].has(c.id)?fm[c.day].delete(c.id):fm[c.day].add(c.id);
+  render(); await push('family', fm[c.day], c.day);
+}
+function jumpDay(dir){
+  const d=cur().day; let i=idx;
+  if(dir>0){while(i<flat.length-1&&flat[i].day===d)i++;}
+  else{while(i>0&&flat[i].day===d)i--; const d2=flat[i].day; while(i>0&&flat[i-1].day===d2)i--;}
+  idx=i; render();
+}
+async function doSync(){
+  const b=document.getElementById('syncbtn'); b.disabled=true; b.textContent='⏳ syncing…';
+  try{
+    const r=await q('/api/curate/sync',{method:'POST'});
+    document.getElementById('msg').textContent=(r.log||[r.error||'sync failed']).join('\n');
+  }finally{ b.disabled=false; b.textContent='⬆ Sync albums'; }
+}
+const bigEl=document.getElementById('big');
+function toggleZoom(ev){
+  const c=cur(); if(!c) return;
+  zoomed=!zoomed;
+  if(zoomed&&ev){const r=bigEl.getBoundingClientRect();
+    bigEl.style.transformOrigin=((ev.clientX-r.left)/r.width*100)+'% '+((ev.clientY-r.top)/r.height*100)+'%';}
+  bigEl.classList.toggle('zoomed', zoomed);
+}
+bigEl.addEventListener('click', toggleZoom);
+bigEl.addEventListener('mousemove', ev=>{
+  if(!zoomed) return;
+  const r=bigEl.getBoundingClientRect();
+  bigEl.style.transformOrigin=((ev.clientX-r.left)/r.width*100)+'% '+((ev.clientY-r.top)/r.height*100)+'%';
+});
+document.addEventListener('keydown',e=>{
+  if(e.key==='z'||e.key==='Z'){toggleZoom()}
+  else if(e.key==='ArrowRight'){idx=Math.min(flat.length-1,idx+1);render()}
+  else if(e.key==='ArrowLeft'){idx=Math.max(0,idx-1);render()}
+  else if(e.key===' '||e.key==='k'||e.key==='K'){e.preventDefault();setPick(!sel[cur().day].has(cur().id))}
+  else if(e.key==='x'||e.key==='X'){setPick(false)}
+  else if(e.key==='w'||e.key==='W'){setWild()}
+  else if(e.key==='s'||e.key==='S'){setSadie()}
+  else if(e.key==='f'||e.key==='F'){setFamily()}
+  else if(e.key==='n'||e.key==='N'){jumpDay(1)}
+});
+boot();
+</script>
