@@ -309,7 +309,7 @@ def _run_batch(folder_name: str, start_step: str = "import"):
         # too early would write un-denoised JPEGs. LR pegs the CPU while
         # enhancing; treat sustained-quiet as done. Skippable via Continue.
         set_step("denoising")
-        log("Lightroom is denoising every photo — export starts automatically when it finishes.")
+        log("Lightroom is denoising every photo — you'll choose when to export once it finishes.")
         quiet, waited = 0, 0
         while waited < 3600:
             time.sleep(10); waited += 10
@@ -329,11 +329,26 @@ def _run_batch(folder_name: str, start_step: str = "import"):
                 log("Lightroom looks idle — denoise finished.")
                 break
         else:
-            log("Denoise wait hit the 60-minute cap — continuing to export.")
+            log("Denoise wait hit the 60-minute cap.")
         if state.get("stop_requested"): return
 
-    # ── Step 4+: Export → Post (always runs) ─────────────────────────────────
-    _pick_export_post()
+    # ── Step 4: explicit export gate — never auto-trigger Lightroom's
+    # Export-with-Previous (it can export the whole catalog if LR lost the
+    # batch context, e.g. after a restart). The user chooses: trigger it,
+    # or export manually and have the files collected. ────────────────────────
+    set_step("export_ready")
+    log("Denoise done. Click ▶ Export to trigger Lightroom, or export yourself and click Collect.")
+    while True:
+        time.sleep(0.5)
+        with lock:
+            step_changed = state["proc_step"] != "export_ready"
+            stopped      = state["stop_requested"]
+        if step_changed or stopped:
+            break
+    if state.get("stop_requested"): return
+    with lock:
+        mode = state.pop("_export_mode", "trigger")
+    _pick_export_post(trigger=(mode != "collect"))
 
 
 def _pick_export_post(trigger: bool = True):
@@ -800,13 +815,17 @@ def start_process(folder_name: str):
 @app.post("/api/continue")
 def continue_step():
     """Advance from a waiting step to the next automated step."""
+    mode = (request.json or {}).get("mode") if request.is_json else None
     with lock:
         if state["proc_step"] == "importing":
             state["proc_step"] = "continue_toning"
         elif state["proc_step"] == "denoise":
             state["proc_step"] = "copy_pasting"
         elif state["proc_step"] == "denoising":
-            # skip the denoise-queue wait and go straight to export
+            # skip the denoise-queue wait; lands on the export_ready gate
+            state["proc_step"] = "export_ready_skip"
+        elif state["proc_step"] == "export_ready":
+            state["_export_mode"] = mode or "trigger"
             state["proc_step"] = "exporting"
     return jsonify({"ok": True})
 

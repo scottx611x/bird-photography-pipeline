@@ -590,7 +590,7 @@ const STAGES = [
   { label: "Import",  steps: ["importing","continue_toning"],           back: null   },
   { label: "Tone",    steps: ["toning"],                                back: "tone"   },
   { label: "Denoise", steps: ["denoise","copy_pasting","denoising"],    back: "denoise"},
-  { label: "Export",  steps: ["exporting","export_wait","export_done"], back: "pick"   },
+  { label: "Export",  steps: ["export_ready","export_ready_skip","exporting","export_wait","export_done"], back: "pick"   },
   { label: "Post",    steps: ["posting"],                               back: null   },
 ];
 
@@ -609,7 +609,9 @@ const STEP_INFO = {
   toning:          { label: "Auto-tone",   msg: "Applying Auto Settings to all photos…", pulse: true },
   denoise:         { label: "Denoise",     msg: "Check <b>Denoise</b> on one photo in Lightroom's Edit panel → Detail section, then click Continue — settings will spread to all.", btns: true, collect: true },
   copy_pasting:    { label: "Denoise",     msg: "Spreading settings to all photos…", pulse: true },
-  denoising:       { label: "Denoise",     msg: "Lightroom is denoising every photo — export starts automatically when it goes quiet. Continue skips the wait.", btns: true, collect: true, pulse: true },
+  denoising:       { label: "Denoise",     msg: "Lightroom is denoising every photo — when it goes quiet you'll choose when to export. Continue skips the wait.", btns: true, collect: true, pulse: true },
+  export_ready:    { label: "Export",      msg: "Ready to export. <b>▶ Export</b> triggers Lightroom's Export-with-Previous (only safe if Lightroom has stayed on this batch) — or export yourself and click <b>Collect exports</b>.", exportGate: true },
+  export_ready_skip:{ label: "Export",     msg: "Ready to export.", exportGate: true },
   exporting:       { label: "Exporting",   msg: "Exporting all photos — cull on the posting screen with ✕ once they land.", pulse: true },
   export_wait:     { label: "Export",      msg: "Lightroom is exporting. Click Done when it finishes.", done: true },
   export_done:     { label: "Export",      msg: "Export complete — interrupted before posting. Click Resume.", resume: true },
@@ -663,6 +665,8 @@ function renderStepCard(step, batch, data) {
   if (s.msg)  content += `<div class="step-msg">${s.msg}</div>`;
 
   let btns = "";
+  if (s.exportGate) btns += `<button class="btn btn-primary btn-sm" onclick="doExportChoice('trigger')">▶ Export</button>
+    <button class="btn btn-neutral btn-sm" onclick="doExportChoice('collect')">Collect exports</button>`;
   if (s.btns)   btns += `<button class="btn btn-primary btn-sm" onclick="doContinue()">Continue →</button>`;
   if (s.collect) btns += `<button class="btn btn-neutral btn-sm" onclick="gotoStep('collect')" title="Skip all Lightroom automation and pick up files you exported yourself">I exported manually →</button>`;
   if (s.done)   btns += `<button class="btn btn-success btn-sm" onclick="doDone()">✓ Done</button>`;
@@ -1064,6 +1068,10 @@ async function showLrStatus() {
 }
 
 async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
+async function doExportChoice(mode) {
+  await fetch("/api/continue", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({mode})});
+}
 async function doDone()      { await fetch("/api/done", {method:"POST"}); }
 async function doReset(f)    { await fetch(`/api/reset/${enc(f)}`, {method:"POST"}); }
 async function doSkip(f)     { await fetch(`/api/skip/${enc(f)}`, {method:"POST"}); }
