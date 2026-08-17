@@ -1249,6 +1249,12 @@ async function fetchCombined(run) {
   });
 }
 async function synoFetchRun(album, run, total) {
+  // With combine boxes checked, any Fetch & run means "fetch the selection
+  // (plus this card) as one combined batch" — not just this one album.
+  if (synoCombine.size) {
+    synoCombine.set(album, total || 0);
+    if (synoCombine.size >= 2) return fetchCombined(run);
+  }
   const btn = document.getElementById('sfr-' + fid(album));
   if (btn) { btn.disabled = true; btn.textContent = '⬇ Fetching…'; }
   if (!logVisible) toggleLog();   // surface progress
