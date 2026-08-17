@@ -1376,7 +1376,8 @@ def force_advance():
             "continue_toning": "toning",
             "toning":          "denoise",
             "copy_pasting":    "denoising",
-            "denoising":       "exporting",
+            "denoising":       "export_ready_skip",
+            "export_ready":    "exporting",
             "exporting":       "export_wait",
             "export_done":     "posting",
         }.get(step)
@@ -1387,7 +1388,9 @@ def force_advance():
                 cutoff = _time.time() - 7200  # files exported in the last 2 hours
                 recent = [f for f in _birds_snapshot()
                           if (BIRDS_DIR / f).stat().st_mtime >= cutoff]
-                state["new_birds"] = recent if recent else _birds_snapshot()
+                # Never fall back to the whole folder — an empty result means
+                # nothing recent landed; Rescan exports can widen from the UI.
+                state["new_birds"] = recent
                 state["arrangement"] = None
     if next_step:
         log(f"Force-advanced: {step} → {next_step}")
