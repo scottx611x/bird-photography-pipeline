@@ -110,6 +110,7 @@ def scan_batches():
 
     # Do all I/O outside the lock so requests are never blocked
     new_batches = {}
+    recounts = {}
     try:
         entries = list(DOWNLOADS.iterdir())
     except Exception:
@@ -122,18 +123,20 @@ def scan_batches():
         if not m:
             continue
         name = d.name
+        try:
+            raws = [f for f in d.iterdir() if f.suffix.lower() in RAW_SUFFIXES]
+        except Exception:
+            raws = []
         with lock:
             already = name in state["batches"]
         if already:
+            # keep the count live — folders fill up during a Synology fetch
+            recounts[name] = len(raws)
             continue
 
         # I/O outside lock
         date_str = m.group(1)
         suffix   = m.group(2) or "best"
-        try:
-            raws = [f for f in d.iterdir() if f.suffix.lower() in RAW_SUFFIXES]
-        except Exception:
-            raws = []
         location = "Rea St." if (suffix == "best" or suffix.startswith("best") or suffix == "multi") \
                    else suffix.replace("-", " ").title()
         # Normalize date before parsing (handles both 2026-5-3 and 2026-05-03)
@@ -150,6 +153,13 @@ def scan_batches():
             "raw_count": len(raws),
             "status":    "pending",
         }
+
+    if recounts:
+        with lock:
+            for name, n in recounts.items():
+                b = state["batches"].get(name)
+                if b and b.get("raw_count") != n:
+                    b["raw_count"] = n
 
     # Brief lock hold — no I/O; restore persisted status if available
     if new_batches:
