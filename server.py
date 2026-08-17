@@ -435,7 +435,7 @@ def _pick_export_post(trigger: bool = True):
         no_post = state.get("no_post", False)
     if no_post:
         with lock:
-            batch = state["batches"].get(folder_name)
+            batch = state["batches"].get(state["active"])
             if batch:
                 batch["status"] = "done"
                 batch["birds"]  = new
@@ -826,17 +826,35 @@ def start_process(folder_name: str):
 def continue_step():
     """Advance from a waiting step to the next automated step."""
     mode = (request.json or {}).get("mode") if request.is_json else None
+    resume_export = False
     with lock:
-        if state["proc_step"] == "importing":
+        step, alive = state["proc_step"], state["thread_active"]
+        if step == "importing":
             state["proc_step"] = "continue_toning"
-        elif state["proc_step"] == "denoise":
+        elif step == "denoise":
             state["proc_step"] = "copy_pasting"
-        elif state["proc_step"] == "denoising":
+        elif step == "denoising":
             # skip the denoise-queue wait; lands on the export_ready gate
-            state["proc_step"] = "export_ready_skip"
-        elif state["proc_step"] == "export_ready":
+            state["proc_step"] = "export_ready_skip" if alive else "export_ready"
+        elif step in ("export_ready", "export_ready_skip"):
             state["_export_mode"] = mode or "trigger"
             state["proc_step"] = "exporting"
+            # A container restart kills the run thread but restores the step —
+            # nothing is waiting on the gate then, so run the export tail fresh.
+            resume_export = not alive
+    if resume_export:
+        def _resume():
+            with lock:
+                state["stop_requested"] = False
+                state["thread_active"]  = True
+                m = state.pop("_export_mode", "trigger")
+            log("↩ Resuming export (run thread was lost in a restart).")
+            try:
+                _pick_export_post(trigger=(m != "collect"))
+            finally:
+                with lock:
+                    state["thread_active"] = False
+        threading.Thread(target=_resume, daemon=True).start()
     return jsonify({"ok": True})
 
 
