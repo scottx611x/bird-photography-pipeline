@@ -1392,6 +1392,8 @@ def force_advance():
                 # nothing recent landed; Rescan exports can widen from the UI.
                 state["new_birds"] = recent
                 state["arrangement"] = None
+    if next_step == "posting":
+        _record_photo_dates(state["new_birds"])
     if next_step:
         log(f"Force-advanced: {step} → {next_step}")
     save_state()
