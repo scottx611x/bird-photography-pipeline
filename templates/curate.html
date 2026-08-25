@@ -55,6 +55,7 @@ kbd{background:#26262c;border-radius:4px;padding:1px 6px;margin:0 2px}
   <span id=topTags><button class=gray onclick="setWild()">🦌</button>
   <button class=gray onclick="setSadie()">🐕</button>
   <button class=gray onclick="setFamily()">👨‍👩‍👧</button></span>
+  <button class=gray id=donebtn onclick="toggleDone()"></button>
   <button class=gray onclick="jumpDay(-1)">◀ day</button>
   <button class=gray onclick="jumpDay(1)">day ▶</button>
   <button id=syncbtn onclick="doSync()">⬆ Sync albums</button>
@@ -72,16 +73,42 @@ kbd{background:#26262c;border-radius:4px;padding:1px 6px;margin:0 2px}
 <div id=msg></div>
 <div id=load>Loading days from Synology…</div>
 <script>
-let flat=[], idx=0, sel={}, wl={}, sd={}, fm={};
+let allDays=[], flat=[], idx=0, sel={}, wl={}, sd={}, fm={};
+let showDone = localStorage.getItem('curate_show_done')==='1';
+// A day is "done" once it has any album on the NAS — skip it by default so a
+// long backlog doesn't make you re-review work you've already finished.
+function dayDone(d){ return Object.values(d.albums||{}).some(v => v && v.length); }
+function buildFlat(){
+  flat=[];
+  for(const d of allDays){
+    if(!showDone && dayDone(d)) continue;
+    d.items.forEach(it=>flat.push({day:d.day, ...it}));
+  }
+}
+function updateDoneBtn(){
+  const n = allDays.filter(dayDone).length;
+  const b = document.getElementById('donebtn');
+  if(b) b.textContent = showDone ? `👁 all (${n} done)` : `⊘ ${n} done hidden`;
+}
+function toggleDone(){
+  const keep = cur() && cur().id;
+  showDone = !showDone;
+  localStorage.setItem('curate_show_done', showDone ? '1' : '0');
+  buildFlat(); updateDoneBtn();
+  const i = flat.findIndex(f => f.id === keep);
+  idx = i >= 0 ? i : 0;
+  render();
+}
 async function q(u,o){const r=await fetch(u,o);return r.json()}
 async function boot(){
   const st=await q('/api/curate/state');
   if(!st.ok){document.getElementById('load').textContent='Failed: '+(st.error||'?');return}
+  allDays = st.days;
   for(const d of st.days){
     sel[d.day]=new Set(d.sel.best); wl[d.day]=new Set(d.sel.wildlife);
     sd[d.day]=new Set(d.sel.sadie); fm[d.day]=new Set(d.sel.family);
-    d.items.forEach(it=>flat.push({day:d.day, ...it}));
   }
+  buildFlat(); updateDoneBtn();
   document.getElementById('load').remove();
   const last=parseInt(localStorage.getItem('curate_last_id')||'-1');
   const i=flat.findIndex(f=>f.id===last);
@@ -91,7 +118,18 @@ function cur(){return flat[idx]}
 function nav(d){idx=Math.max(0,Math.min(flat.length-1,idx+d));render()}
 let zoomed=false;
 function render(){
-  const c=cur(); if(!c) return;
+  const c=cur();
+  if(!c){
+    document.getElementById('big').removeAttribute('src');
+    document.getElementById('cap').innerHTML =
+      '<b>Nothing left to review.</b> Every day in range already has an album — tap “done hidden” above to revisit them.';
+    document.getElementById('daylbl').textContent='';
+    document.getElementById('poslbl').textContent='';
+    document.getElementById('keptlbl').textContent='';
+    document.getElementById('strip').innerHTML='';
+    document.getElementById('exif').innerHTML='';
+    return;
+  }
   localStorage.setItem('curate_last_id', c.id);
   zoomed=false;
   const s=sel[c.day].has(c.id), w=wl[c.day].has(c.id), sda=sd[c.day].has(c.id), fam=fm[c.day].has(c.id);
