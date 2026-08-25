@@ -263,6 +263,65 @@ def process_batch(folder_name: str, no_post: bool = False, start_step: str = "im
             state["thread_active"] = False
 
 
+def _denoise_and_export_tail():
+    """Everything after the manual Denoise gate: spread the settings, wait out
+    Lightroom's AI queue, then park at the export gate. Split out of _run_batch
+    so a run whose background thread died (a container redeploy kills it while
+    the step is restored from disk) can be resumed from the UI."""
+    set_step("copy_pasting")
+    log("Spreading Denoise settings to all photos…")
+    result = call_host("copy-and-paste")
+    for line in result.get("output", "").splitlines():
+        log(f"  {line}")
+    log("Denoise applied to all photos." if result.get("ok") else "Paste may have failed — check Lightroom.")
+
+    # Wait for Lightroom's background AI-denoise queue to drain — exporting
+    # too early would write un-denoised JPEGs. LR pegs the CPU while
+    # enhancing; treat sustained-quiet as done. Skippable via Continue.
+    set_step("denoising")
+    log("Lightroom is denoising every photo — you'll choose when to export once it finishes.")
+    quiet, waited = 0, 0
+    while waited < 3600:
+        time.sleep(10); waited += 10
+        with lock:
+            step_changed = state["proc_step"] != "denoising"
+            stopped      = state["stop_requested"]
+        if step_changed or stopped:
+            break
+        if waited < 30:      # let the enhancement queue spin up first
+            continue
+        try:
+            cpu = float(call_host("lr-busy", timeout=15).get("output") or 0)
+        except (TypeError, ValueError):
+            continue
+        quiet = quiet + 1 if cpu < 25 else 0
+        if quiet >= 6:       # ~1 min of idle Lightroom
+            log("Lightroom looks idle — denoise finished.")
+            break
+    else:
+        log("Denoise wait hit the 60-minute cap.")
+    if state.get("stop_requested"): return
+
+    # ── Step 4: explicit export gate — never auto-trigger Lightroom's
+    # Export-with-Previous (it can export the whole catalog if LR lost the
+    # batch context, e.g. after a restart). The user chooses: trigger it,
+    # or export manually and have the files collected. ────────────────────────
+    set_step("export_ready")
+    log("Denoise done. Click ▶ Export to trigger Lightroom, or export yourself and click Collect.")
+    while True:
+        time.sleep(0.5)
+        with lock:
+            step_changed = state["proc_step"] != "export_ready"
+            stopped      = state["stop_requested"]
+        if step_changed or stopped:
+            break
+    if state.get("stop_requested"): return False
+    with lock:
+        mode = state.pop("_export_mode", "trigger")
+    _pick_export_post(trigger=(mode != "collect"))
+    return True
+
+
 def _run_batch(folder_name: str, start_step: str = "import"):
     mac_path = str(Path(MAC_HOME) / "Downloads" / folder_name)
 
@@ -318,57 +377,10 @@ def _run_batch(folder_name: str, start_step: str = "import"):
                 break
         if state.get("stop_requested"): return
 
-        set_step("copy_pasting")
-        log("Spreading Denoise settings to all photos…")
-        result = call_host("copy-and-paste")
-        for line in result.get("output", "").splitlines():
-            log(f"  {line}")
-        log("Denoise applied to all photos." if result.get("ok") else "Paste may have failed — check Lightroom.")
+        if not _denoise_and_export_tail():
+            return
+        return
 
-        # Wait for Lightroom's background AI-denoise queue to drain — exporting
-        # too early would write un-denoised JPEGs. LR pegs the CPU while
-        # enhancing; treat sustained-quiet as done. Skippable via Continue.
-        set_step("denoising")
-        log("Lightroom is denoising every photo — you'll choose when to export once it finishes.")
-        quiet, waited = 0, 0
-        while waited < 3600:
-            time.sleep(10); waited += 10
-            with lock:
-                step_changed = state["proc_step"] != "denoising"
-                stopped      = state["stop_requested"]
-            if step_changed or stopped:
-                break
-            if waited < 30:      # let the enhancement queue spin up first
-                continue
-            try:
-                cpu = float(call_host("lr-busy", timeout=15).get("output") or 0)
-            except (TypeError, ValueError):
-                continue
-            quiet = quiet + 1 if cpu < 25 else 0
-            if quiet >= 6:       # ~1 min of idle Lightroom
-                log("Lightroom looks idle — denoise finished.")
-                break
-        else:
-            log("Denoise wait hit the 60-minute cap.")
-        if state.get("stop_requested"): return
-
-    # ── Step 4: explicit export gate — never auto-trigger Lightroom's
-    # Export-with-Previous (it can export the whole catalog if LR lost the
-    # batch context, e.g. after a restart). The user chooses: trigger it,
-    # or export manually and have the files collected. ────────────────────────
-    set_step("export_ready")
-    log("Denoise done. Click ▶ Export to trigger Lightroom, or export yourself and click Collect.")
-    while True:
-        time.sleep(0.5)
-        with lock:
-            step_changed = state["proc_step"] != "export_ready"
-            stopped      = state["stop_requested"]
-        if step_changed or stopped:
-            break
-    if state.get("stop_requested"): return
-    with lock:
-        mode = state.pop("_export_mode", "trigger")
-    _pick_export_post(trigger=(mode != "collect"))
 
 
 def _pick_export_post(trigger: bool = True):
@@ -834,33 +846,39 @@ def start_process(folder_name: str):
 
 @app.post("/api/continue")
 def continue_step():
-    """Advance from a waiting step to the next automated step."""
+    """Advance from a waiting step to the next automated step.
+
+    A container redeploy kills the run thread while the step is restored from
+    disk, so a waiting step can have nobody listening. When that happens we
+    respawn the remaining work instead of silently doing nothing."""
     mode = (request.json or {}).get("mode") if request.is_json else None
-    resume_export = False
+    resume = None
     with lock:
         step, alive = state["proc_step"], state["thread_active"]
         if step == "importing":
             state["proc_step"] = "continue_toning"
         elif step == "denoise":
             state["proc_step"] = "copy_pasting"
+            resume = "denoise" if not alive else None
         elif step == "denoising":
             # skip the denoise-queue wait; lands on the export_ready gate
             state["proc_step"] = "export_ready_skip" if alive else "export_ready"
         elif step in ("export_ready", "export_ready_skip"):
             state["_export_mode"] = mode or "trigger"
             state["proc_step"] = "exporting"
-            # A container restart kills the run thread but restores the step —
-            # nothing is waiting on the gate then, so run the export tail fresh.
-            resume_export = not alive
-    if resume_export:
+            resume = "export" if not alive else None
+    if resume:
         def _resume():
             with lock:
                 state["stop_requested"] = False
                 state["thread_active"]  = True
                 m = state.pop("_export_mode", "trigger")
-            log("↩ Resuming export (run thread was lost in a restart).")
+            log("↩ Resuming run (its thread was lost in a restart).")
             try:
-                _pick_export_post(trigger=(m != "collect"))
+                if resume == "denoise":
+                    _denoise_and_export_tail()
+                else:
+                    _pick_export_post(trigger=(m != "collect"))
             finally:
                 with lock:
                     state["thread_active"] = False
