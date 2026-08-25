@@ -812,7 +812,7 @@ function renderPostForm(batch, data) {
                    : `<div class="split-banner">📦 <b>No photos yet</b> — export from Lightroom into ~/Desktop/birbs, then <button class="btn btn-neutral btn-sm" onclick="rescanExports(this)">⟳ Rescan exports</button></div>`}
     <div class="shared-fields">
       <div class="row">
-        <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.folder.endsWith('-multi') ? '' : (batch.cap_date||'')}" placeholder="auto (per-photo EXIF)" /></div>
+        <div><div class="fld-lbl">Caption date</div><input id="pf-date" value="${batch.folder.includes('-multi') ? '' : (batch.cap_date||'')}" placeholder="auto (per-photo EXIF)" /></div>
         <div>
           <div class="fld-lbl">Post on <span id="pf-schedule-hint" style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.6"></span></div>
           <input id="pf-schedule" type="date" value="${schedDefault}" ${willSplit ? 'disabled title="Split posts auto-schedule across consecutive open days"' : ''} />

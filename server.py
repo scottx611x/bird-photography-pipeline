@@ -144,7 +144,8 @@ def scan_batches():
         # I/O outside lock
         date_str = m.group(1)
         suffix   = m.group(2) or "best"
-        location = "Rea St." if (suffix == "best" or suffix.startswith("best") or suffix == "multi") \
+        location = "Rea St." if (suffix == "best" or suffix.startswith("best")
+                                 or suffix.startswith("multi")) \
                    else suffix.replace("-", " ").title()
         # Normalize date before parsing (handles both 2026-5-3 and 2026-05-03)
         y, mo, day = date_str.split("-")
@@ -1502,9 +1503,24 @@ def syno_fetch():
     if albums:
         # Combined batch: several (small) albums fetched into one dated folder.
         # Per-photo capture dates keep captions correct at posting time.
-        newest = max(re.match(r"\d{4}-\d{1,2}-\d{1,2}", a).group(0)
-                     for a in albums if re.match(r"\d{4}-\d{1,2}-\d{1,2}", a))
-        album = f"{newest}-multi"
+        # Name it after every date inside so the card says what it holds:
+        # one day -> 2026-08-09-multi, several -> 2026-08-10-multi-8-9+8-10.
+        seen = []
+        for a in albums:
+            m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", a)
+            if m:
+                seen.append(tuple(int(x) for x in m.groups()))
+        dates = sorted(set(seen))
+        if not dates:
+            return jsonify({"error": "combined albums need date-prefixed names"}), 400
+        newest = "%04d-%02d-%02d" % dates[-1]
+        if len(dates) == 1:
+            album = f"{newest}-multi"
+        else:
+            md = lambda t: f"{t[1]}-{t[2]}"
+            tags = ("+".join(md(t) for t in dates) if len(dates) <= 4
+                    else f"{md(dates[0])}_thru_{md(dates[-1])}")
+            album = f"{newest}-multi-{tags}"
         with lock:
             state["multi_sources"][album] = albums
         save_state()
