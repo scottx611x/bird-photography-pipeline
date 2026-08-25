@@ -583,6 +583,8 @@ let synoShowAll     = false; // include old (>60d) / skipped remote albums
 let synoError       = '';    // last Synology load error
 let synoSkipped     = new Set(); // album names the user has skipped (synced from server)
 let synoDone        = new Set(); // album names already posted (hidden even if local folder is gone)
+let multiSources    = {};        // "<date>-multi" folder -> [source album names]
+let multiChildren   = new Set(); // every album folded into some combined batch
 let synoForceRefresh = false;    // bypass the server album cache on next load (Scan)
 let synoLoading      = false;    // a Synology album-list fetch is in flight (drives skeletons)
 const PER_POST      = 10;        // Instagram's max images per carousel post
@@ -840,6 +842,8 @@ function renderBatches(data) {
   const list = document.getElementById("batch-list");
   (data.syno_skipped || []).forEach(n => synoSkipped.add(n));   // merge server-side skips
   (data.done_albums  || []).forEach(n => synoDone.add(n));      // posted albums stay hidden
+  multiSources  = data.multi_sources || {};
+  multiChildren = new Set(Object.values(multiSources).flat());
   const localFolders = new Set((data.batches || []).map(b => b.folder));
 
   const all  = (data.batches || []).filter(b =>
@@ -880,6 +884,8 @@ function renderBatches(data) {
     let meta = `<span class="meta-pill">📅 ${b.cap_date}</span>`;
     if (b.location) meta += `<span class="meta-pill">📍 ${b.location}</span>`;
     meta += `<span class="meta-pill">${b.raw_count} RAWs</span>`;
+    const kids = multiSources[b.folder] || [];
+    if (kids.length) meta += `<span class="meta-pill" title="Albums combined into this batch">📦 ${kids.join(" · ")}</span>`;
 
     let actions = "";
     if (b.status === "pending")
@@ -1125,7 +1131,10 @@ function _albumRecent(name) {
 
 // Is this album hidden by default? (old, skipped, or already posted)
 function _albumHidden(name) {
-  return synoSkipped.has(name) || synoDone.has(name) || !_albumRecent(name);
+  // Albums folded into a combined batch are shown on that batch's card
+  // instead — a duplicate "Fetch & run" here just invites double work.
+  return synoSkipped.has(name) || synoDone.has(name)
+      || multiChildren.has(name) || !_albumRecent(name);
 }
 
 // Remote albums to show as cards: batch-namable, not already local;

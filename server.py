@@ -822,6 +822,7 @@ def get_state():
             "syno_skipped":   sorted(state["syno_skipped"]),
             "done_albums":    sorted(state["done_albums"]),
             "syno_fetching":  dict(state["syno_fetching"]),
+            "multi_sources":  dict(state.get("multi_sources", {})),
         }
     return jsonify(payload)
 
