@@ -409,6 +409,9 @@
     .fetch-bar-fill { height: 100%; background: var(--blue); transition: width .4s ease; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
     .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
+    .beta-msg { font-size: 11px; margin-left: 6px; align-self: center; }
+    .beta-msg.good { color: var(--green, #6c6); }
+    .beta-msg.bad  { color: var(--red, #e66); }
     .combine-box { display:flex; align-items:center; gap:4px; font-size:11px; color:var(--muted);
       margin-left:auto; cursor:pointer; user-select:none; }
     .combine-bar { display:flex; align-items:center; gap:10px; padding:10px 14px; margin:8px 0;
@@ -676,7 +679,8 @@ function renderStepCard(step, batch, data) {
 
   let btns = "";
   if (s.autoDenoise) btns += `<button class="btn btn-neutral btn-sm" id="autodn" onclick="autoDenoise()" title="Beta: tick the Denoise checkbox for you, verified by screenshot">⚡ Auto-Denoise (beta)</button>
-    <button class="btn btn-neutral btn-sm" id="autodust" onclick="autoDust()" title="Beta: tick Distraction Removal > Dust > Apply, verified by screenshot">🧹 Auto-Dust (beta)</button>`;
+    <button class="btn btn-neutral btn-sm" id="autodust" onclick="autoDust()" title="Beta: tick Distraction Removal > Dust > Apply, verified by screenshot">🧹 Auto-Dust (beta)</button>
+    <span id="betamsg" class="beta-msg"></span>`;
   if (s.exportGate) btns += `<button class="btn btn-primary btn-sm" onclick="doExportChoice('trigger')">▶ Export</button>
     <button class="btn btn-neutral btn-sm" onclick="doExportChoice('collect')">Collect exports</button>`;
   if (s.btns)   btns += `<button class="btn btn-primary btn-sm" onclick="doContinue()">Continue →</button>`;
@@ -1098,28 +1102,32 @@ async function showLrStatus() {
 }
 
 async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
-async function autoDust() {
-  const b = document.getElementById('autodust');
-  if (b) { b.disabled = true; b.textContent = '🧹 Applying…'; }
-  if (!logVisible) toggleLog();
+function betaSay(text, ok) {
+  const m = document.getElementById('betamsg');
+  if (m) { m.textContent = text; m.className = 'beta-msg ' + (ok ? 'good' : 'bad'); }
+}
+async function betaRun(url, btn, label, busy) {
+  const b = document.getElementById(btn);
+  if (b) { b.disabled = true; b.textContent = busy; }
+  betaSay('working…', true);
   try {
-    const r = await (await fetch('/api/lr-dust', {method:'POST'})).json();
-    if (!r.ok) alert('Auto-Dust didn\'t take:\n\n' + (r.output || r.error || '?'));
+    const r = await (await fetch(url, {method:'POST'})).json();
+    // The log column is hidden on phones, so report the outcome inline —
+    // otherwise a successful no-op looks exactly like a dead button.
+    const last = (r.output || r.error || '').trim().split('\n').filter(Boolean).pop() || (r.ok ? 'done' : 'failed');
+    betaSay(last, !!r.ok);
+    if (!r.ok) alert(label + ":\n\n" + (r.output || r.error || '?'));
+  } catch (e) {
+    betaSay('request failed', false);
   } finally {
-    if (b) { b.disabled = false; b.textContent = '🧹 Auto-Dust (beta)'; }
+    if (b) { b.disabled = false; b.textContent = label; }
   }
 }
+async function autoDust() {
+  return betaRun('/api/lr-dust', 'autodust', '🧹 Auto-Dust (beta)', '🧹 Applying…');
+}
 async function autoDenoise() {
-  const b = document.getElementById('autodn');
-  if (b) { b.disabled = true; b.textContent = '⚡ Ticking…'; }
-  if (!logVisible) toggleLog();
-  try {
-    const r = await (await fetch('/api/lr-denoise', {method:'POST'})).json();
-    if (!r.ok) alert('Auto-Denoise didn\'t take:\n\n' + (r.output || r.error || '?') +
-                     '\n\nTick Denoise in Lightroom, then Continue.');
-  } finally {
-    if (b) { b.disabled = false; b.textContent = '⚡ Auto-Denoise (beta)'; }
-  }
+  return betaRun('/api/lr-denoise', 'autodn', '⚡ Auto-Denoise (beta)', '⚡ Ticking…');
 }
 async function doExportChoice(mode) {
   await fetch("/api/continue", {method:"POST", headers:{"Content-Type":"application/json"},
