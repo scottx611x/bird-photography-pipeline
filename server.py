@@ -1295,8 +1295,9 @@ def lr_screen():
     window pixels otherwise) — the UI says so rather than pretending."""
     from flask import Response
     try:
+        app = request.args.get("app", "")
         with httpx.Client(timeout=60) as client:
-            r = client.get(f"{HOST_BRIDGE}/screen")
+            r = client.get(f"{HOST_BRIDGE}/screen", params={"app": app} if app else None)
         if r.headers.get("content-type", "").startswith("image"):
             return Response(r.content, mimetype="image/jpeg",
                             headers={"Cache-Control": "no-store"})

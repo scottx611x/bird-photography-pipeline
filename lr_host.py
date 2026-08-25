@@ -35,7 +35,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._json({"ok": True, "host": "lr_host.py"})
-        elif self.path == "/screen":
+        elif self.path.startswith("/screen"):
             self._screen()
         elif self.path.startswith("/curate/"):
             self._curate_get()
@@ -45,10 +45,18 @@ class Handler(BaseHTTPRequestHandler):
     def _screen(self):
         """A downscaled JPEG of the screen — the accessibility dump can't show
         what a Lightroom dialog actually looks like, which matters when the only
-        way in is a phone."""
-        import tempfile
+        way in is a phone. ?app=<name> brings that app forward first, otherwise
+        whatever covers Lightroom is all you'd see."""
+        import tempfile, time as _t
         from io import BytesIO
+        from urllib.parse import urlparse, parse_qs
+        app = (parse_qs(urlparse(self.path).query).get("app") or [""])[0]
         try:
+            if app:
+                subprocess.run(["osascript", "-e",
+                                f'tell application "{app}" to activate'],
+                               capture_output=True, timeout=15)
+                _t.sleep(0.8)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
                 raw = tf.name
             subprocess.run(["/usr/sbin/screencapture", "-x", "-t", "png", raw],

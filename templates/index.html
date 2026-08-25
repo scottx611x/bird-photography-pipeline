@@ -1079,9 +1079,8 @@ function lrScreenshot() {
   w.document.write(`<title>Mac screen</title>
     <meta name=viewport content="width=device-width,initial-scale=1">
     <body style="margin:0;background:#111;color:#ccc;font:13px system-ui">
-    <div style="padding:8px 10px">Live screen · if you only see wallpaper, macOS
-      Screen Recording isn't granted to lr_host yet.</div>
-    <img src="/lr-screen?t=${Date.now()}" style="width:100%;height:auto">`);
+    <div style="padding:8px 10px">Lightroom, brought to front · reload for a fresh shot</div>
+    <img src="/lr-screen?app=Adobe%20Lightroom&t=${Date.now()}" style="width:100%;height:auto">`);
 }
 async function showLrStatus() {
   const m = document.getElementById('lr-status-modal');
