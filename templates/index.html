@@ -409,6 +409,10 @@
     .fetch-bar-fill { height: 100%; background: var(--blue); transition: width .4s ease; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
     .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
+    .beta-spin { display:inline-block; width:9px; height:9px; margin-right:5px;
+      border:2px solid rgba(255,255,255,.25); border-top-color: var(--accent, #5b9aff);
+      border-radius:50%; animation: betaspin .7s linear infinite; vertical-align:-1px; }
+    @keyframes betaspin { to { transform: rotate(360deg); } }
     .beta-msg { font-size: 11px; margin-left: 6px; align-self: center;
       flex-basis: 100%; line-height: 1.45; padding-top: 4px; }
     .beta-msg.good { color: var(--green, #6c6); }
@@ -661,6 +665,11 @@ async function gotoStep(step) {
   });
 }
 
+// Beta actions run for tens of seconds. The poll loop re-renders this card
+// every second, so the busy state has to live outside the DOM or it flashes
+// and vanishes — that also means locking the other step buttons from here.
+let betaState = { busy: null, msg: "", ok: true };
+
 // ── Step card ─────────────────────────────────────────────────────────────────
 function renderStepCard(step, batch, data) {
   const s = STEP_INFO[step];
@@ -678,15 +687,23 @@ function renderStepCard(step, batch, data) {
   let content = "";
   if (s.msg)  content += `<div class="step-msg">${s.msg}</div>`;
 
+  const busy = betaState.busy;
+  const lock = busy ? " disabled" : "";
   let btns = "";
-  if (s.autoDenoise) btns += `<button class="btn btn-neutral btn-sm" id="autodn" onclick="autoDenoise()" title="Experimental: finds and ticks Denoise by sight. Undoes itself if it can't prove it hit the right control.">⚡ Auto-Denoise (beta)</button>
-    <button class="btn btn-neutral btn-sm" id="autodust" onclick="autoDust()" title="Beta: tick Distraction Removal > Dust > Apply, verified by screenshot">🧹 Auto-Dust (beta)</button>
-    <span id="betamsg" class="beta-msg"></span>`;
-  if (s.exportGate) btns += `<button class="btn btn-primary btn-sm" onclick="doExportChoice('trigger')">▶ Export</button>
-    <button class="btn btn-neutral btn-sm" onclick="doExportChoice('collect')">Collect exports</button>`;
-  if (s.btns)   btns += `<button class="btn btn-primary btn-sm" onclick="doContinue()">Continue →</button>`;
-  if (s.collect) btns += `<button class="btn btn-neutral btn-sm" onclick="gotoStep('collect')" title="Skip all Lightroom automation and pick up files you exported yourself">I exported manually →</button>`;
-  if (s.done)   btns += `<button class="btn btn-success btn-sm" onclick="doDone()">✓ Done</button>`;
+  if (s.autoDenoise) {
+    const dnTxt = busy === "denoise" ? "⏳ Working in Lightroom…" : "⚡ Auto-Denoise (beta)";
+    const duTxt = busy === "dust"    ? "⏳ Working in Lightroom…" : "🧹 Auto-Dust (beta)";
+    btns += `<button class="btn btn-neutral btn-sm"${lock} onclick="autoDenoise()" title="Experimental: finds and ticks Denoise by sight. Undoes itself if it can't prove it hit the right control.">${dnTxt}</button>
+    <button class="btn btn-neutral btn-sm"${lock} onclick="autoDust()" title="Experimental: ticks Distraction Removal > Dust > Apply, and undoes itself if unproven.">${duTxt}</button>
+    <span class="beta-msg ${betaState.ok ? 'good' : 'bad'}">${busy
+        ? '<span class="beta-spin"></span> Driving Lightroom — this can take a minute. Other buttons are locked until it finishes.'
+        : (betaState.msg || '')}</span>`;
+  }
+  if (s.exportGate) btns += `<button class="btn btn-primary btn-sm"${lock} onclick="doExportChoice('trigger')">▶ Export</button>
+    <button class="btn btn-neutral btn-sm"${lock} onclick="doExportChoice('collect')">Collect exports</button>`;
+  if (s.btns)   btns += `<button class="btn btn-primary btn-sm"${lock} onclick="doContinue()">Continue →</button>`;
+  if (s.collect) btns += `<button class="btn btn-neutral btn-sm"${lock} onclick="gotoStep('collect')" title="Skip all Lightroom automation and pick up files you exported yourself">I exported manually →</button>`;
+  if (s.done)   btns += `<button class="btn btn-success btn-sm"${lock} onclick="doDone()">✓ Done</button>`;
   if (s.resume) btns += `<button class="btn btn-primary btn-sm" onclick="forceAdvance()">↗ Resume</button>`;
   btns += `<button class="btn btn-neutral btn-sm" onclick="doFinish('${batch.folder}')" title="Mark done without posting — for a combined batch this retires its source albums too">✓ Mark done</button>`;
   btns += `<button class="btn btn-neutral btn-sm" style="margin-left:auto" onclick="doReset('${batch.folder}')">↺ Reset</button>`;
@@ -1104,32 +1121,25 @@ async function showLrStatus() {
 }
 
 async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
-function betaSay(text, ok) {
-  const m = document.getElementById('betamsg');
-  if (m) { m.textContent = text; m.className = 'beta-msg ' + (ok ? 'good' : 'bad'); }
-}
-async function betaRun(url, btn, label, busy) {
-  const b = document.getElementById(btn);
-  if (b) { b.disabled = true; b.textContent = busy; }
-  betaSay('working…', true);
+function betaRerender() { if (lastState) renderBatches(lastState); }
+async function betaRun(url, kind) {
+  if (betaState.busy) return;                 // one at a time
+  betaState = { busy: kind, msg: "", ok: true };
+  betaRerender();
   try {
     const r = await (await fetch(url, {method:'POST'})).json();
-    // The log column is hidden on phones, so report the outcome inline —
-    // otherwise a successful no-op looks exactly like a dead button.
-    const last = (r.output || r.error || '').trim().split('\n').filter(Boolean).pop() || (r.ok ? 'done' : 'failed');
-    betaSay((r.ok ? '✓ ' : '✕ ') + last, !!r.ok);
+    // The log column is display:none on phones, so the outcome has to land
+    // inline or a successful no-op is indistinguishable from a dead button.
+    const last = (r.output || r.error || '').trim().split('\n').filter(Boolean).pop()
+                 || (r.ok ? 'done' : 'failed');
+    betaState = { busy: null, msg: (r.ok ? '✓ ' : '✕ ') + last, ok: !!r.ok };
   } catch (e) {
-    betaSay('request failed', false);
-  } finally {
-    if (b) { b.disabled = false; b.textContent = label; }
+    betaState = { busy: null, msg: '✕ request failed — is lr_host up?', ok: false };
   }
+  betaRerender();
 }
-async function autoDust() {
-  return betaRun('/api/lr-dust', 'autodust', '🧹 Auto-Dust (beta)', '🧹 Applying…');
-}
-async function autoDenoise() {
-  return betaRun('/api/lr-denoise', 'autodn', '⚡ Auto-Denoise (beta)', '⚡ Ticking…');
-}
+async function autoDust()    { return betaRun('/api/lr-dust', 'dust'); }
+async function autoDenoise() { return betaRun('/api/lr-denoise', 'denoise'); }
 async function doExportChoice(mode) {
   await fetch("/api/continue", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({mode})});
