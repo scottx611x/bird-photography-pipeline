@@ -35,10 +35,40 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._json({"ok": True, "host": "lr_host.py"})
+        elif self.path == "/screen":
+            self._screen()
         elif self.path.startswith("/curate/"):
             self._curate_get()
         else:
             self._json({"error": "not found"}, 404)
+
+    def _screen(self):
+        """A downscaled JPEG of the screen — the accessibility dump can't show
+        what a Lightroom dialog actually looks like, which matters when the only
+        way in is a phone."""
+        import tempfile
+        from io import BytesIO
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+                raw = tf.name
+            subprocess.run(["/usr/sbin/screencapture", "-x", "-t", "png", raw],
+                           capture_output=True, timeout=30)
+            from PIL import Image
+            with Image.open(raw) as im:
+                im = im.convert("RGB")
+                im.thumbnail((1500, 1500))
+                buf = BytesIO()
+                im.save(buf, "JPEG", quality=72)
+            Path(raw).unlink(missing_ok=True)
+            data = buf.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self._json({"ok": False, "error": str(e)}, 500)
 
     def _curate_get(self):
         """Album-curator bridge: Synology runs Mac-side (mDNS), Docker proxies here."""

@@ -1288,6 +1288,23 @@ def curate_exif(iid):
         return jsonify({}), 502
 
 
+@app.get("/lr-screen")
+def lr_screen():
+    """Proxy a screenshot of the Mac's display. Shows only the desktop unless
+    Screen Recording is granted to the lr_host python binary (macOS redacts
+    window pixels otherwise) — the UI says so rather than pretending."""
+    from flask import Response
+    try:
+        with httpx.Client(timeout=60) as client:
+            r = client.get(f"{HOST_BRIDGE}/screen")
+        if r.headers.get("content-type", "").startswith("image"):
+            return Response(r.content, mimetype="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
+        return jsonify(r.json()), 502
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+
 @app.get("/api/lr-status")
 def lr_status():
     """What Lightroom is showing right now — windows, progress dialogs, CPU.

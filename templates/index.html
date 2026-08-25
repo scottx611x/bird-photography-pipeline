@@ -466,6 +466,7 @@
     <div class="nav-right">
       <a class="btn-log curate-link" href="/curate" style="text-decoration:none" title="Carousel review of recent days → daily albums">🖼 Curate</a>
       <button class="btn-log lr-peek" onclick="showLrStatus()">👁 LR</button>
+      <button class="btn-log lr-peek" onclick="lrScreenshot()" title="Screenshot of the Mac (needs Screen Recording permission)">📷</button>
       <button class="btn-log" id="log-toggle" onclick="toggleLog()">Hide log</button>
       <div class="host-pill">
         <div class="host-dot" id="host-dot"></div>
@@ -1072,6 +1073,15 @@ async function doProcess(f, noPost) {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({no_post: !!noPost}),
   });
+}
+function lrScreenshot() {
+  const w = window.open('', '_blank');
+  w.document.write(`<title>Mac screen</title>
+    <meta name=viewport content="width=device-width,initial-scale=1">
+    <body style="margin:0;background:#111;color:#ccc;font:13px system-ui">
+    <div style="padding:8px 10px">Live screen · if you only see wallpaper, macOS
+      Screen Recording isn't granted to lr_host yet.</div>
+    <img src="/lr-screen?t=${Date.now()}" style="width:100%;height:auto">`);
 }
 async function showLrStatus() {
   const m = document.getElementById('lr-status-modal');
