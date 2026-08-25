@@ -8,7 +8,14 @@ PID_FILE="$HOME/.bird_host.pid"
 PYTHON="$HOME/.pyenv/versions/3.12.11/bin/python3"
 
 _start_host() {
-  # Kill any stale lr_host.py (by pid file, and anything still holding the port)
+  # lr_host runs under launchd (com.scott.lrhost) so it survives crashes,
+  # reboots and long trips — defer to it rather than spawning a rival copy.
+  if launchctl list 2>/dev/null | grep -q com.scott.lrhost; then
+    launchctl kickstart -k gui/$(id -u)/com.scott.lrhost 2>/dev/null || true
+    sleep 1
+    echo "  lr_host.py  →  managed by launchd (log: ~/.bird_host.log)"
+    return
+  fi
   if [ -f "$PID_FILE" ]; then
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
     rm -f "$PID_FILE"
@@ -23,6 +30,10 @@ _start_host() {
 }
 
 _stop_host() {
+  if launchctl list 2>/dev/null | grep -q com.scott.lrhost; then
+    echo "  lr_host.py left running (launchd-managed)"
+    return
+  fi
   if [ -f "$PID_FILE" ]; then
     kill "$(cat "$PID_FILE")" 2>/dev/null && echo "  lr_host.py stopped" || true
     rm -f "$PID_FILE"

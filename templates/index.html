@@ -211,6 +211,11 @@
     .add-post-btn:hover { border-color: var(--blue); color: var(--blue); }
     .excluded-tray { border: 1px dashed var(--border2); border-radius: 12px; padding: 9px; opacity: .85; }
     .excluded-tray.lane-over { border-color: var(--red); background: rgba(248,113,113,.06); }
+    .move-sel {
+      background: rgba(255,255,255,.07); color: var(--muted); border: 1px solid var(--border2);
+      border-radius: 6px; font-size: 11px; padding: 2px 4px; max-width: 74px; cursor: pointer;
+    }
+    .move-sel:focus { outline: none; border-color: var(--accent, #4a8); }
     .photo-card {
       background: rgba(0,0,0,.4); border-radius: 12px;
       border: 1px solid var(--border2); transition: border-color .15s, box-shadow .15s; overflow: hidden;
@@ -730,6 +735,12 @@ function renderPostForm(batch, data) {
         <div class="photo-card-fields">
           <div class="photo-card-header">
             <div class="photo-fname">${f}${_dateChip(f)}</div>
+            <select class="move-sel" title="Move to another post" onchange="moveCard('${f}', this.value)">
+              <option value="">⇄</option>
+              ${postLanes.map((_, li) => `<option value="${li}">→ Post ${li + 1}</option>`).join('')}
+              <option value="new">→ New post</option>
+              <option value="x">→ Excluded</option>
+            </select>
             <button class="photo-card-remove" onclick="excludeCard('${f}')" title="Exclude">✕</button>
           </div>
           <input list="species-list" id="sp-${fid(f)}" data-file="${f}" placeholder="Species…"
@@ -1459,6 +1470,20 @@ function removeLane(i) {
   (postLanes[i] || []).forEach(f => excludedFiles.add(f));
   postLanes.splice(i, 1);
   if (!postLanes.length) postLanes = [[]];
+  rerenderPhotoCards();
+}
+function moveCard(f, target) {
+  if (!target) return;
+  capturePhotoInputs();
+  removeFromAll(f);
+  if (target === 'x') {
+    excludedFiles.add(f);
+  } else {
+    const i = target === 'new' ? postLanes.push([]) - 1 : parseInt(target, 10);
+    while (postLanes.length <= i) postLanes.push([]);
+    postLanes[i].push(f);
+  }
+  pruneEmptyLanes();
   rerenderPhotoCards();
 }
 function excludeCard(f) { capturePhotoInputs(); removeFromAll(f); excludedFiles.add(f); pruneEmptyLanes(); rerenderPhotoCards(); }
