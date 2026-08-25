@@ -617,7 +617,7 @@ const STEP_INFO = {
   importing:       { label: "Importing",   msg: "Lightroom is loading photos. Click Continue when all appear in the grid.", btns: true, pulse: true },
   continue_toning: { label: "Importing",   msg: "Finishing up…", pulse: true },
   toning:          { label: "Auto-tone",   msg: "Applying Auto Settings to all photos…", pulse: true },
-  denoise:         { label: "Denoise",     msg: "Check <b>Denoise</b> on one photo in Lightroom's Edit panel → Detail section, then click Continue — settings will spread to all.", btns: true, collect: true },
+  denoise:         { label: "Denoise",     msg: "Check <b>Denoise</b> on one photo in Lightroom's Edit panel → Detail section, then click Continue — settings will spread to all.", btns: true, collect: true, autoDenoise: true },
   copy_pasting:    { label: "Denoise",     msg: "Spreading settings to all photos…", pulse: true },
   denoising:       { label: "Denoise",     msg: "Lightroom is denoising every photo — when it goes quiet you'll choose when to export. Continue skips the wait.", btns: true, collect: true, pulse: true },
   export_ready:    { label: "Export",      msg: "Ready to export. <b>▶ Export</b> triggers Lightroom's Export-with-Previous (only safe if Lightroom has stayed on this batch) — or export yourself and click <b>Collect exports</b>.", exportGate: true },
@@ -675,6 +675,7 @@ function renderStepCard(step, batch, data) {
   if (s.msg)  content += `<div class="step-msg">${s.msg}</div>`;
 
   let btns = "";
+  if (s.autoDenoise) btns += `<button class="btn btn-neutral btn-sm" id="autodn" onclick="autoDenoise()" title="Beta: tick the Denoise checkbox for you, verified by screenshot">⚡ Auto-Denoise (beta)</button>`;
   if (s.exportGate) btns += `<button class="btn btn-primary btn-sm" onclick="doExportChoice('trigger')">▶ Export</button>
     <button class="btn btn-neutral btn-sm" onclick="doExportChoice('collect')">Collect exports</button>`;
   if (s.btns)   btns += `<button class="btn btn-primary btn-sm" onclick="doContinue()">Continue →</button>`;
@@ -1096,6 +1097,18 @@ async function showLrStatus() {
 }
 
 async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
+async function autoDenoise() {
+  const b = document.getElementById('autodn');
+  if (b) { b.disabled = true; b.textContent = '⚡ Ticking…'; }
+  if (!logVisible) toggleLog();
+  try {
+    const r = await (await fetch('/api/lr-denoise', {method:'POST'})).json();
+    if (!r.ok) alert('Auto-Denoise didn\'t take:\n\n' + (r.output || r.error || '?') +
+                     '\n\nTick Denoise in Lightroom, then Continue.');
+  } finally {
+    if (b) { b.disabled = false; b.textContent = '⚡ Auto-Denoise (beta)'; }
+  }
+}
 async function doExportChoice(mode) {
   await fetch("/api/continue", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({mode})});

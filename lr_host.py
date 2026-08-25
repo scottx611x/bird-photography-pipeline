@@ -21,7 +21,8 @@ from pathlib import Path
 TOOLS  = Path(__file__).parent
 PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3")
 ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
-           "syno-albums", "syno-fetch", "lr-busy", "lr-status"}
+           "syno-albums", "syno-fetch", "lr-busy", "lr-status",
+           "denoise-check", "denoise-probe"}
 
 # One automation command at a time — concurrent Lightroom AppleScript runs (or
 # two fetches of the same album) would collide. Health checks skip the lock,
@@ -140,6 +141,12 @@ class Handler(BaseHTTPRequestHandler):
                     "awk '{s+=$1} END {printf \"%.0f\", s}'"]
         elif cmd == "lr-status":
             args = [PYTHON, str(TOOLS / "lr_auto.py"), "status"]
+        # Opt-in beta: tick Denoise by sight. Must run here, not from a shell —
+        # Screen Recording is granted to this process, not to arbitrary callers.
+        elif cmd in ("denoise-check", "denoise-probe"):
+            print(f"→ lr_denoise.py {cmd}")
+            args = [PYTHON, str(TOOLS / "lr_denoise.py"),
+                    "enable" if cmd == "denoise-check" else "status"]
         # Synology fetch runs Mac-side so s-cubed-nas.local resolves over mDNS
         elif cmd == "syno-albums":
             print("→ syno_fetch.py albums")

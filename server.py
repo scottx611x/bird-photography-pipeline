@@ -1306,6 +1306,20 @@ def lr_screen():
         return jsonify({"ok": False, "error": str(e)}), 502
 
 
+@app.post("/api/lr-denoise")
+def lr_denoise():
+    """Opt-in beta: let Lightroom's Denoise checkbox be ticked for you. Verifies
+    by screenshot and reports failure rather than pretending — the manual gate
+    stays available either way."""
+    log("⚡ Auto-Denoise (beta): looking for the checkbox…")
+    r = call_host("denoise-check", timeout=180)
+    for line in (r.get("output", "") or "").splitlines():
+        log(f"  {line}")
+    if not r.get("ok"):
+        log("Auto-Denoise didn't take — tick it in Lightroom, then Continue.")
+    return jsonify(r)
+
+
 @app.get("/api/lr-status")
 def lr_status():
     """What Lightroom is showing right now — windows, progress dialogs, CPU.
