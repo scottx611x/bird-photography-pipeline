@@ -675,7 +675,8 @@ function renderStepCard(step, batch, data) {
   if (s.msg)  content += `<div class="step-msg">${s.msg}</div>`;
 
   let btns = "";
-  if (s.autoDenoise) btns += `<button class="btn btn-neutral btn-sm" id="autodn" onclick="autoDenoise()" title="Beta: tick the Denoise checkbox for you, verified by screenshot">⚡ Auto-Denoise (beta)</button>`;
+  if (s.autoDenoise) btns += `<button class="btn btn-neutral btn-sm" id="autodn" onclick="autoDenoise()" title="Beta: tick the Denoise checkbox for you, verified by screenshot">⚡ Auto-Denoise (beta)</button>
+    <button class="btn btn-neutral btn-sm" id="autodust" onclick="autoDust()" title="Beta: tick Distraction Removal > Dust > Apply, verified by screenshot">🧹 Auto-Dust (beta)</button>`;
   if (s.exportGate) btns += `<button class="btn btn-primary btn-sm" onclick="doExportChoice('trigger')">▶ Export</button>
     <button class="btn btn-neutral btn-sm" onclick="doExportChoice('collect')">Collect exports</button>`;
   if (s.btns)   btns += `<button class="btn btn-primary btn-sm" onclick="doContinue()">Continue →</button>`;
@@ -1097,6 +1098,17 @@ async function showLrStatus() {
 }
 
 async function doContinue()  { await fetch("/api/continue", {method:"POST"}); }
+async function autoDust() {
+  const b = document.getElementById('autodust');
+  if (b) { b.disabled = true; b.textContent = '🧹 Applying…'; }
+  if (!logVisible) toggleLog();
+  try {
+    const r = await (await fetch('/api/lr-dust', {method:'POST'})).json();
+    if (!r.ok) alert('Auto-Dust didn\'t take:\n\n' + (r.output || r.error || '?'));
+  } finally {
+    if (b) { b.disabled = false; b.textContent = '🧹 Auto-Dust (beta)'; }
+  }
+}
 async function autoDenoise() {
   const b = document.getElementById('autodn');
   if (b) { b.disabled = true; b.textContent = '⚡ Ticking…'; }

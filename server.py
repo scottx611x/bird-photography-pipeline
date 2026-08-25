@@ -1320,6 +1320,19 @@ def lr_denoise():
     return jsonify(r)
 
 
+@app.post("/api/lr-dust")
+def lr_dust():
+    """Opt-in beta: tick Distraction Removal > Dust > Apply on the eraser tool.
+    Same contract as auto-Denoise — verified by screenshot, honest on failure."""
+    log("🧹 Auto-Dust (beta): looking for Dust > Apply…")
+    r = call_host("dust-check", timeout=240)
+    for line in (r.get("output", "") or "").splitlines():
+        log(f"  {line}")
+    if not r.get("ok"):
+        log("Auto-Dust didn't take — apply it in Lightroom if you want it.")
+    return jsonify(r)
+
+
 @app.get("/api/lr-status")
 def lr_status():
     """What Lightroom is showing right now — windows, progress dialogs, CPU.

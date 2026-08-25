@@ -28,6 +28,11 @@ LOG_W, LOG_H = 1512, 982          # logical points for a 3024x1964 retina panel
 COL_X0, COL_X1 = 1213, 1233
 COL_CENTRE = 1222
 SCAN_TOP, SCAN_BOTTOM = 355, 640  # below the Detail header, above Sharpening
+# The eraser (Remove) tool's icon in the right-hand tool strip, and the region
+# where Distraction Removal > Dust > Apply sits once that section is open.
+ERASER_ICON = (1478, 265)
+EDIT_ICON   = (1478, 150)
+DUST_SCAN_TOP, DUST_SCAN_BOTTOM = 660, 900
 BOX_MIN, BOX_MAX = 8, 12          # border-to-border height, in logical points
 CHECKED_THRESHOLD = 130           # inner mean: ~79 unchecked, ~183 checked
 
@@ -63,7 +68,7 @@ def grab() -> Image.Image:
     return im
 
 
-def find_checkbox(im: Image.Image):
+def find_checkbox(im: Image.Image, top: int = None, bottom: int = None):
     """Locate the first checkbox below the Detail header: a small square whose
     top and bottom borders show up as short runs of bright pixels. Returns its
     centre in logical points, or None."""
@@ -76,8 +81,10 @@ def find_checkbox(im: Image.Image):
             best = max(best, cur)
         return best
 
-    runs = {ly: run_len(ly) for ly in range(SCAN_TOP, SCAN_BOTTOM)}
-    for ly in range(SCAN_TOP, SCAN_BOTTOM - BOX_MAX - 1):
+    t = SCAN_TOP if top is None else top
+    b = SCAN_BOTTOM if bottom is None else bottom
+    runs = {ly: run_len(ly) for ly in range(t, b)}
+    for ly in range(t, b - BOX_MAX - 1):
         if not (8 <= runs[ly] <= 14):
             continue
         if runs.get(ly - 2, 0) > 14:          # row above must be background
@@ -86,6 +93,23 @@ def find_checkbox(im: Image.Image):
         for side in range(BOX_MIN, BOX_MAX + 1):
             if 8 <= runs.get(ly + side, 0) <= 14:
                 return COL_CENTRE, ly + side // 2
+    return None
+
+
+def find_section_row(im: Image.Image, top: int, bottom: int):
+    """Centre y of a collapsed Distraction Removal row (Reflections/People/
+    Dust). Their tinted background gives a much wider bright run than a
+    checkbox border, which is how we tell them apart."""
+    wide = []
+    for ly in range(top, bottom):
+        best = cur = 0
+        for x in range(COL_X0, COL_X1):
+            cur = cur + 1 if im.getpixel((x, ly)) > 110 else 0
+            best = max(best, cur)
+        if best >= 15:
+            wide.append(ly)
+    if len(wide) >= 2:
+        return (wide[0] + wide[-1]) // 2
     return None
 
 
@@ -122,12 +146,61 @@ def single_panel_mode_on():
     return "already on"
 
 
+def click(pt):
+    subprocess.run([CLICLICK, f"c:{pt[0]},{pt[1]}"], capture_output=True, timeout=20)
+
+
+def do_dust(enable: bool):
+    """Distraction Removal > Dust > Apply, on the eraser (Remove) tool."""
+    import time
+    activate()
+    # The tool icon toggles, so clicking it blind can switch *away* from
+    # Remove. Look first; only reach for the icon if Dust isn't already shown.
+    box = find_checkbox(grab(), DUST_SCAN_TOP, DUST_SCAN_BOTTOM)
+    if not box:
+        click(ERASER_ICON)                    # not on the Remove tool yet
+        time.sleep(1.8)
+        box = find_checkbox(grab(), DUST_SCAN_TOP, DUST_SCAN_BOTTOM)
+    if not box:
+        # Remove tool is up but the Dust section is collapsed: its row reads as
+        # a pair of wide bright runs (much wider than a checkbox border).
+        row = find_section_row(grab(), 600, 700)
+        if row:
+            click((1250, row))
+            time.sleep(2.0)
+            box = find_checkbox(grab(), DUST_SCAN_TOP, DUST_SCAN_BOTTOM)
+    if not box:
+        print("Couldn't find Dust > Apply — open the eraser tool and expand "
+              "Distraction Removal > Dust once, then retry.")
+        sys.exit(2)
+    print(f"Dust Apply checkbox at {box[0]},{box[1]}")
+    if is_checked(grab(), box):
+        print("Dust removal is already ON — nothing to do.")
+        return
+    if not enable:
+        print("Dust removal is OFF.")
+        sys.exit(3)
+    activate()
+    click(box)
+    for _ in range(20):                      # detection can take a few seconds
+        time.sleep(1)
+        if is_checked(grab(), box):
+            print("Dust removal is now ON (verified).")
+            return
+    print("Clicked, but Apply never showed as ticked — do it by hand.")
+    sys.exit(4)
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
 
     if _osa(f'tell application "System Events" to return (exists process "{APP}")') != "true":
         print("Lightroom is not running.")
         sys.exit(1)
+
+    if cmd in ("dust", "dust-status"):
+        do_dust(cmd == "dust")
+        return
 
     activate()
     if cmd == "enable":
