@@ -1378,10 +1378,24 @@ def refresh_birds():
 
 @app.post("/api/skip/<folder_name>")
 def skip_batch(folder_name: str):
+    """Mark a batch done without posting it. Also stands down the run if this
+    is the active batch, otherwise the UI stays stuck mid-flight — and for a
+    combined batch save_state() retires its source albums too."""
+    stood_down = False
     with lock:
         if folder_name in state["batches"]:
             state["batches"][folder_name]["status"] = "done"
+        if state["active"] == folder_name:
+            stood_down = True
+            state["stop_requested"] = True
+            state["active"]      = None
+            state["proc_step"]   = None
+            state["no_post"]     = False
+            state["new_birds"]   = []
+            state["arrangement"] = None
     save_state()
+    if stood_down:
+        log(f"✓ {folder_name} marked done without posting — run stood down.")
     return jsonify({"ok": True})
 
 
