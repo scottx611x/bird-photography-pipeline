@@ -189,8 +189,10 @@ def scan_batches():
 
 
 def batch_host_path(folder_name: str) -> str:
-    """Convert the Docker /downloads path to the Mac ~/Downloads path."""
-    return str(Path.home() / "Downloads" / folder_name)
+    """Convert the Docker /downloads path to the Mac ~/Downloads path.
+    Must use MAC_HOME, not Path.home() — in the container that is /root, and
+    handing the Mac "/root/Downloads/…" made every combined fetch fail."""
+    return str(Path(MAC_HOME) / "Downloads" / folder_name)
 
 
 # ── Host bridge ───────────────────────────────────────────────────────────────
