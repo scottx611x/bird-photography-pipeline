@@ -49,6 +49,7 @@ state = {
     "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
     "syno_fetching":   {},      # album -> {got, total} while a download is in progress
     "photo_dates":     {},      # exported file -> capture date "M-D-YY" (EXIF) for combined batches
+    "multi_sources":   {},      # "<date>-multi" folder -> [source Synology album names]
 }
 
 # In-memory cache of the Synology album list (avoid hammering the NAS each load)
@@ -62,8 +63,13 @@ def save_state():
     try:
         # Remember posted albums permanently — local folders get deleted for disk
         # space, but a posted album should never resurface as a fetchable card.
-        state["done_albums"].update(
-            name for name, b in state["batches"].items() if b.get("status") == "done")
+        done = {name for name, b in state["batches"].items() if b.get("status") == "done"}
+        state["done_albums"].update(done)
+        # A combined batch stands in for the albums it was built from — retire
+        # those too, or they linger as fetchable cards next to the -multi.
+        _srcs = state.get("multi_sources", {})
+        for _f in done:
+            state["done_albums"].update(_srcs.get(_f, []))
         data = {
             "statuses":  {name: b["status"] for name, b in state["batches"].items()},
             "birds":     {name: b.get("birds", []) for name, b in state["batches"].items()},
@@ -74,6 +80,7 @@ def save_state():
             "new_birds": list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
             "photo_dates": state.get("photo_dates", {}),
+            "multi_sources": state.get("multi_sources", {}),
             "syno_skipped": sorted(state["syno_skipped"]),
             "done_albums": sorted(state["done_albums"]),
         }
@@ -911,7 +918,13 @@ def _free_local_raws(folder: str):
             albums = []
         _syno_cache["albums"] = albums
         _syno_cache["at"] = time.time()
-    if folder not in {a.get("name") for a in (albums or [])}:
+    names = {a.get("name") for a in (albums or [])}
+    # A "-multi" folder has no album of its own — confirm every album it was
+    # built from instead, otherwise combined batches never reclaim disk.
+    with lock:
+        sources = state.get("multi_sources", {}).get(folder)
+    confirmed = all(s in names for s in sources) if sources else folder in names
+    if not confirmed:
         log(f"  (kept local RAWs for {folder} — not confirmed on Synology)")
         return
     try:
@@ -1492,6 +1505,9 @@ def syno_fetch():
         newest = max(re.match(r"\d{4}-\d{1,2}-\d{1,2}", a).group(0)
                      for a in albums if re.match(r"\d{4}-\d{1,2}-\d{1,2}", a))
         album = f"{newest}-multi"
+        with lock:
+            state["multi_sources"][album] = albums
+        save_state()
     elif not album:
         return jsonify({"error": "no album"}), 400
 
@@ -1595,6 +1611,7 @@ if __name__ == "__main__":
     # Restore persisted Synology skip list + posted-album memory
     _saved = load_saved_statuses()
     state["syno_skipped"] = set(_saved.get("syno_skipped", []))
+    state["multi_sources"] = _saved.get("multi_sources", {})
     state["done_albums"]  = set(_saved.get("done_albums", [])) | {
         n for n, s in _saved.get("statuses", {}).items() if s == "done"}
     # Defer scanning to background so Flask starts immediately
