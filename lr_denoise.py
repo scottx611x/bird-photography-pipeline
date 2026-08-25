@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 """
-lr_denoise.py — best-effort automation of the one manual step: ticking
-Denoise in Lightroom's Edit > Detail panel.
+lr_denoise.py — best-effort automation of the two manual Lightroom clicks:
+Denoise (Edit > Detail) and dust removal (Remove tool > Distraction Removal >
+Dust > Apply).
 
-Lightroom exposes no accessibility children and has no Denoise menu command,
-so this drives it by sight: screenshot, locate the checkbox, click it, then
-screenshot again to confirm it actually changed. It never assumes success —
-if anything is uncertain it exits non-zero so the caller can fall back to the
-manual gate. Deliberately opt-in; nothing calls it automatically.
+Lightroom exposes no accessibility children for its panels and has no menu
+command for either setting, so the checkbox has to be found by sight. Sight
+alone is not enough to be *safe*, though: if the wrong panel is showing, the
+first checkbox found may be something else entirely — this once ticked
+"Visualize spots" while reporting "Denoise is now ON". So every run:
 
-  python3 lr_denoise.py status   # report only, click nothing
-  python3 lr_denoise.py enable   # tick Denoise if it isn't already
+  * pins the active tool through View > Edit Tools, which both reports and
+    sets it, so we know which panel we're looking at before hunting;
+  * re-reads menu-visible flags afterwards and undoes the click if one of
+    those moved instead of the setting we wanted;
+  * treats Lightroom's own "Applying Denoise" progress window as proof that
+    Denoise specifically was toggled — that window also dims the panel, which
+    is why a brightness check alone used to report a false failure.
+
+Exits non-zero whenever it cannot prove what it did, so the caller falls back
+to the manual gate. Nothing calls this automatically.
+
+  python3 lr_denoise.py status | enable | dust-status | dust
 """
 
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from PIL import Image
@@ -24,35 +36,62 @@ APP = "Adobe Lightroom"
 CLICLICK = "/opt/homebrew/bin/cliclick"
 LOG_W, LOG_H = 1512, 982          # logical points for a 3024x1964 retina panel
 
-# The checkbox column in Lightroom's Edit panel, in logical points.
-COL_X0, COL_X1 = 1213, 1233
+COL_X0, COL_X1 = 1213, 1233       # the checkbox column in the right-hand panel
 COL_CENTRE = 1222
-SCAN_TOP, SCAN_BOTTOM = 355, 640  # below the Detail header, above Sharpening
-# The eraser (Remove) tool's icon in the right-hand tool strip, and the region
-# where Distraction Removal > Dust > Apply sits once that section is open.
-ERASER_ICON = (1478, 265)
-EDIT_ICON   = (1478, 150)
-DUST_SCAN_TOP, DUST_SCAN_BOTTOM = 660, 900
 BOX_MIN, BOX_MAX = 8, 12          # border-to-border height, in logical points
-CHECKED_THRESHOLD = 130           # inner mean: ~79 unchecked, ~183 checked
+CHECKED_THRESHOLD = 130           # inner mean: ~79 unticked, ~183 ticked
+
+# Denoise is the topmost checkbox in the Detail panel (Raw Details and
+# Super Resolution follow it), so scan from above the fold and take the
+# first hit — the panel's scroll position varies between runs.
+DETAIL_SCAN = (215, 900)
+DUST_SCAN = (600, 900)            # Distraction Removal sits low in the panel
+
+# Menu-visible flags that must NOT move — if one does, we hit the wrong box.
+GUARD_FLAGS = ("Visualize spots", "Show Overlay", "Show Clipping")
 
 
 def _osa(script: str, timeout: int = 20) -> str:
-    r = subprocess.run(["osascript", "-e", script], capture_output=True,
-                       text=True, timeout=timeout)
-    return (r.stdout or "").strip()
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True,
+                           text=True, timeout=timeout)
+        return (r.stdout or "").strip()
+    except subprocess.TimeoutExpired:
+        return ""
+
+
+def _menu_path(item: str, sub: str) -> str:
+    return (f'menu item "{item}" of menu 1 of (menu item "{sub}" of menu 1 of '
+            f'(menu bar item "View" of menu bar 1))')
+
+
+def menu_flag(item: str, sub: str = "Edit Tools") -> bool:
+    got = _osa('tell application "System Events" to tell process "%s"\n'
+               'try\n'
+               'if (value of attribute "AXMenuItemMarkChar" of %s) '
+               'is not missing value then return "on"\n'
+               'end try\n'
+               'return "off"\n'
+               'end tell' % (APP, _menu_path(item, sub)))
+    return got == "on"
+
+
+def menu_click(item: str, sub: str = "Edit Tools"):
+    _osa('tell application "System Events" to tell process "%s" to click %s'
+         % (APP, _menu_path(item, sub)))
+    time.sleep(1.2)
+
+
+def set_remove_tool(on: bool) -> bool:
+    """Pin the Remove (eraser) tool on or off so we know which panel shows."""
+    if menu_flag("Remove") != on:
+        menu_click("Remove")
+    return menu_flag("Remove")
 
 
 def activate():
-    """Bring Lightroom forward. Other automation on this Mac steals focus, so
-    do this immediately before any click — and tolerate the timeout that
-    happens while Lightroom is busy applying Denoise."""
-    try:
-        _osa(f'tell application "{APP}" to activate', timeout=15)
-    except subprocess.TimeoutExpired:
-        pass
-    import time
-    time.sleep(1.2)          # let the window actually come forward before we look
+    _osa(f'tell application "{APP}" to activate', timeout=15)
+    time.sleep(1.2)
 
 
 def grab() -> Image.Image:
@@ -60,56 +99,29 @@ def grab() -> Image.Image:
         path = tf.name
     subprocess.run(["/usr/sbin/screencapture", "-x", "-t", "png", path],
                    capture_output=True, timeout=30)
-    im = Image.open(path).convert("L")
-    # Normalise to logical points so coordinates map 1:1 and the pixel-run
-    # thresholds below don't depend on the display's retina scale factor.
-    im = im.resize((LOG_W, LOG_H), Image.LANCZOS)
+    im = Image.open(path).convert("L").resize((LOG_W, LOG_H), Image.LANCZOS)
     Path(path).unlink(missing_ok=True)
     return im
 
 
-def find_checkbox(im: Image.Image, top: int = None, bottom: int = None):
-    """Locate the first checkbox below the Detail header: a small square whose
-    top and bottom borders show up as short runs of bright pixels. Returns its
-    centre in logical points, or None."""
+def find_checkbox(im: Image.Image, span):
+    """Centre of the first checkbox in `span`: a short solid run of bright
+    pixels with a matching one 8-12 points below (the box's two borders)."""
     def run_len(ly):
-        """Longest unbroken bright run in the row — a checkbox border is one
-        solid segment, whereas text and chevrons are scattered."""
         best = cur = 0
         for x in range(COL_X0, COL_X1):
             cur = cur + 1 if im.getpixel((x, ly)) > 110 else 0
             best = max(best, cur)
         return best
 
-    t = SCAN_TOP if top is None else top
-    b = SCAN_BOTTOM if bottom is None else bottom
-    runs = {ly: run_len(ly) for ly in range(t, b)}
-    for ly in range(t, b - BOX_MAX - 1):
-        if not (8 <= runs[ly] <= 14):
+    top, bottom = span
+    runs = {ly: run_len(ly) for ly in range(top, bottom)}
+    for ly in range(top, bottom - BOX_MAX - 1):
+        if not (8 <= runs[ly] <= 14) or runs.get(ly - 2, 0) > 14:
             continue
-        if runs.get(ly - 2, 0) > 14:          # row above must be background
-            continue
-        # the matching bottom border sits 8-12 points lower
         for side in range(BOX_MIN, BOX_MAX + 1):
             if 8 <= runs.get(ly + side, 0) <= 14:
                 return COL_CENTRE, ly + side // 2
-    return None
-
-
-def find_section_row(im: Image.Image, top: int, bottom: int):
-    """Centre y of a collapsed Distraction Removal row (Reflections/People/
-    Dust). Their tinted background gives a much wider bright run than a
-    checkbox border, which is how we tell them apart."""
-    wide = []
-    for ly in range(top, bottom):
-        best = cur = 0
-        for x in range(COL_X0, COL_X1):
-            cur = cur + 1 if im.getpixel((x, ly)) > 110 else 0
-            best = max(best, cur)
-        if best >= 15:
-            wide.append(ly)
-    if len(wide) >= 2:
-        return (wide[0] + wide[-1]) // 2
     return None
 
 
@@ -120,117 +132,124 @@ def is_checked(im: Image.Image, centre) -> bool:
     return (sum(vals) / len(vals)) > CHECKED_THRESHOLD
 
 
-def single_panel_mode_on():
-    """Collapse the Edit panel to one section at a time so the Detail contents
-    land at a stable position. Idempotent — reads the menu's checkmark first."""
-    state = _osa(f'''
-    tell application "System Events"
-      tell process "{APP}"
-        set ep to menu item "Edit Panels" of menu 1 of (menu bar item "View" of menu bar 1)
-        set s to menu item "Single-Panel Mode" of menu 1 of ep
-        try
-          if (value of attribute "AXMenuItemMarkChar" of s) is not missing value then return "on"
-        end try
-        return "off"
-      end tell
-    end tell''')
-    if state != "on":
-        _osa(f'''
-        tell application "System Events"
-          tell process "{APP}"
-            click menu item "Single-Panel Mode" of menu 1 of ¬
-              (menu item "Edit Panels" of menu 1 of (menu bar item "View" of menu bar 1))
-          end tell
-        end tell''')
-        return "enabled"
-    return "already on"
-
-
 def click(pt):
     subprocess.run([CLICLICK, f"c:{pt[0]},{pt[1]}"], capture_output=True, timeout=20)
 
 
-def do_dust(enable: bool):
-    """Distraction Removal > Dust > Apply, on the eraser (Remove) tool."""
-    import time
+def lr_window_names() -> str:
+    return _osa('tell application "System Events" to tell process "%s"\n'
+                'set acc to ""\n'
+                'repeat with w in every window\n'
+                'try\n'
+                'set acc to acc & (name of w) & "|"\n'
+                'end try\n'
+                'end repeat\n'
+                'return acc\n'
+                'end tell' % APP) or ""
+
+
+def wait_window(word: str, seconds: int) -> bool:
+    for _ in range(seconds):
+        if word.lower() in lr_window_names().lower():
+            return True
+        time.sleep(1)
+    return False
+
+
+def wait_window_gone(word: str, seconds: int):
+    for _ in range(seconds // 2):
+        if word.lower() not in lr_window_names().lower():
+            return
+        time.sleep(2)
+
+
+def guards() -> dict:
+    return {f: menu_flag(f) for f in GUARD_FLAGS}
+
+
+def guards_moved(before: dict):
+    after = guards()
+    return [f for f in before if before[f] != after.get(f)]
+
+
+def run(kind: str, enable: bool):
+    """kind is 'denoise' or 'dust'."""
+    if _osa(f'tell application "System Events" to return '
+            f'(exists process "{APP}")') != "true":
+        print("Lightroom is not running.")
+        sys.exit(1)
+
     activate()
-    # The tool icon toggles, so clicking it blind can switch *away* from
-    # Remove. Look first; only reach for the icon if Dust isn't already shown.
-    box = find_checkbox(grab(), DUST_SCAN_TOP, DUST_SCAN_BOTTOM)
-    if not box:
-        click(ERASER_ICON)                    # not on the Remove tool yet
-        time.sleep(1.8)
-        box = find_checkbox(grab(), DUST_SCAN_TOP, DUST_SCAN_BOTTOM)
-    if not box:
-        # Remove tool is up but the Dust section is collapsed: its row reads as
-        # a pair of wide bright runs (much wider than a checkbox border).
-        row = find_section_row(grab(), 600, 700)
-        if row:
-            click((1250, row))
-            time.sleep(2.0)
-            box = find_checkbox(grab(), DUST_SCAN_TOP, DUST_SCAN_BOTTOM)
-    if not box:
-        print("Couldn't find Dust > Apply — open the eraser tool and expand "
-              "Distraction Removal > Dust once, then retry.")
+    want_remove = (kind == "dust")
+    if set_remove_tool(want_remove) != want_remove:
+        panel = "Remove" if want_remove else "Edit"
+        print(f"Couldn't switch Lightroom to the {panel} panel.")
         sys.exit(2)
-    print(f"Dust Apply checkbox at {box[0]},{box[1]}")
+    print(f"Panel: {'Remove (eraser)' if want_remove else 'Edit'}")
+
+    span = DUST_SCAN if kind == "dust" else DETAIL_SCAN
+    label = "Dust > Apply" if kind == "dust" else "Denoise"
+    box = find_checkbox(grab(), span)
+    if not box:
+        where = ("Distraction Removal > Dust" if kind == "dust"
+                 else "Edit > Detail")
+        print(f"Couldn't find the {label} checkbox — expand {where} once, "
+              f"then try again.")
+        sys.exit(2)
+    print(f"{label} checkbox at {box[0]},{box[1]}")
+
     if is_checked(grab(), box):
-        print("Dust removal is already ON — nothing to do.")
+        print(f"{label} is already ON — nothing to do.")
         return
     if not enable:
-        print("Dust removal is OFF.")
+        print(f"{label} is OFF.")
         sys.exit(3)
+
+    before = guards()
     activate()
     click(box)
-    for _ in range(20):                      # detection can take a few seconds
+
+    if kind == "denoise" and wait_window("denoise", 12):
+        print("Lightroom is applying Denoise…")
+        wait_window_gone("denoise", 300)
+        print("Denoise is now ON (confirmed by Lightroom's progress window).")
+        return
+
+    moved = guards_moved(before)
+    if moved:
+        click(box)                       # put back whatever we actually hit
+        print(f"Hit the wrong control ({', '.join(moved)}) — undone. "
+              f"Set {label} by hand.")
+        sys.exit(4)
+
+    if kind == "denoise":
+        # Raw Details and Super Resolution sit right below Denoise and also
+        # tick and show a progress window, so a ticked box is NOT proof we got
+        # the right one. Only the "Applying Denoise" window is. Undo otherwise.
+        click(box)
+        print("That checkbox ticked, but Lightroom never showed the Denoise "
+              "progress window — it was probably Raw Details or Super "
+              "Resolution, so the change was undone. Scroll Edit > Detail to "
+              "the top and try again, or tick Denoise by hand.")
+        sys.exit(4)
+
+    for _ in range(8):
         time.sleep(1)
         if is_checked(grab(), box):
-            print("Dust removal is now ON (verified).")
+            print(f"{label} is now ON (verified).")
             return
-    print("Clicked, but Apply never showed as ticked — do it by hand.")
+
+    click(box)
+    print(f"Couldn't confirm {label}; change undone. Set it by hand.")
     sys.exit(4)
 
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
-
-    if _osa(f'tell application "System Events" to return (exists process "{APP}")') != "true":
-        print("Lightroom is not running.")
-        sys.exit(1)
-
     if cmd in ("dust", "dust-status"):
-        do_dust(cmd == "dust")
-        return
-
-    activate()
-    if cmd == "enable":
-        print(f"Single-Panel Mode: {single_panel_mode_on()}")
-
-    box = find_checkbox(grab())
-    if not box:
-        print("Couldn't find the Denoise checkbox — is Edit > Detail expanded?")
-        sys.exit(2)
-    print(f"Denoise checkbox at {box[0]},{box[1]}")
-
-    if is_checked(grab(), box):
-        print("Denoise is already ON — nothing to do.")
-        return
-    if cmd != "enable":
-        print("Denoise is OFF.")
-        sys.exit(3)
-
-    activate()
-    subprocess.run([CLICLICK, f"c:{box[0]},{box[1]}"], capture_output=True, timeout=20)
-
-    # Confirm by sight rather than trusting the click.
-    import time
-    for _ in range(10):
-        time.sleep(1)
-        if is_checked(grab(), box):
-            print("Denoise is now ON (verified).")
-            return
-    print("Clicked, but the checkbox never showed as ticked — do it by hand.")
-    sys.exit(4)
+        run("dust", cmd == "dust")
+    else:
+        run("denoise", cmd == "enable")
 
 
 if __name__ == "__main__":

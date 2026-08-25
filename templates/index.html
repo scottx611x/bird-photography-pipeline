@@ -409,7 +409,8 @@
     .fetch-bar-fill { height: 100%; background: var(--blue); transition: width .4s ease; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
     .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
-    .beta-msg { font-size: 11px; margin-left: 6px; align-self: center; }
+    .beta-msg { font-size: 11px; margin-left: 6px; align-self: center;
+      flex-basis: 100%; line-height: 1.45; padding-top: 4px; }
     .beta-msg.good { color: var(--green, #6c6); }
     .beta-msg.bad  { color: var(--red, #e66); }
     .combine-box { display:flex; align-items:center; gap:4px; font-size:11px; color:var(--muted);
@@ -678,7 +679,7 @@ function renderStepCard(step, batch, data) {
   if (s.msg)  content += `<div class="step-msg">${s.msg}</div>`;
 
   let btns = "";
-  if (s.autoDenoise) btns += `<button class="btn btn-neutral btn-sm" id="autodn" onclick="autoDenoise()" title="Beta: tick the Denoise checkbox for you, verified by screenshot">⚡ Auto-Denoise (beta)</button>
+  if (s.autoDenoise) btns += `<button class="btn btn-neutral btn-sm" id="autodn" onclick="autoDenoise()" title="Experimental: finds and ticks Denoise by sight. Undoes itself if it can't prove it hit the right control.">⚡ Auto-Denoise (beta)</button>
     <button class="btn btn-neutral btn-sm" id="autodust" onclick="autoDust()" title="Beta: tick Distraction Removal > Dust > Apply, verified by screenshot">🧹 Auto-Dust (beta)</button>
     <span id="betamsg" class="beta-msg"></span>`;
   if (s.exportGate) btns += `<button class="btn btn-primary btn-sm" onclick="doExportChoice('trigger')">▶ Export</button>
@@ -1116,8 +1117,7 @@ async function betaRun(url, btn, label, busy) {
     // The log column is hidden on phones, so report the outcome inline —
     // otherwise a successful no-op looks exactly like a dead button.
     const last = (r.output || r.error || '').trim().split('\n').filter(Boolean).pop() || (r.ok ? 'done' : 'failed');
-    betaSay(last, !!r.ok);
-    if (!r.ok) alert(label + ":\n\n" + (r.output || r.error || '?'));
+    betaSay((r.ok ? '✓ ' : '✕ ') + last, !!r.ok);
   } catch (e) {
     betaSay('request failed', false);
   } finally {
