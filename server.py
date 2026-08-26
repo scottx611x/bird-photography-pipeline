@@ -1251,21 +1251,39 @@ def recent_species():
                     "first": 50
                 }})
         edges = r.json().get("data", {}).get("posts", {}).get("edges", [])
+        # A caption's trailing block is the date; when a post spans locations
+        # each species line is written "Species - Location" instead. Parsing
+        # those naively is how "Rock Pigeon - Dorchester Street" became a
+        # species and "7-23-26 & 7-22-26" became a location.
+        date_like = re.compile(
+            r"^\d{1,2}-\d{1,2}-\d{2,4}(?:\s*&\s*\d{1,2}-\d{1,2}-\d{2,4})*$")
         seen_sp, species   = set(), []
         seen_loc, locations = set(), []
+
+        def add_loc(v):
+            v = (v or "").strip()
+            if v and not date_like.match(v) and v not in seen_loc:
+                seen_loc.add(v); locations.append(v)
+
+        def add_sp(v):
+            v = (v or "").strip()
+            if v and not date_like.match(v) and v not in seen_sp:
+                seen_sp.add(v); species.append(v)
+
         for edge in edges:
             text   = edge.get("node", {}).get("text", "")
             blocks = text.strip().split("\n\n") if text.strip() else []
-            # First block = species lines
             for line in (blocks[0].split("\n") if blocks else []):
                 s = line.strip().lstrip("⚠️").strip()
-                if s and s not in seen_sp:
-                    seen_sp.add(s); species.append(s)
-            # Second block = location
+                if not s:
+                    continue
+                if " - " in s:                 # "Species - Location" form
+                    sp, _, loc = s.partition(" - ")
+                    add_loc(loc)
+                    s = sp
+                add_sp(s)
             if len(blocks) >= 2:
-                loc = blocks[1].strip()
-                if loc and loc not in seen_loc:
-                    seen_loc.add(loc); locations.append(loc)
+                add_loc(blocks[1])
         return jsonify({"species": species, "locations": locations})
     except Exception as e:
         return jsonify({"species": [], "locations": [], "error": str(e)})

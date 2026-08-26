@@ -249,6 +249,18 @@
       font-family: inherit; width: 100%; transition: all .15s; }
     .photo-card-fields input:focus { outline: none; border-color: var(--blue); background: rgba(91,154,255,.1); }
     .photo-card-fields input::placeholder { color: var(--dim); }
+    .chiprow { display: flex; gap: 5px; overflow-x: auto; padding: 1px 0 2px;
+      scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+    .chiprow::-webkit-scrollbar { display: none; }
+    .vchip { flex: 0 0 auto; background: rgba(255,255,255,.06); color: var(--muted);
+      border: 1px solid var(--border2); border-radius: 999px; padding: 4px 9px;
+      font-size: 11px; white-space: nowrap; cursor: pointer; font-family: inherit; }
+    .vchip:hover { color: var(--text); border-color: var(--blue); }
+    .vchip.hit { background: var(--blue); color: #fff; border-color: var(--blue); }
+    @media (max-width: 680px) {
+      .vchip { padding: 8px 13px; font-size: 13px; }   /* thumb-sized */
+      .chiprow { gap: 7px; padding: 3px 0 4px; }
+    }
     .oos-check { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; }
     .oos-check input { accent-color: var(--yellow); cursor: pointer; }
 
@@ -837,8 +849,10 @@ function renderPostForm(batch, data) {
           </div>
           <input list="species-list" id="sp-${fid(f)}" data-file="${f}" placeholder="Species…"
                  value="${esc(m.species)}" onfocus="this.dataset.prev=this.value" oninput="spreadSpecies(this)" />
+          ${chipRow('sp', f, recentSpecies)}
           <input list="location-list" id="loc-${fid(f)}" data-file="${f}" placeholder="Rea St."
                  value="${esc(m.location ?? defaultLoc)}" onfocus="this.dataset.prev=this.value" oninput="spreadLocation(this)" />
+          ${chipRow('loc', f, recentLocations)}
           <label class="oos-check"><input type="checkbox" id="oos-${fid(f)}" data-file="${f}" ${m.oos ? 'checked' : ''} onchange="spreadOos(this)" /> ⚠️ out of area</label>
         </div>
       </div>`;
@@ -1626,6 +1640,28 @@ function restoreCard(f) {
 }
 
 // ── Fill-down: propagate a field to later photos in flat order ───────────────────
+function chipRow(kind, file, vals) {
+  const list = (vals || []).slice(0, 12);
+  if (!list.length) return "";
+  const a = s => String(s ?? "").replace(/"/g, "&quot;");
+  return `<div class="chiprow">` + list.map(v =>
+    `<button type="button" class="vchip" data-v="${a(v)}" data-k="${kind}" data-f="${a(file)}"
+             onclick="pickVal(this)">${a(v)}</button>`).join("") + `</div>`;
+}
+
+// Tapping a chip behaves exactly like typing the value: it fills the field and
+// fills down to the photos after it, same as spreadSpecies/spreadLocation.
+function pickVal(btn) {
+  const el = document.getElementById(`${btn.dataset.k}-${fid(btn.dataset.f)}`);
+  if (!el) return;
+  el.dataset.prev = el.value;
+  el.value = btn.dataset.v;
+  if (btn.dataset.k === "sp") spreadSpecies(el); else spreadLocation(el);
+  capturePhotoInputs();
+  btn.classList.add("hit");
+  setTimeout(() => btn.classList.remove("hit"), 250);
+}
+
 function _spreadField(src, prefix) {
   const flat = flatFiles();
   const myIdx = flat.indexOf(src.dataset.file);
