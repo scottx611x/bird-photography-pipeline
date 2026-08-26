@@ -219,6 +219,26 @@ def call_host(cmd: str, folder: str = None, body: dict = None, timeout: float = 
         return {"ok": False, "output": str(e)}
 
 
+def lr_progress() -> dict:
+    """Lightroom's own modal progress. Authoritative for 'is it still working?'
+    — far better than inferring it from CPU, which idles between items and once
+    let the pipeline march on mid-update."""
+    try:
+        with httpx.Client(timeout=15) as client:
+            return client.get(f"{HOST_BRIDGE}/progress").json()
+    except Exception:
+        return {"active": False}
+
+
+def _prog_line(p: dict) -> str:
+    bits = [p.get("label") or "working"]
+    if p.get("done") is not None and p.get("total") is not None:
+        bits.append(f"{p['done']} of {p['total']}")
+    if p.get("percent") is not None:
+        bits.append(f"{p['percent']}%")
+    return " · ".join(bits)
+
+
 def check_host():
     try:
         with httpx.Client(timeout=3) as client:
@@ -280,7 +300,7 @@ def _denoise_and_export_tail():
     # enhancing; treat sustained-quiet as done. Skippable via Continue.
     set_step("denoising")
     log("Lightroom is denoising every photo — you'll choose when to export once it finishes.")
-    quiet, waited = 0, 0
+    quiet, waited, last_note = 0, 0, ""
     while waited < 3600:
         time.sleep(10); waited += 10
         with lock:
@@ -290,13 +310,25 @@ def _denoise_and_export_tail():
             break
         if waited < 30:      # let the enhancement queue spin up first
             continue
+
+        # Lightroom's own progress modal is the real signal: while it is up,
+        # work is definitively outstanding no matter what the CPU is doing.
+        prog = lr_progress()
+        if prog.get("active"):
+            quiet = 0
+            note = _prog_line(prog)
+            if note != last_note:
+                log(f"  {note}")
+                last_note = note
+            continue
+
         try:
             cpu = float(call_host("lr-busy", timeout=15).get("output") or 0)
         except (TypeError, ValueError):
             continue
         quiet = quiet + 1 if cpu < 25 else 0
-        if quiet >= 6:       # ~1 min of idle Lightroom
-            log("Lightroom looks idle — denoise finished.")
+        if quiet >= 6:       # ~1 min idle with no modal showing
+            log("Lightroom is idle and no update is running — denoise finished.")
             break
     else:
         log("Denoise wait hit the 60-minute cap.")
@@ -415,7 +447,7 @@ def _pick_export_post(trigger: bool = True):
 
     set_step("export_wait")
     log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birbs/ (or click Done).")
-    last_sig, stable = None, 0
+    last_sig, stable, last_note = None, 0, ""
     while True:
         time.sleep(1)
         with lock:
@@ -427,6 +459,17 @@ def _pick_export_post(trigger: bool = True):
         # Lightroom renders each photo to a temp file and renames it into
         # place, so a single slow render (big denoised NEF) is >8s of
         # apparent silence — 8s here once cut off an export after 4 of 58.
+        # Don't call an export finished while Lightroom still has a progress
+        # modal up — files can be on disk while later ones are still rendering.
+        prog = lr_progress()
+        if prog.get("active"):
+            stable = 0
+            note = _prog_line(prog)
+            if note != last_note:
+                log(f"  {note}")
+                last_note = note
+            continue
+
         new_files = _exported()
         if not new_files:
             continue
