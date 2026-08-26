@@ -265,7 +265,20 @@
       transition: background .15s; }
     .img-modal-nav:hover { background: rgba(255,255,255,.22); }
     #modal-prev { left: 24px; }
-    #modal-next { right: 72px; }
+    #modal-next { right: 24px; }
+    @media (max-width: 680px) {
+      /* Keep the arrows off the photo and give them a thumb-sized target;
+         the image shrinks to leave room rather than sitting under them. */
+      .img-modal img { max-width: 100vw; max-height: 62vh; border-radius: 8px; }
+      .img-modal-nav { width: 56px; height: 56px; font-size: 32px;
+        top: auto; bottom: calc(18px + env(safe-area-inset-bottom)); transform: none; }
+      #modal-prev { left: 18px; }
+      #modal-next { right: 18px; }
+      .img-modal-name { bottom: calc(34px + env(safe-area-inset-bottom)); font-size: 12px;
+        max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .img-modal-tools { top: calc(12px + env(safe-area-inset-top)); left: 12px; }
+      .img-modal-close { top: calc(12px + env(safe-area-inset-top)); right: 12px; }
+    }
     .img-modal-close { position: absolute; top: 20px; right: 24px;
       background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18);
       color: #fff; font-size: 18px; cursor: pointer; border-radius: 50%;
@@ -562,7 +575,7 @@
 </div>
 
 <!-- Full-size image preview modal -->
-<div class="img-modal" id="img-modal" onclick="closeModal()">
+<div class="img-modal" id="img-modal" onclick="modalBackdropTap()">
   <button class="img-modal-close" onclick="closeModal()">✕</button>
   <div class="img-modal-tools" id="modal-tools" onclick="event.stopPropagation()"></div>
   <button class="img-modal-nav" id="modal-prev" onclick="event.stopPropagation();modalStep(-1)">‹</button>
@@ -1744,7 +1757,8 @@ function openModal(src, name, files, idx) {
   _modalIdx   = idx  ?? 0;
   exitCropMode();
   document.getElementById("modal-img").src = src;
-  document.getElementById("modal-name").textContent = name;
+  document.getElementById("modal-name").textContent =
+    (_modalFiles.length > 1) ? `${name}  ·  ${_modalIdx + 1}/${_modalFiles.length}` : name;
   document.getElementById("img-modal").classList.add("open");
   const hasPrev = _modalFiles.length > 1;
   document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
@@ -1757,9 +1771,33 @@ function modalStep(dir) {
   _modalIdx = (_modalIdx + dir + _modalFiles.length) % _modalFiles.length;
   const f = _modalFiles[_modalIdx];
   document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(f)}`;
-  document.getElementById("modal-name").textContent = f;
+  document.getElementById("modal-name").textContent =
+    `${f}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
   updateModalTools();
 }
+// Touch: swipe through the carousel. A swipe must not also register as the
+// backdrop tap that closes the modal, hence the guard.
+let _mTouchX = 0, _mTouchY = 0, _mSwiped = false;
+function modalBackdropTap() { if (_mSwiped) { _mSwiped = false; return; } closeModal(); }
+function initModalSwipe() {
+  const m = document.getElementById('img-modal');
+  if (!m) return;
+  m.addEventListener('touchstart', e => {
+    const t = e.changedTouches[0];
+    _mTouchX = t.clientX; _mTouchY = t.clientY; _mSwiped = false;
+  }, {passive: true});
+  m.addEventListener('touchend', e => {
+    if (cropMode) return;                       // don't fight the crop box
+    const t = e.changedTouches[0];
+    const dx = t.clientX - _mTouchX, dy = t.clientY - _mTouchY;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      _mSwiped = true;
+      modalStep(dx < 0 ? 1 : -1);
+    }
+  }, {passive: true});
+}
+document.addEventListener('DOMContentLoaded', initModalSwipe);
+
 function closeModal() {
   exitCropMode();
   document.getElementById("img-modal").classList.remove("open");
