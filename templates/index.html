@@ -847,11 +847,15 @@ function renderPostForm(batch, data) {
             </select>
             <button class="photo-card-remove" onclick="excludeCard('${f}')" title="Exclude">✕</button>
           </div>
-          <input list="species-list" id="sp-${fid(f)}" data-file="${f}" placeholder="Species…"
-                 value="${esc(m.species)}" onfocus="this.dataset.prev=this.value" oninput="spreadSpecies(this)" />
+          <input ${DL('species-list')} id="sp-${fid(f)}" data-file="${f}" placeholder="Species…"
+                 autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false"
+                 value="${esc(m.species)}" onfocus="this.dataset.prev=this.value"
+                 oninput="spreadSpecies(this);filterChips(this)" />
           ${chipRow('sp', f, recentSpecies)}
-          <input list="location-list" id="loc-${fid(f)}" data-file="${f}" placeholder="Rea St."
-                 value="${esc(m.location ?? defaultLoc)}" onfocus="this.dataset.prev=this.value" oninput="spreadLocation(this)" />
+          <input ${DL('location-list')} id="loc-${fid(f)}" data-file="${f}" placeholder="Rea St."
+                 autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false"
+                 value="${esc(m.location ?? defaultLoc)}" onfocus="this.dataset.prev=this.value"
+                 oninput="spreadLocation(this);filterChips(this)" />
           ${chipRow('loc', f, recentLocations)}
           <label class="oos-check"><input type="checkbox" id="oos-${fid(f)}" data-file="${f}" ${m.oos ? 'checked' : ''} onchange="spreadOos(this)" /> ⚠️ out of area</label>
         </div>
@@ -1640,13 +1644,32 @@ function restoreCard(f) {
 }
 
 // ── Fill-down: propagate a field to later photos in flat order ───────────────────
+// Android renders <datalist> as a dropdown that lands on top of the keyboard,
+// hiding the very field you're typing in. On a touch device the chips take its
+// place entirely; pointer devices keep the native list.
+const COARSE = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+const DL = (id) => COARSE ? "" : `list="${id}"`;
+
 function chipRow(kind, file, vals) {
   const list = (vals || []).slice(0, 12);
   if (!list.length) return "";
   const a = s => String(s ?? "").replace(/"/g, "&quot;");
-  return `<div class="chiprow">` + list.map(v =>
+  return `<div class="chiprow" id="chips-${kind}-${fid(file)}">` + list.map(v =>
     `<button type="button" class="vchip" data-v="${a(v)}" data-k="${kind}" data-f="${a(file)}"
              onclick="pickVal(this)">${a(v)}</button>`).join("") + `</div>`;
+}
+
+function filterChips(el) {
+  const row = document.getElementById(`chips-${el.id}`);
+  if (!row) return;
+  const q = (el.value || "").trim().toLowerCase();
+  let shown = 0;
+  row.querySelectorAll(".vchip").forEach(b => {
+    const hit = !q || b.dataset.v.toLowerCase().includes(q);
+    b.style.display = hit ? "" : "none";
+    if (hit) shown++;
+  });
+  row.style.display = shown ? "" : "none";
 }
 
 // Tapping a chip behaves exactly like typing the value: it fills the field and
