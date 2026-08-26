@@ -266,19 +266,6 @@
     .img-modal-nav:hover { background: rgba(255,255,255,.22); }
     #modal-prev { left: 24px; }
     #modal-next { right: 24px; }
-    @media (max-width: 680px) {
-      /* Keep the arrows off the photo and give them a thumb-sized target;
-         the image shrinks to leave room rather than sitting under them. */
-      .img-modal img { max-width: 100vw; max-height: 62vh; border-radius: 8px; }
-      .img-modal-nav { width: 56px; height: 56px; font-size: 32px;
-        top: auto; bottom: calc(18px + env(safe-area-inset-bottom)); transform: none; }
-      #modal-prev { left: 18px; }
-      #modal-next { right: 18px; }
-      .img-modal-name { bottom: calc(34px + env(safe-area-inset-bottom)); font-size: 12px;
-        max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .img-modal-tools { top: calc(12px + env(safe-area-inset-top)); left: 12px; }
-      .img-modal-close { top: calc(12px + env(safe-area-inset-top)); right: 12px; }
-    }
     .img-modal-close { position: absolute; top: 20px; right: 24px;
       background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18);
       color: #fff; font-size: 18px; cursor: pointer; border-radius: 50%;
@@ -486,6 +473,24 @@
       /* Step buttons: equal-width rows, no orphaned right-aligned Reset */
       .step-btns { gap: 6px; }
       .step-btns button { flex: 1 1 auto; margin-left: 0 !important; }
+    }
+    /* Phone layout for the preview carousel. Must come after the base rules
+       above or it silently loses to them — which is how the tools ended up
+       stranded under the browser chrome. Controls live along the bottom where
+       a thumb reaches, and the photo is sized to stay clear of them. */
+    @media (max-width: 680px) {
+      .img-modal img { max-width: 96vw; max-height: 54vh; border-radius: 8px; }
+      .img-modal-nav { width: 52px; height: 52px; font-size: 30px; top: 42%; transform: translateY(-50%); }
+      #modal-prev { left: 8px; }
+      #modal-next { right: 8px; }
+      .img-modal-close { top: calc(10px + env(safe-area-inset-top)); right: 10px;
+        width: 40px; height: 40px; }
+      .img-modal-name { bottom: calc(76px + env(safe-area-inset-bottom));
+        font-size: 12px; max-width: 92vw; text-align: center; }
+      .img-modal-tools { top: auto; left: 50%; transform: translateX(-50%);
+        bottom: calc(18px + env(safe-area-inset-bottom));
+        flex-wrap: wrap; justify-content: center; max-width: 94vw; }
+      .img-modal-tools button { padding: 9px 14px; font-size: 13px; }
     }
   </style>
 </head>
@@ -1755,6 +1760,7 @@ function thumbClick(event, idx) {
 function openModal(src, name, files, idx) {
   _modalFiles = files || [];
   _modalIdx   = idx  ?? 0;
+  _modalName  = name;
   exitCropMode();
   document.getElementById("modal-img").src = src;
   document.getElementById("modal-name").textContent =
@@ -1770,6 +1776,7 @@ function modalStep(dir) {
   exitCropMode();
   _modalIdx = (_modalIdx + dir + _modalFiles.length) % _modalFiles.length;
   const f = _modalFiles[_modalIdx];
+  _modalName = f;
   document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(f)}`;
   document.getElementById("modal-name").textContent =
     `${f}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
@@ -1826,7 +1833,11 @@ let cropMode  = false;
 let cropRatio = 0;        // target pixel aspect (w/h); 0 = free
 let cropBox   = {x:.05, y:.05, w:.9, h:.9};   // normalized to the image
 let _cropDrag = null;
-const _modalFile = () => document.getElementById("modal-name").textContent;
+// Held as state rather than read back out of the caption: the caption also
+// carries the "· 2/4" position, and parsing it back is how Remove and
+// ↺ Original silently disappeared.
+let _modalName = "";
+const _modalFile = () => _modalName;
 
 function updateModalTools() {
   const t = document.getElementById("modal-tools");
