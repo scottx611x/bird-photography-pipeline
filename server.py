@@ -49,6 +49,7 @@ state = {
     "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
     "syno_fetching":   {},      # album -> {got, total} while a download is in progress
     "photo_dates":     {},      # exported file -> capture date "M-D-YY" (EXIF) for combined batches
+    "claimed":         {},      # exported file -> the batch that collected it
     "multi_sources":   {},      # "<date>-multi" folder -> [source Synology album names]
 }
 
@@ -80,6 +81,7 @@ def save_state():
             "new_birds": list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
             "photo_dates": state.get("photo_dates", {}),
+            "claimed":     state.get("claimed", {}),
             "multi_sources": state.get("multi_sources", {}),
             "syno_skipped": sorted(state["syno_skipped"]),
             "done_albums": sorted(state["done_albums"]),
@@ -433,16 +435,34 @@ def _pick_export_post(trigger: bool = True):
         log(f"  {line}")
 
     def _exported():
-        # Files written or *overwritten* since export began. /birds is a flat
-        # dump that accumulates every shoot, so re-exporting a name that already
-        # exists is invisible to a name set-diff — mtime catches those too.
+        # Match exports to the batch by *name* — Lightroom names each export
+        # after its RAW, so DSC_9189.NEF -> DSC_9189.jpg. That beats guessing
+        # from mtime: "Collect exports" looks back two hours, wide enough to
+        # sweep in the previous batch's photos, which is exactly what happened.
+        #
+        # Timestamps still act as a sanity bound (/birds is a flat dump that
+        # accumulates every shoot, so an old file could share a DSC number),
+        # and anything another batch already collected stays with that batch.
+        with lock:
+            folder = state["active"]
+            claimed = dict(state.get("claimed", {}))
+        stems = _batch_raw_stems(folder) if folder else set()
+        recent = time.time() - 86400          # generous when matching by name
+
         out = []
         for f in _birds_snapshot():
+            owner = claimed.get(f)
+            if owner and owner != folder:
+                continue
             try:
-                if (BIRDS_DIR / f).stat().st_mtime >= export_start:
-                    out.append(f)
+                mtime = (BIRDS_DIR / f).stat().st_mtime
             except OSError:
-                pass
+                continue
+            if stems:
+                if _export_stem(f) in stems and mtime >= recent:
+                    out.append(f)
+            elif mtime >= export_start:       # no RAWs to match against
+                out.append(f)
         return sorted(out)
 
     set_step("export_wait")
@@ -489,7 +509,10 @@ def _pick_export_post(trigger: bool = True):
     new = _exported()
     _record_photo_dates(new)
     with lock:
+        folder = state["active"]
         state["new_birds"] = new
+        if folder:
+            state.setdefault("claimed", {}).update({f: folder for f in new})
     save_state()
     for n in new:
         log(f"  ✓ {n}")
@@ -681,6 +704,22 @@ def record_post(chunk: list, caption_text: str, scheduled_at: str):
         log(f"  📤 Post record shipped ({len(records)} total).")
     except Exception as e:
         log(f"  (post record kept locally; S3 push failed: {e})")
+
+
+def _batch_raw_stems(folder: str) -> set:
+    """Stems of the RAWs in a batch folder. Lightroom names each export after
+    its source file, so this maps a batch to its exports directly instead of
+    guessing from timestamps."""
+    try:
+        return {f.stem.lower() for f in (DOWNLOADS / folder).iterdir()
+                if f.suffix.lower() in RAW_SUFFIXES}
+    except OSError:
+        return set()
+
+
+def _export_stem(name: str) -> str:
+    """DSC_9156-2.jpg -> dsc_9156; Lightroom suffixes repeat exports with -N."""
+    return re.sub(r"-\d+$", "", Path(name).stem.lower())
 
 
 def _exif_date(fname: str) -> str:
@@ -1761,6 +1800,7 @@ if __name__ == "__main__":
     _saved = load_saved_statuses()
     state["syno_skipped"] = set(_saved.get("syno_skipped", []))
     state["multi_sources"] = _saved.get("multi_sources", {})
+    state["claimed"] = _saved.get("claimed", {})
     state["done_albums"]  = set(_saved.get("done_albums", [])) | {
         n for n, s in _saved.get("statuses", {}).items() if s == "done"}
     # Defer scanning to background so Flask starts immediately
