@@ -1838,8 +1838,10 @@ let _cropDrag = null;
 let _modalName = "";
 const _modalFile = () => _modalName;
 
+let _toolsSeq = 0;      // guards the async ↺ Original append below
 function updateModalTools() {
   const t = document.getElementById("modal-tools");
+  const seq = ++_toolsSeq;
   if (!cropMode) {
     let h = `<button onclick="startCrop()">✂ Crop</button>`;
     const cur = _modalFile();
@@ -1851,8 +1853,12 @@ function updateModalTools() {
     fetch(`/api/crop-status?file=${encodeURIComponent(f)}`)
       .then(r => r.json())
       .then(d => {
-        if (d.hasOriginal && !cropMode && _modalFile() === f)
-          t.innerHTML += `<button onclick="resetCrop()" title="Restore the uncropped export">↺ Original</button>`;
+        // Two overlapping calls used to each append their own button. Ignore a
+        // reply that a later call has superseded, and never add a second one.
+        if (seq !== _toolsSeq || cropMode || _modalFile() !== f) return;
+        if (!d.hasOriginal || document.getElementById("modal-revert")) return;
+        t.insertAdjacentHTML("beforeend",
+          `<button id="modal-revert" onclick="resetCrop()" title="Restore the uncropped export">↺ Original</button>`);
       }).catch(() => {});
     return;
   }
