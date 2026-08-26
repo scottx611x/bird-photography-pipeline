@@ -409,6 +409,15 @@
     .fetch-bar-fill { height: 100%; background: var(--blue); transition: width .4s ease; }
     .badge-remote { background: rgba(91,154,255,.15); color: var(--blue); }
     .badge-skipped { background: rgba(255,255,255,.06); color: var(--muted); }
+    .lrprog { margin: 10px 0 4px; }
+    .lrprog-top { display:flex; justify-content:space-between; font-size:11px;
+      color: var(--muted); margin-bottom:5px; gap:10px; }
+    .lrprog-top b { color: var(--text); font-weight:600; }
+    .lrprog-bar { height:7px; border-radius:4px; background:rgba(255,255,255,.09); overflow:hidden; }
+    .lrprog-fill { height:100%; border-radius:4px; background:var(--accent,#5b9aff);
+      transition: width .4s ease; }
+    .lrprog-fill.indet { width:35% !important; animation: lrslide 1.3s ease-in-out infinite; }
+    @keyframes lrslide { 0%{margin-left:-35%} 100%{margin-left:100%} }
     .beta-spin { display:inline-block; width:9px; height:9px; margin-right:5px;
       border:2px solid rgba(255,255,255,.25); border-top-color: var(--accent, #5b9aff);
       border-radius:50%; animation: betaspin .7s linear infinite; vertical-align:-1px; }
@@ -670,6 +679,41 @@ async function gotoStep(step) {
 // and vanishes — that also means locking the other step buttons from here.
 let betaState = { busy: null, msg: "", ok: true };
 
+// Lightroom reports its own progress ("Updating AI Settings, 5 of 7, 60%") in
+// the modal it puts up; mirror it so long steps aren't a blank wait.
+let lrProg = { active: false };
+async function pollLrProgress() {
+  if (!lastState || !lastState.active) { 
+    if (lrProg.active) { lrProg = { active: false }; betaRerender(); }
+    return;
+  }
+  try {
+    const j = await (await fetch('/api/lr-progress')).json();
+    const changed = j.active !== lrProg.active || j.percent !== lrProg.percent
+                 || j.done !== lrProg.done || j.label !== lrProg.label;
+    lrProg = j;
+    if (changed) betaRerender();
+  } catch (e) { /* transient — keep the last reading */ }
+}
+setInterval(pollLrProgress, 2500);
+
+function lrProgressHtml() {
+  if (!lrProg.active) return "";
+  const pct = (typeof lrProg.percent === 'number') ? lrProg.percent : null;
+  const count = (lrProg.done != null && lrProg.total != null)
+    ? `${lrProg.done} of ${lrProg.total}` : '';
+  const eta = lrProg.eta ? ` · ${lrProg.eta}` : '';
+  return `<div class="lrprog">
+    <div class="lrprog-top">
+      <span><b>${lrProg.label || 'Lightroom is working'}</b>${count ? ' · ' + count : ''}${eta}</span>
+      <span>${pct != null ? pct + '%' : ''}</span>
+    </div>
+    <div class="lrprog-bar">
+      <div class="lrprog-fill${pct == null ? ' indet' : ''}" style="width:${pct != null ? pct : 35}%"></div>
+    </div>
+  </div>`;
+}
+
 // ── Step card ─────────────────────────────────────────────────────────────────
 function renderStepCard(step, batch, data) {
   const s = STEP_INFO[step];
@@ -686,6 +730,7 @@ function renderStepCard(step, batch, data) {
 
   let content = "";
   if (s.msg)  content += `<div class="step-msg">${s.msg}</div>`;
+  content += lrProgressHtml();
 
   const busy = betaState.busy;
   const lock = busy ? " disabled" : "";

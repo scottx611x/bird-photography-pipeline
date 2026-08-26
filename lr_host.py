@@ -36,12 +36,68 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._json({"ok": True, "host": "lr_host.py"})
+        elif self.path == "/progress":
+            self._progress()
         elif self.path.startswith("/screen"):
             self._screen()
         elif self.path.startswith("/curate/"):
             self._curate_get()
         else:
             self._json({"error": "not found"}, 404)
+
+    def _progress(self):
+        """Whatever Lightroom's current modal says about its own progress.
+        Deliberately outside _run_lock and free of subprocess work beyond one
+        AppleScript, so the UI can poll it while a long paste is running."""
+        import re
+        script = '''
+        tell application "System Events"
+          tell process "Adobe Lightroom"
+            repeat with w in every window
+              set nm to ""
+              try
+                set nm to name of w
+              end try
+              if nm is not "Adobe Lightroom" then
+                set acc to ""
+                try
+                  repeat with t in every static text of w
+                    try
+                      set acc to acc & (value of t) & "|"
+                    end try
+                  end repeat
+                end try
+                if acc is not "" then return nm & "||" & acc
+              end if
+            end repeat
+            return ""
+          end tell
+        end tell'''
+        try:
+            r = subprocess.run(["osascript", "-e", script],
+                               capture_output=True, text=True, timeout=12)
+            raw = (r.stdout or "").strip()
+        except Exception:
+            raw = ""
+        out = {"active": False}
+        if raw:
+            title, _, body = raw.partition("||")
+            texts = [t for t in body.split("|") if t.strip()]
+            joined = " ".join(texts)
+            pct = re.search(r"(\d{1,3})\s*%", joined)
+            of = re.search(r"(\d+)\s+of\s+(\d+)", joined)
+            eta = re.search(r"[Ee]stimated time[:\s]+(.+?)(?:\||$)", joined)
+            out = {
+                "active": True,
+                "title": title.strip(),
+                "label": next((t for t in texts if t.strip()
+                               and not re.fullmatch(r"[\d\s%]+", t.strip())), title.strip()),
+                "percent": int(pct.group(1)) if pct else None,
+                "done": int(of.group(1)) if of else None,
+                "total": int(of.group(2)) if of else None,
+                "eta": eta.group(1).strip() if eta else None,
+            }
+        self._json(out)
 
     def _screen(self):
         """A downscaled JPEG of the screen — the accessibility dump can't show

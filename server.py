@@ -1333,6 +1333,18 @@ def lr_dust():
     return jsonify(r)
 
 
+@app.get("/api/lr-progress")
+def lr_progress():
+    """Lightroom's own modal progress, for the UI to draw a bar while a long
+    paste or denoise runs. Short timeout — it's polled."""
+    try:
+        with httpx.Client(timeout=15) as client:
+            r = client.get(f"{HOST_BRIDGE}/progress")
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"active": False})
+
+
 @app.get("/api/lr-status")
 def lr_status():
     """What Lightroom is showing right now — windows, progress dialogs, CPU.
