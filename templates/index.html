@@ -258,7 +258,7 @@
     .img-modal.open { display: flex; }
     .img-modal img { max-width: 90vw; max-height: 90vh; object-fit: contain;
       border-radius: 10px; box-shadow: 0 24px 80px rgba(0,0,0,.9); }
-    .img-modal-nav { position: absolute; top: 50%; transform: translateY(-50%);
+    .img-modal-nav { position: absolute; z-index: 3; top: 50%; transform: translateY(-50%);
       background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.2);
       color: #fff; font-size: 28px; cursor: pointer; border-radius: 50%;
       width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
@@ -266,15 +266,15 @@
     .img-modal-nav:hover { background: rgba(255,255,255,.22); }
     #modal-prev { left: 24px; }
     #modal-next { right: 24px; }
-    .img-modal-close { position: absolute; top: 20px; right: 24px;
+    .img-modal-close { position: absolute; z-index: 3; top: 20px; right: 24px;
       background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18);
       color: #fff; font-size: 18px; cursor: pointer; border-radius: 50%;
       width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; }
     .img-modal-close:hover { background: rgba(255,255,255,.22); }
-    .img-modal-name { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+    .img-modal-name { position: absolute; z-index: 3; bottom: 24px; left: 50%; transform: translateX(-50%);
       font-size: 11px; color: rgba(255,255,255,.4); font-family: 'Menlo', monospace; }
     /* crop tool */
-    .img-modal-tools { position: absolute; top: 20px; left: 24px; display: flex; gap: 8px;
+    .img-modal-tools { position: absolute; z-index: 3; top: 20px; left: 24px; display: flex; gap: 8px;
       align-items: center; z-index: 2; cursor: default; }
     .img-modal-tools button { background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22);
       color: #fff; border-radius: 8px; padding: 6px 13px; font-size: 12px; font-weight: 600;
@@ -475,22 +475,21 @@
       .step-btns button { flex: 1 1 auto; margin-left: 0 !important; }
     }
     /* Phone layout for the preview carousel. Must come after the base rules
-       above or it silently loses to them — which is how the tools ended up
-       stranded under the browser chrome. Controls live along the bottom where
-       a thumb reaches, and the photo is sized to stay clear of them. */
+       above or it silently loses to them. The photo is inset so the edge
+       arrows never sit on top of the subject. */
     @media (max-width: 680px) {
-      .img-modal img { max-width: 96vw; max-height: 54vh; border-radius: 8px; }
-      .img-modal-nav { width: 52px; height: 52px; font-size: 30px; top: 42%; transform: translateY(-50%); }
-      #modal-prev { left: 8px; }
-      #modal-next { right: 8px; }
+      .img-modal img { max-width: 84vw; max-height: 62vh; border-radius: 8px; }
+      .img-modal-nav { width: 46px; height: 46px; font-size: 26px; }
+      #modal-prev { left: 4px; }
+      #modal-next { right: 4px; }
       .img-modal-close { top: calc(10px + env(safe-area-inset-top)); right: 10px;
         width: 40px; height: 40px; }
-      .img-modal-name { bottom: calc(76px + env(safe-area-inset-bottom));
+      .img-modal-tools { top: calc(58px + env(safe-area-inset-top)); left: 50%;
+        transform: translateX(-50%); flex-wrap: wrap; justify-content: center;
+        max-width: 94vw; }
+      .img-modal-tools button { padding: 8px 13px; font-size: 13px; }
+      .img-modal-name { bottom: calc(16px + env(safe-area-inset-bottom));
         font-size: 12px; max-width: 92vw; text-align: center; }
-      .img-modal-tools { top: auto; left: 50%; transform: translateX(-50%);
-        bottom: calc(18px + env(safe-area-inset-bottom));
-        flex-wrap: wrap; justify-content: center; max-width: 94vw; }
-      .img-modal-tools button { padding: 9px 14px; font-size: 13px; }
     }
   </style>
 </head>
