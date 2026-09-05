@@ -582,6 +582,7 @@
        onclick="event.stopPropagation()">
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px">
       <b style="flex:1">👁 Lightroom status</b>
+      <button class="btn btn-neutral btn-sm" id="lr-dismiss-btn" onclick="dismissLrDialog(this)" title="Close a modal Lightroom dialog blocking the pipeline (e.g. a failed import)">🚪 Dismiss dialog</button>
       <button class="btn btn-neutral btn-sm" onclick="showLrStatus()">⟳ Refresh</button>
       <button class="btn btn-neutral btn-sm" onclick="document.getElementById('lr-status-modal').style.display='none'">✕</button>
     </div>
@@ -1186,6 +1187,16 @@ function lrScreenshot() {
     <body style="margin:0;background:#111;color:#ccc;font:13px system-ui">
     <div style="padding:8px 10px">Lightroom, brought to front · reload for a fresh shot</div>
     <img src="/lr-screen?app=Adobe%20Lightroom&t=${Date.now()}" style="width:100%;height:auto">`);
+}
+async function dismissLrDialog(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Dismissing…'; }
+  try {
+    const r = await (await fetch('/api/lr-dismiss', {method:'POST'})).json();
+    alert((r.output || r.error || 'done'));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🚪 Dismiss dialog'; }
+    showLrStatus();
+  }
 }
 async function showLrStatus() {
   const m = document.getElementById('lr-status-modal');

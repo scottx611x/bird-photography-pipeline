@@ -1445,6 +1445,18 @@ def lr_progress():
         return jsonify({"active": False})
 
 
+@app.post("/api/lr-dismiss")
+def lr_dismiss():
+    """Close a modal Lightroom dialog. A failed import blocks every other
+    command and its buttons aren't in the accessibility tree, so without this
+    a phone-only session dead-ends until someone reaches the Mac."""
+    log("🚪 Dismissing Lightroom dialog…")
+    r = call_host("lr-dismiss", timeout=120)
+    for line in (r.get("output", "") or "").splitlines():
+        log(f"  {line}")
+    return jsonify(r)
+
+
 @app.get("/api/lr-status")
 def lr_status():
     """What Lightroom is showing right now — windows, progress dialogs, CPU.

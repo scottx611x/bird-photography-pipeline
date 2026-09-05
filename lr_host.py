@@ -22,7 +22,8 @@ TOOLS  = Path(__file__).parent
 PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3")
 ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
-           "denoise-check", "denoise-probe", "dust-check", "dust-probe"}
+           "denoise-check", "denoise-probe", "dust-check", "dust-probe",
+           "lr-dismiss"}
 
 # One automation command at a time — concurrent Lightroom AppleScript runs (or
 # two fetches of the same album) would collide. Health checks skip the lock,
@@ -195,6 +196,11 @@ class Handler(BaseHTTPRequestHandler):
             args = ["bash", "-c",
                     "ps -A -o %cpu= -o comm= | grep -i 'lightroom' | "
                     "awk '{s+=$1} END {printf \"%.0f\", s}'"]
+        # Escape hatch: a modal Lightroom dialog (a failed import, say) blocks
+        # every other command and used to need a mouse — i.e. a trip home.
+        elif cmd == "lr-dismiss":
+            print("→ dismissing Lightroom dialog")
+            args = [PYTHON, str(TOOLS / "lr_dismiss.py")]
         elif cmd == "lr-status":
             args = [PYTHON, str(TOOLS / "lr_auto.py"), "status"]
         # Opt-in beta: tick Denoise by sight. Must run here, not from a shell —
