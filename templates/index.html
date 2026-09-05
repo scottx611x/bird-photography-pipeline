@@ -718,7 +718,13 @@ async function pollLrProgress() {
     return;
   }
   try {
-    const j = await (await fetch('/api/lr-progress')).json();
+    let j = await (await fetch('/api/lr-progress')).json();
+    if (!j.active) {
+      // Export raises no Lightroom window, so fall back to counting the files
+      // that have landed against the batch's RAW count.
+      const e = await (await fetch('/api/export-progress')).json();
+      if (e.active) j = e;
+    }
     const changed = j.active !== lrProg.active || j.percent !== lrProg.percent
                  || j.done !== lrProg.done || j.label !== lrProg.label;
     lrProg = j;
@@ -732,7 +738,9 @@ function lrProgressHtml() {
   const pct = (typeof lrProg.percent === 'number') ? lrProg.percent : null;
   const count = (lrProg.done != null && lrProg.total != null)
     ? `${lrProg.done} of ${lrProg.total}` : '';
-  const eta = lrProg.eta ? ` · ${lrProg.eta}` : '';
+  const idle = (lrProg.idle_for != null && lrProg.idle_for > 45)
+    ? ` · nothing new for ${lrProg.idle_for}s` : '';
+  const eta = (lrProg.eta ? ` · ${lrProg.eta}` : '') + idle;
   return `<div class="lrprog">
     <div class="lrprog-top">
       <span><b>${lrProg.label || 'Lightroom is working'}</b>${count ? ' · ' + count : ''}${eta}</span>

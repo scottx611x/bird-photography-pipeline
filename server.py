@@ -1433,6 +1433,42 @@ def lr_dust():
     return jsonify(r)
 
 
+@app.get("/api/export-progress")
+def export_progress():
+    """Export has no Lightroom progress window (denoise does), but the batch
+    knows how many RAWs it holds and each export is named after its RAW — so
+    count the ones that have landed."""
+    with lock:
+        folder = state["active"]
+        step   = state["proc_step"]
+    if not folder or step not in ("exporting", "export_wait", "export_done"):
+        return jsonify({"active": False})
+    stems = _batch_raw_stems(folder)
+    if not stems:
+        return jsonify({"active": False})
+    cutoff = time.time() - 86400
+    done, newest = set(), 0.0
+    for f in _birds_snapshot():
+        st = _export_stem(f)
+        if st in stems:
+            try:
+                m = (BIRDS_DIR / f).stat().st_mtime
+            except OSError:
+                continue
+            if m >= cutoff:
+                done.add(st)
+                newest = max(newest, m)
+    total = len(stems)
+    n = len(done)
+    return jsonify({
+        "active": True,
+        "label": "Exporting from Lightroom",
+        "done": n, "total": total,
+        "percent": int(n * 100 / total) if total else None,
+        "idle_for": int(time.time() - newest) if newest else None,
+    })
+
+
 @app.get("/api/lr-progress")
 def lr_progress():
     """Lightroom's own modal progress, for the UI to draw a bar while a long
