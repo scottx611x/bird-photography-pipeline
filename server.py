@@ -971,12 +971,30 @@ def continue_step():
 
 @app.post("/api/done")
 def done_picking():
+    """Done on the export step. Setting export_done only signals the running
+    thread to collect and move on — if that thread died (a redeploy kills it
+    while proc_step is restored from disk) nothing acts on it and the run
+    stalls on a Resume button. Finish it here in that case."""
+    resume = False
     with lock:
-        step = state["proc_step"]
+        step, alive = state["proc_step"], state["thread_active"]
         if step == "picking":
             state["proc_step"] = "exporting"
         elif step == "export_wait":
             state["proc_step"] = "export_done"
+            resume = not alive
+    if resume:
+        def _finish():
+            with lock:
+                state["stop_requested"] = False
+                state["thread_active"]  = True
+            log("↩ Collecting the export (run thread was lost in a restart).")
+            try:
+                _pick_export_post(trigger=False)
+            finally:
+                with lock:
+                    state["thread_active"] = False
+        threading.Thread(target=_finish, daemon=True).start()
     return jsonify({"ok": True})
 
 
