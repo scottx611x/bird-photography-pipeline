@@ -857,7 +857,7 @@ def serve_bird_preview(filename):
 def crop_status():
     """Whether a photo has a saved pristine original (i.e. has been cropped)."""
     name = (request.args.get("file") or "").strip()
-    if not name or (BIRDS_DIR / name).parent != BIRDS_DIR:
+    if not name or "/" in name:
         return jsonify({"error": "unknown file"}), 404
     return jsonify({"hasOriginal": (BIRDS_DIR / ".originals" / name).is_file()})
 
@@ -873,7 +873,7 @@ def crop_image():
     data = request.json or {}
     name = (data.get("file") or "").strip()
     src  = bird_file(name)
-    if not name or src.parent != BIRDS_DIR or not src.is_file():
+    if not name or "/" in name or not src.is_file():
         return jsonify({"error": "unknown file"}), 404
     orig_dir = BIRDS_DIR / ".originals"
 
@@ -1688,6 +1688,28 @@ def exclude_file():
     return jsonify({"ok": True})
 
 
+def _sync_parked(lanes, excluded):
+    """Keep ~/Desktop/birbs in step with the arrangement: photos in a post live
+    there, excluded ones sit in .excluded. Without this a photo restored to a
+    post stayed parked — uncroppable, and missing when the post ran."""
+    in_posts = {f for lane in lanes for f in lane}
+    EXCLUDED_DIR.mkdir(exist_ok=True)
+    for f in in_posts:
+        parked = EXCLUDED_DIR / f
+        if parked.is_file() and not (BIRDS_DIR / f).exists():
+            try:
+                parked.replace(BIRDS_DIR / f)
+            except OSError:
+                pass
+    for f in excluded or []:
+        live = BIRDS_DIR / f
+        if live.is_file():
+            try:
+                live.replace(EXCLUDED_DIR / f)
+            except OSError:
+                pass
+
+
 @app.post("/api/arrangement")
 def save_arrangement():
     """Persist the posting screen's layout — lane grouping/order, excluded photos,
@@ -1704,6 +1726,7 @@ def save_arrangement():
     with lock:
         state["arrangement"] = arrangement
     save_state()
+    _sync_parked(arrangement["lanes"], arrangement["excluded"])
     return jsonify({"ok": True})
 
 
