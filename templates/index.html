@@ -541,6 +541,11 @@
       .img-modal-tools.cropping { flex-wrap: wrap; max-width: 92vw; gap: 5px; }
       .img-modal-tools.cropping button { padding: 7px 10px; font-size: 13px; }
       .img-modal img { max-height: 56vh; }
+      /* A portrait crop is tall, so cap the photo and park the caption above
+         the species/location fields — it was landing behind them. */
+      .img-modal:has(#modal-meta:not(:empty)) img { max-height: 46vh; }
+      .img-modal:has(#modal-meta:not(:empty)) .img-modal-name {
+        bottom: calc(126px + env(safe-area-inset-bottom)); }
       .img-modal-name { bottom: calc(16px + env(safe-area-inset-bottom));
         font-size: 12px; max-width: 92vw; text-align: center; }
     }
