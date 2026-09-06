@@ -515,10 +515,14 @@
       #modal-next { right: 4px; }
       .img-modal-close { top: calc(10px + env(safe-area-inset-top)); right: 10px;
         width: 40px; height: 40px; }
-      .img-modal-tools { top: calc(58px + env(safe-area-inset-top)); left: 50%;
-        transform: translateX(-50%); flex-wrap: wrap; justify-content: center;
-        max-width: 94vw; }
-      .img-modal-tools button { padding: 8px 13px; font-size: 13px; }
+      /* Icon-only so every tool fits one row — wrapped labels were pushing
+         the toolbar over the photo. */
+      .img-modal-tools { top: calc(56px + env(safe-area-inset-top)); left: 50%;
+        transform: translateX(-50%); flex-wrap: nowrap; justify-content: center;
+        max-width: 96vw; gap: 6px; }
+      .img-modal-tools button { padding: 9px 12px; font-size: 17px; line-height: 1; }
+      .img-modal-tools .btxt { display: none; }
+      .img-modal img { max-height: 56vh; }
       .img-modal-name { bottom: calc(16px + env(safe-area-inset-bottom));
         font-size: 12px; max-width: 92vw; text-align: center; }
     }
@@ -2001,11 +2005,11 @@ function updateModalTools() {
     const place = modalPlace(_modalFile());
     if (place && place.size > 1) {
       h += `<button onclick="moveWithin(-1)" ${place.pos === 0 ? 'disabled' : ''}
-              title="Move earlier in this post">⇤ Move</button>`
+              title="Move earlier in this post">⇤<span class=btxt> Move</span></button>`
          + `<button onclick="moveWithin(1)" ${place.pos === place.size - 1 ? 'disabled' : ''}
-              title="Move later in this post">Move ⇥</button>`;
+              title="Move later in this post"><span class=btxt>Move </span>⇥</button>`;
     }
-    h += `<button onclick="startCrop()">✂ Crop</button>`;
+    h += `<button onclick="startCrop()" title="Crop">✂<span class=btxt> Crop</span></button>`;
     const cur = _modalFile();
     // flatFiles() reads client-side lane state, which is empty for a beat after
     // a re-render — and the button vanishing mid-cull is worse than a no-op.
@@ -2013,7 +2017,7 @@ function updateModalTools() {
     const inLanes = cur && (flatFiles().includes(cur)
       || (lastState?.arrangement?.lanes || []).some(l => l.includes(cur)));
     if (lastState?.proc_step === 'posting' && inLanes)
-      h += `<button onclick="excludeFromModal()" title="Exclude from posting — moves to the Excluded strip, order of the rest is untouched">✕ Remove</button>`;
+      h += `<button onclick="excludeFromModal()" title="Exclude from posting — moves to the Excluded strip, order of the rest is untouched">✕<span class=btxt> Remove</span></button>`;
     t.innerHTML = h;
     const f = cur;
     if (!f) return;
@@ -2025,7 +2029,7 @@ function updateModalTools() {
         if (seq !== _toolsSeq || cropMode || _modalFile() !== f) return;
         if (!d.hasOriginal || document.getElementById("modal-revert")) return;
         t.insertAdjacentHTML("beforeend",
-          `<button id="modal-revert" onclick="resetCrop()" title="Restore the uncropped export">↺ Original</button>`);
+          `<button id="modal-revert" onclick="resetCrop()" title="Restore the uncropped export">↺<span class=btxt> Original</span></button>`);
       }).catch(() => {});
     return;
   }
@@ -2033,7 +2037,7 @@ function updateModalTools() {
   t.innerHTML = chip(0, 'Free') + chip(4/5, '4:5') + chip(1, '1:1') + chip(3/2, '3:2') +
     `<button class="crop-apply" onclick="applyCrop()">✓ Apply</button>` +
     `<button onclick="exitCropMode()">Cancel</button>` +
-    `<button onclick="resetCrop()" title="Restore the uncropped export">↺ Original</button>`;
+    `<button onclick="resetCrop()" title="Restore the uncropped export">↺<span class=btxt> Original</span></button>`;
 }
 
 function startCrop() {
