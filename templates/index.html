@@ -1897,8 +1897,13 @@ function excludeFromModal() {
   if (!_modalFiles.length) { closeModal(); return; }
   _modalIdx = _modalIdx % _modalFiles.length;
   const nf = _modalFiles[_modalIdx];
+  // Keep _modalName in step with what's on screen: the tools ask _modalFile()
+  // which photo they act on, so leaving it on the just-removed file hid the
+  // Remove button on the photo that replaced it.
+  _modalName = nf;
   document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(nf)}`;
-  document.getElementById("modal-name").textContent = nf;
+  document.getElementById("modal-name").textContent =
+    `${nf}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
   const hasPrev = _modalFiles.length > 1;
   document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
   document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
