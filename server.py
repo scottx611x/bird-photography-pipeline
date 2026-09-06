@@ -776,6 +776,23 @@ def _record_photo_dates(files: list):
         state.setdefault("photo_dates", {}).update({f: d for f, d in dates.items() if d})
 
 
+def _photo_versions(names) -> dict:
+    """file -> last-modified stamp. The UI puts this in image URLs so a crop
+    changes the URL: a browser that cached the pre-crop copy under a long
+    lifetime would otherwise keep showing it, which is exactly what made the
+    carousel disagree with the cards.
+
+    Takes the file list rather than reading state — get_state() calls this
+    while already holding the lock, and it isn't reentrant."""
+    out = {}
+    for n in names:
+        try:
+            out[n] = int(bird_file(n).stat().st_mtime)
+        except OSError:
+            pass
+    return out
+
+
 def _birds_snapshot():
     if not BIRDS_DIR.exists():
         return []
@@ -963,6 +980,7 @@ def get_state():
             "new_birds":  list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
             "photo_dates": state.get("photo_dates", {}),
+            "photo_versions": _photo_versions(state["new_birds"]),
             "log":        list(state["log"])[-80:],
             "host_ok":    state["host_ok"],
             "last_post":  state["last_post"],

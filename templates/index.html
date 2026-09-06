@@ -866,8 +866,8 @@ function renderPostForm(batch, data) {
            ondragover="onCardOver(event)" ondragleave="onCardLeave(event)"
            ondrop="onCardDrop(event,'${f}')">
         <div class="photo-card-img-row">
-          <img src="/bird-thumb/${encodeURIComponent(f)}"
-               onclick="openModal('/bird-preview/${encodeURIComponent(f)}','${f}',flatFiles(),${idx})"
+          <img src="/bird-thumb/${encodeURIComponent(f)}${imgV(f)}"
+               onclick="openModal(previewUrl('${f}'),'${f}',flatFiles(),${idx})"
                loading="lazy" title="Click to preview" />
           <div class="zoom-hint">🔍 preview</div>
         </div>
@@ -932,7 +932,7 @@ function renderPostForm(batch, data) {
             <div class="photo-card excluded" data-file="${f}" draggable="true"
                  ondragstart="onCardDragStart(event,'${f}')" ondragend="onDragEnd()">
               <div class="photo-card-img-row">
-                <img src="/bird-thumb/${encodeURIComponent(f)}" loading="lazy" title="${f}" />
+                <img src="/bird-thumb/${encodeURIComponent(f)}${imgV(f)}" loading="lazy" title="${f}" />
               </div>
               <div class="photo-card-fields">
                 <div class="photo-card-header">
@@ -1883,7 +1883,7 @@ function openModal(src, name, files, idx) {
 function preloadNeighbours() {
   for (const d of [1, -1, 2]) {
     const f = _modalFiles[(_modalIdx + d + _modalFiles.length) % _modalFiles.length];
-    if (f) (new Image()).src = `/bird-preview/${encodeURIComponent(f)}`;
+    if (f) (new Image()).src = previewUrl(f);
   }
 }
 function modalStep(dir) {
@@ -1892,7 +1892,7 @@ function modalStep(dir) {
   _modalIdx = (_modalIdx + dir + _modalFiles.length) % _modalFiles.length;
   const f = _modalFiles[_modalIdx];
   _modalName = f;
-  document.getElementById("modal-img").src = `/bird-preview/${encodeURIComponent(f)}`;
+  document.getElementById("modal-img").src = previewUrl(f);
   document.getElementById("modal-name").textContent =
     `${f}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
   updateModalTools();
@@ -1939,7 +1939,7 @@ function excludeFromModal() {
   // which photo they act on, so leaving it on the just-removed file hid the
   // Remove button on the photo that replaced it.
   _modalName = nf;
-  document.getElementById("modal-img").src = `/bird-preview/${encodeURIComponent(nf)}`;
+  document.getElementById("modal-img").src = previewUrl(nf);
   document.getElementById("modal-name").textContent =
     `${nf}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
   const hasPrev = _modalFiles.length > 1;
@@ -1957,6 +1957,13 @@ let _cropDrag = null;
 // carries the "· 2/4" position, and parsing it back is how Remove and
 // ↺ Original silently disappeared.
 let _modalName = "";
+// Version images by file mtime so a crop changes the URL — a phone that
+// cached the pre-crop copy can't keep serving it.
+const imgV = (f) => {
+  const v = (lastState && lastState.photo_versions) ? lastState.photo_versions[f] : null;
+  return v ? `?v=${v}` : '';
+};
+const previewUrl = (f) => `/bird-preview/${encodeURIComponent(f)}${imgV(f)}`;
 const _modalFile = () => _modalName;
 
 let _toolsSeq = 0;      // guards the async ↺ Original append below
