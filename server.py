@@ -849,8 +849,12 @@ def serve_bird_preview(filename):
         img = PILImage.open(src)
         img.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), PILImage.LANCZOS)
         img.convert("RGB").save(prev, "JPEG", quality=86, optimize=True)
+    # Revalidate rather than cache blind: a crop rewrites the file under the
+    # same URL, and a cached copy meant the carousel showed the pre-crop image
+    # while the crop tool worked on the cropped one — so the next crop was
+    # framed against the wrong picture. A 304 keeps this cheap.
     return send_file(str(prev), mimetype="image/jpeg",
-                     max_age=86400, conditional=True)
+                     max_age=0, conditional=True, last_modified=prev.stat().st_mtime)
 
 
 @app.get("/api/crop-status")
