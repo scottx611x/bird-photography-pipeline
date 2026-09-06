@@ -867,7 +867,7 @@ function renderPostForm(batch, data) {
            ondrop="onCardDrop(event,'${f}')">
         <div class="photo-card-img-row">
           <img src="/bird-thumb/${encodeURIComponent(f)}"
-               onclick="openModal('/bird-img/${encodeURIComponent(f)}','${f}',flatFiles(),${idx})"
+               onclick="openModal('/bird-preview/${encodeURIComponent(f)}','${f}',flatFiles(),${idx})"
                loading="lazy" title="Click to preview" />
           <div class="zoom-hint">🔍 preview</div>
         </div>
@@ -1880,13 +1880,19 @@ function openModal(src, name, files, idx) {
   document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
   updateModalTools();
 }
+function preloadNeighbours() {
+  for (const d of [1, -1, 2]) {
+    const f = _modalFiles[(_modalIdx + d + _modalFiles.length) % _modalFiles.length];
+    if (f) (new Image()).src = `/bird-preview/${encodeURIComponent(f)}`;
+  }
+}
 function modalStep(dir) {
   if (!_modalFiles.length) return;
   exitCropMode();
   _modalIdx = (_modalIdx + dir + _modalFiles.length) % _modalFiles.length;
   const f = _modalFiles[_modalIdx];
   _modalName = f;
-  document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(f)}`;
+  document.getElementById("modal-img").src = `/bird-preview/${encodeURIComponent(f)}`;
   document.getElementById("modal-name").textContent =
     `${f}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
   updateModalTools();
@@ -1933,7 +1939,7 @@ function excludeFromModal() {
   // which photo they act on, so leaving it on the just-removed file hid the
   // Remove button on the photo that replaced it.
   _modalName = nf;
-  document.getElementById("modal-img").src = `/bird-img/${encodeURIComponent(nf)}`;
+  document.getElementById("modal-img").src = `/bird-preview/${encodeURIComponent(nf)}`;
   document.getElementById("modal-name").textContent =
     `${nf}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
   const hasPrev = _modalFiles.length > 1;

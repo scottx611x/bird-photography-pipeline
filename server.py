@@ -828,6 +828,31 @@ def serve_bird_thumb(filename):
 
 
 
+PREVIEW_DIR  = BIRDS_DIR / ".previews"
+PREVIEW_EDGE = 1800          # plenty for judging sharpness and framing a crop
+
+
+@app.get("/bird-preview/<path:filename>")
+def serve_bird_preview(filename):
+    """A downscaled copy for the carousel. The originals are 10-13 MB each,
+    which is invisible on the LAN and painful over Tailscale on cellular —
+    this lands around 300 KB. Crops are unaffected: the box is stored as
+    fractions and applied to the original file server-side."""
+    from flask import send_file
+    from PIL import Image as PILImage
+    src = bird_file(filename)
+    if not src.is_file():
+        return "", 404
+    PREVIEW_DIR.mkdir(exist_ok=True)
+    prev = PREVIEW_DIR / filename
+    if not prev.exists() or src.stat().st_mtime > prev.stat().st_mtime:
+        img = PILImage.open(src)
+        img.thumbnail((PREVIEW_EDGE, PREVIEW_EDGE), PILImage.LANCZOS)
+        img.convert("RGB").save(prev, "JPEG", quality=86, optimize=True)
+    return send_file(str(prev), mimetype="image/jpeg",
+                     max_age=86400, conditional=True)
+
+
 @app.get("/api/crop-status")
 def crop_status():
     """Whether a photo has a saved pristine original (i.e. has been cropped)."""
