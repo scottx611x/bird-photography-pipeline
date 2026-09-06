@@ -1669,6 +1669,7 @@ function moveCard(f, target) {
   removeFromAll(f);
   if (target === 'x') {
     excludedFiles.add(f);
+    parkFile(f, true);
   } else {
     const i = target === 'new' ? postLanes.push([]) - 1 : parseInt(target, 10);
     while (postLanes.length <= i) postLanes.push([]);
@@ -1677,10 +1678,20 @@ function moveCard(f, target) {
   pruneEmptyLanes();
   rerenderPhotoCards();
 }
-function excludeCard(f) { capturePhotoInputs(); removeFromAll(f); excludedFiles.add(f); pruneEmptyLanes(); rerenderPhotoCards(); }
+// Parking the export out of ~/Desktop/birbs as well, so a folder-watch
+// backup doesn't upload photos that were dropped from the post.
+function parkFile(f, excluded) {
+  fetch('/api/exclude-file', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({file: f, excluded})}).catch(() => {});
+}
+function excludeCard(f) {
+  capturePhotoInputs(); removeFromAll(f); excludedFiles.add(f);
+  pruneEmptyLanes(); rerenderPhotoCards(); parkFile(f, true);
+}
 function restoreCard(f) {
   capturePhotoInputs();
   excludedFiles.delete(f);
+  parkFile(f, false);
   postLanes[postLanes.length - 1].push(f);
   rerenderPhotoCards();
 }

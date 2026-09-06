@@ -199,6 +199,15 @@ def scan_batches():
             log(f"New batch: {name} ({batch['raw_count']} RAWs)")
 
 
+EXCLUDED_DIR = BIRDS_DIR / ".excluded"
+
+
+def bird_file(name: str) -> Path:
+    """A photo's path, whether it's live in /birds or parked in .excluded."""
+    p = BIRDS_DIR / name
+    return p if p.exists() else (EXCLUDED_DIR / name)
+
+
 def batch_host_path(folder_name: str) -> str:
     """Convert the Docker /downloads path to the Mac ~/Downloads path.
     Must use MAC_HOME, not Path.home() — in the container that is /root, and
@@ -793,15 +802,18 @@ def index():
 
 @app.get("/bird-img/<path:filename>")
 def serve_bird_image(filename):
-    from flask import send_from_directory
-    return send_from_directory(str(BIRDS_DIR), filename)
+    from flask import send_file
+    p = bird_file(filename)
+    if not p.is_file():
+        return "", 404
+    return send_file(str(p), mimetype="image/jpeg")
 
 
 @app.get("/bird-thumb/<path:filename>")
 def serve_bird_thumb(filename):
     from flask import send_file
     from PIL import Image as PILImage
-    src = BIRDS_DIR / filename
+    src = bird_file(filename)
     if not src.exists():
         return "", 404
     thumb_dir = BIRDS_DIR / ".thumbs"
@@ -835,7 +847,7 @@ def crop_image():
     import shutil
     data = request.json or {}
     name = (data.get("file") or "").strip()
-    src  = BIRDS_DIR / name
+    src  = bird_file(name)
     if not name or src.parent != BIRDS_DIR or not src.is_file():
         return jsonify({"error": "unknown file"}), 404
     orig_dir = BIRDS_DIR / ".originals"
@@ -1622,6 +1634,33 @@ def skip_before(date: str):
     save_state()
     log(f"Marked {count} batches before {date} as done.")
     return jsonify({"ok": True, "count": count})
+
+
+@app.post("/api/exclude-file")
+def exclude_file():
+    """Park an excluded photo in /birds/.excluded (or bring it back).
+
+    /birds is watched for backup, so a photo dropped from a post shouldn't
+    keep sitting there waiting to be uploaded. Moving rather than deleting
+    keeps it recoverable, and the hidden folder matches .originals/.ready.
+    """
+    data = request.json or {}
+    name = (data.get("file") or "").strip()
+    if not name or "/" in name or name.startswith("."):
+        return jsonify({"error": "bad file"}), 400
+    want_excluded = bool(data.get("excluded", True))
+    EXCLUDED_DIR.mkdir(exist_ok=True)
+    live, parked = BIRDS_DIR / name, EXCLUDED_DIR / name
+    try:
+        if want_excluded and live.is_file():
+            live.replace(parked)
+            log(f"  ↪ {name} moved out of ~/Desktop/birbs (excluded)")
+        elif not want_excluded and parked.is_file():
+            parked.replace(live)
+            log(f"  ↩ {name} restored to ~/Desktop/birbs")
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True})
 
 
 @app.post("/api/arrangement")
