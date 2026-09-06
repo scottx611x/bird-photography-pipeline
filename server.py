@@ -48,6 +48,7 @@ state = {
     "syno_skipped":    set(),   # Synology album names hidden from the list
     "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
     "syno_fetching":   {},      # album -> {got, total} while a download is in progress
+    "run_error":       "",      # why the last run thread stopped, if it failed
     "photo_dates":     {},      # exported file -> capture date "M-D-YY" (EXIF) for combined batches
     "claimed":         {},      # exported file -> the batch that collected it
     "multi_sources":   {},      # "<date>-multi" folder -> [source Synology album names]
@@ -278,8 +279,19 @@ def process_batch(folder_name: str, no_post: bool = False, start_step: str = "im
         state["arrangement"] = None
         state["stop_requested"] = False
         state["thread_active"] = True
+        state["run_error"] = ""
     try:
         _run_batch(folder_name, start_step=start_step)
+    except Exception as e:
+        # Without this the thread died silently — the step stayed put, the UI
+        # offered "Resume", and nothing said why. Long steps are the ones that
+        # raise (a host call timing out mid-export, /birds going away).
+        import traceback
+        with lock:
+            state["run_error"] = f"{type(e).__name__}: {e}"
+        log(f"✗ Run failed at step '{state.get('proc_step')}': {e}")
+        for line in traceback.format_exc().splitlines()[-4:]:
+            log(f"    {line}")
     finally:
         with lock:
             state["thread_active"] = False
@@ -315,7 +327,11 @@ def _denoise_and_export_tail():
 
         # Lightroom's own progress modal is the real signal: while it is up,
         # work is definitively outstanding no matter what the CPU is doing.
-        prog = lr_progress()
+        try:
+            prog = lr_progress()
+        except Exception as e:
+            log(f"  (progress check failed, continuing: {e})")
+            prog = {"active": False}
         if prog.get("active"):
             quiet = 0
             note = _prog_line(prog)
@@ -467,7 +483,7 @@ def _pick_export_post(trigger: bool = True):
 
     set_step("export_wait")
     log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birbs/ (or click Done).")
-    last_sig, stable, last_note = None, 0, ""
+    last_sig, stable, last_note, ticks = None, 0, "", 0
     while True:
         time.sleep(1)
         with lock:
@@ -481,14 +497,24 @@ def _pick_export_post(trigger: bool = True):
         # apparent silence — 8s here once cut off an export after 4 of 58.
         # Don't call an export finished while Lightroom still has a progress
         # modal up — files can be on disk while later ones are still rendering.
-        prog = lr_progress()
-        if prog.get("active"):
-            stable = 0
-            note = _prog_line(prog)
-            if note != last_note:
-                log(f"  {note}")
-                last_note = note
-            continue
+        # Poll Lightroom every 5s, not every second: this loop runs for the
+        # whole export, and each call is an HTTP round trip to lr_host plus an
+        # AppleScript. Hundreds of them is both wasteful and a large surface
+        # for the transient failure that silently killed the run thread.
+        ticks += 1
+        if ticks % 5 == 0:
+            try:
+                prog = lr_progress()
+            except Exception as e:
+                log(f"  (progress check failed, continuing: {e})")
+                prog = {"active": False}
+            if prog.get("active"):
+                stable = 0
+                note = _prog_line(prog)
+                if note != last_note:
+                    log(f"  {note}")
+                    last_note = note
+                continue
 
         new_files = _exported()
         if not new_files:
@@ -901,6 +927,7 @@ def get_state():
             "last_post":  state["last_post"],
             "post_error":     state.get("post_error", False),
             "thread_active":  state["thread_active"],
+            "run_error":      state.get("run_error", ""),
             "syno_skipped":   sorted(state["syno_skipped"]),
             "done_albums":    sorted(state["done_albums"]),
             "syno_fetching":  dict(state["syno_fetching"]),
@@ -962,6 +989,8 @@ def continue_step():
                     _denoise_and_export_tail()
                 else:
                     _pick_export_post(trigger=(m != "collect"))
+            except Exception as e:
+                log(f"✗ Resume failed: {e}")
             finally:
                 with lock:
                     state["thread_active"] = False
@@ -991,6 +1020,8 @@ def done_picking():
             log("↩ Collecting the export (run thread was lost in a restart).")
             try:
                 _pick_export_post(trigger=False)
+            except Exception as e:
+                log(f"✗ Collecting the export failed: {e}")
             finally:
                 with lock:
                     state["thread_active"] = False
