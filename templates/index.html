@@ -530,7 +530,6 @@
     <div class="nav-right">
       <a class="btn-log curate-link" href="/curate" style="text-decoration:none" title="Carousel review of recent days → daily albums">🖼 Curate</a>
       <button class="btn-log lr-peek" onclick="showLrStatus()">👁 LR</button>
-      <button class="btn-log lr-peek" onclick="lrScreenshot()" title="Screenshot of the Mac (needs Screen Recording permission)">📷</button>
       <button class="btn-log" id="log-toggle" onclick="toggleLog()">Hide log</button>
       <div class="host-pill">
         <div class="host-dot" id="host-dot"></div>
@@ -596,7 +595,7 @@
      background:rgba(0,0,0,.7); align-items:center; justify-content:center; padding:16px"
      onclick="this.style.display='none'">
   <div style="background:var(--card,#141a26); border:1px solid rgba(255,255,255,.12); border-radius:12px;
-       max-width:560px; width:100%; max-height:80vh; display:flex; flex-direction:column; padding:14px"
+       max-width:820px; width:100%; max-height:88vh; display:flex; flex-direction:column; padding:14px"
        onclick="event.stopPropagation()">
     <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px">
       <b style="flex:1">👁 Lightroom status</b>
@@ -604,8 +603,12 @@
       <button class="btn btn-neutral btn-sm" onclick="showLrStatus()">⟳ Refresh</button>
       <button class="btn btn-neutral btn-sm" onclick="document.getElementById('lr-status-modal').style.display='none'">✕</button>
     </div>
-    <pre id="lr-status-text" style="margin:0; overflow:auto; font-size:12px; line-height:1.5;
-         white-space:pre-wrap; color:var(--muted)">…</pre>
+    <div style="overflow:auto">
+      <img id="lr-shot" alt="" style="display:none; width:100%; border-radius:8px;
+           border:1px solid rgba(255,255,255,.12); margin-bottom:10px" />
+      <pre id="lr-status-text" style="margin:0; font-size:12px; line-height:1.5;
+           white-space:pre-wrap; color:var(--muted)">…</pre>
+    </div>
   </div>
 </div>
 
@@ -1211,29 +1214,16 @@ async function doProcess(f, noPost) {
     body: JSON.stringify({no_post: !!noPost}),
   });
 }
-function lrScreenshot() {
-  const w = window.open('', '_blank');
-  w.document.write(`<title>Mac screen</title>
-    <meta name=viewport content="width=device-width,initial-scale=1">
-    <body style="margin:0;background:#111;color:#ccc;font:13px system-ui">
-    <div style="padding:8px 10px">Lightroom, brought to front · reload for a fresh shot</div>
-    <img src="/lr-screen?app=Adobe%20Lightroom&t=${Date.now()}" style="width:100%;height:auto">`);
-}
-async function dismissLrDialog(btn) {
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Dismissing…'; }
-  try {
-    const r = await (await fetch('/api/lr-dismiss', {method:'POST'})).json();
-    alert((r.output || r.error || 'done'));
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '🚪 Dismiss dialog'; }
-    showLrStatus();
-  }
-}
 async function showLrStatus() {
   const m = document.getElementById('lr-status-modal');
   m.style.display = 'flex';
   const t = document.getElementById('lr-status-text');
   t.textContent = 'Reading Lightroom…';
+  const shot = document.getElementById('lr-shot');
+  shot.style.display = 'none';
+  shot.onload  = () => { shot.style.display = ''; };
+  shot.onerror = () => { shot.style.display = 'none'; };
+  shot.src = '/lr-screen?app=Adobe%20Lightroom&t=' + Date.now();
   try {
     const d = await (await fetch('/api/lr-status')).json();
     t.textContent = `Lightroom CPU: ${d.cpu}%  ${Number(d.cpu) > 50 ? '(busy — probably denoising or exporting)' : '(idle)'}\n\n${d.status}`;
