@@ -1884,8 +1884,11 @@ async function postLane(i) {
   } catch (e) {
     alert('Could not reach the server to post.');
   }
-  if (btn) { btn.disabled = false; btn.textContent = '▶ Post this'; }
-  if (!accepted) return;                 // keep the lane; nothing was queued
+  if (!accepted) {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ Post this'; }
+    return;                              // keep the lane; nothing was queued
+  }
+  if (btn) btn.textContent = '✓ Queued';  // stays disabled — one click, one post
 
   // The post runs in the background — watch for it to fail there too, rather
   // than reporting success the moment the request was accepted.

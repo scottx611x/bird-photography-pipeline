@@ -48,6 +48,7 @@ state = {
     "syno_skipped":    set(),   # Synology album names hidden from the list
     "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
     "syno_fetching":   {},      # album -> {got, total} while a download is in progress
+    "posting":         False,   # a post is in flight — blocks a second one
     "run_error":       "",      # why the last run thread stopped, if it failed
     "photo_dates":     {},      # exported file -> capture date "M-D-YY" (EXIF) for combined batches
     "claimed":         {},      # exported file -> the batch that collected it
@@ -985,6 +986,7 @@ def get_state():
             "host_ok":    state["host_ok"],
             "last_post":  state["last_post"],
             "post_error":     state.get("post_error", False),
+            "posting":        state.get("posting", False),
             "thread_active":  state["thread_active"],
             "run_error":      state.get("run_error", ""),
             "buffer_ready":   any(f"{n}=" in os.environ.get("BUFFER_COOKIES", "")
@@ -1197,6 +1199,12 @@ def post_to_buffer():
         if not (groups or photos or files):
             return jsonify({"error": "All selected photos were already posted"}), 400
 
+    with lock:
+        if state.get("posting"):
+            return jsonify({"ok": False,
+                            "error": "A post is already running — wait for it to finish."}), 409
+        state["posting"] = True
+
     def _post():
         import subprocess
         with lock:
@@ -1292,7 +1300,14 @@ def post_to_buffer():
             with lock:
                 state["post_error"] = True
 
-    threading.Thread(target=_post, daemon=True).start()
+    def _post_guarded():
+        try:
+            _post()
+        finally:
+            with lock:
+                state["posting"] = False
+
+    threading.Thread(target=_post_guarded, daemon=True).start()
     return jsonify({"ok": True})
 
 
