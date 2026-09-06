@@ -1870,12 +1870,36 @@ async function postLane(i) {
   localStorage.setItem('birdLocation', g[0].location);
   const btn = document.getElementById('postlane-' + i);
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Scheduling…'; }
-  await fetch("/api/post", {
-    method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ groups: [g], date,
-      schedule_date: document.getElementById('pf-schedule')?.value || '',
-      scheduled_at: _scheduledAt || '', finalize: false }),
-  });
+  let accepted = false;
+  try {
+    const r = await fetch("/api/post", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ groups: [g], date,
+        schedule_date: document.getElementById('pf-schedule')?.value || '',
+        scheduled_at: _scheduledAt || '', finalize: false }),
+    });
+    const d = await r.json().catch(() => ({}));
+    accepted = r.ok && d.ok !== false;
+    if (!accepted) alert('Buffer refused this post:\n\n' + (d.error || `HTTP ${r.status}`));
+  } catch (e) {
+    alert('Could not reach the server to post.');
+  }
+  if (btn) { btn.disabled = false; btn.textContent = '▶ Post this'; }
+  if (!accepted) return;                 // keep the lane; nothing was queued
+
+  // The post runs in the background — watch for it to fail there too, rather
+  // than reporting success the moment the request was accepted.
+  const before = lastState?.post_error;
+  setTimeout(async () => {
+    try {
+      const s = await (await fetch('/api/state')).json();
+      if (s.post_error && !before) {
+        const why = (s.log || []).filter(l => /failed|Error|401|403/i.test(l)).slice(-1)[0] || '';
+        alert('The post failed while running:\n\n' + why + '\n\nSee the log for detail.');
+      }
+    } catch (e) {}
+  }, 12000);
+
   // Consume this lane locally (server drops these files from new_birds on success)
   postLanes.splice(i, 1);
   if (!postLanes.length) postLanes = [[]];
