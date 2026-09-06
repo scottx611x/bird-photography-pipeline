@@ -536,6 +536,10 @@
         max-width: 96vw; gap: 6px; }
       .img-modal-tools button { padding: 9px 12px; font-size: 17px; line-height: 1; }
       .img-modal-tools .btxt { display: none; }
+      /* Crop mode has seven controls — let them wrap and shrink rather than
+         run off both edges of the screen. */
+      .img-modal-tools.cropping { flex-wrap: wrap; max-width: 92vw; gap: 5px; }
+      .img-modal-tools.cropping button { padding: 7px 10px; font-size: 13px; }
       .img-modal img { max-height: 56vh; }
       .img-modal-name { bottom: calc(16px + env(safe-area-inset-bottom));
         font-size: 12px; max-width: 92vw; text-align: center; }
@@ -1943,7 +1947,9 @@ function renderModalMeta() {
   const box = document.getElementById('modal-meta');
   const f = _modalFile();
   if (!box) return;
-  if (!f || lastState?.proc_step !== 'posting' || !modalPlace(f)) { box.innerHTML = ''; return; }
+  if (cropMode || !f || lastState?.proc_step !== 'posting' || !modalPlace(f)) {
+    box.innerHTML = ''; return;
+  }
   const m = photoMeta[f] || {};
   const esc = s => String(s ?? '').replace(/"/g, '&quot;');
   box.innerHTML =
@@ -2064,6 +2070,7 @@ const _modalFile = () => _modalName;
 let _toolsSeq = 0;      // guards the async ↺ Original append below
 function updateModalTools() {
   const t = document.getElementById("modal-tools");
+  t.className = "img-modal-tools" + (cropMode ? " cropping" : "");
   const seq = ++_toolsSeq;
   if (!cropMode) {
     let h = "";
@@ -2107,12 +2114,14 @@ function updateModalTools() {
 
 function startCrop() {
   cropMode = true; cropRatio = 0;
+  renderModalMeta();
   cropBox = {x:.05, y:.05, w:.9, h:.9};
   document.getElementById("crop-overlay").style.display = "";
   positionCropBox(); updateModalTools();
 }
 function exitCropMode() {
   cropMode = false; _cropDrag = null;
+  setTimeout(renderModalMeta, 0);
   document.getElementById("crop-overlay").style.display = "none";
   updateModalTools();
 }
