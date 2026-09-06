@@ -23,7 +23,7 @@ PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3"
 ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
            "denoise-check", "denoise-probe", "dust-check", "dust-probe",
-           "lr-dismiss"}
+           "lr-dismiss", "buffer-refresh"}
 
 # One automation command at a time — concurrent Lightroom AppleScript runs (or
 # two fetches of the same album) would collide. Health checks skip the lock,
@@ -37,6 +37,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._json({"ok": True, "host": "lr_host.py"})
+        elif self.path == "/cookies":
+            # Buffer's OIDC access token expires in about an hour, so the copy
+            # baked into the container at `bird up` goes stale. Extract fresh
+            # ones on demand instead — this process runs on the Mac and can
+            # reach Chrome's keychain-encrypted cookie store.
+            try:
+                r = subprocess.run([PYTHON, str(TOOLS / "extract_buffer_cookies.py")],
+                                   capture_output=True, text=True, timeout=60)
+                self._json({"ok": True, "cookies": (r.stdout or "").strip()})
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)}, 500)
         elif self.path == "/progress":
             self._progress()
         elif self.path.startswith("/screen"):
@@ -198,6 +209,14 @@ class Handler(BaseHTTPRequestHandler):
                     "awk '{s+=$1} END {printf \"%.0f\", s}'"]
         # Escape hatch: a modal Lightroom dialog (a failed import, say) blocks
         # every other command and used to need a mouse — i.e. a trip home.
+        # Nudge Chrome to hit Buffer so it swaps the refresh token for a new
+        # access token, then hand back the refreshed cookies.
+        elif cmd == "buffer-refresh":
+            print("→ refreshing Buffer session in Chrome")
+            args = ["bash", "-c",
+                    "open -g -a 'Google Chrome' 'https://publish.buffer.com/all-channels' ; "
+                    "sleep 6 ; "
+                    f"'{PYTHON}' '{TOOLS}/extract_buffer_cookies.py'"]
         elif cmd == "lr-dismiss":
             print("→ dismissing Lightroom dialog")
             args = [PYTHON, str(TOOLS / "lr_dismiss.py")]

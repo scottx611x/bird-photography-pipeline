@@ -222,6 +222,18 @@ def call_host(cmd: str, folder: str = None, body: dict = None, timeout: float = 
         return {"ok": False, "output": str(e)}
 
 
+def fresh_buffer_cookies() -> str:
+    """Cookies straight from Chrome via lr_host. Buffer's access token lasts
+    about an hour, so the snapshot taken at container start is routinely stale
+    by the time a post runs — that showed up as a 401 on the S3 presign."""
+    try:
+        with httpx.Client(timeout=60) as client:
+            d = client.get(f"{HOST_BRIDGE}/cookies").json()
+        return d.get("cookies", "") if d.get("ok") else ""
+    except Exception:
+        return ""
+
+
 def lr_modal_progress() -> dict:
     """Lightroom's own modal progress. Authoritative for 'is it still working?'
     — far better than inferring it from CPU, which idles between items and once
@@ -1181,8 +1193,23 @@ def post_to_buffer():
             if n > 1:
                 log(f"── Post {i+1}/{n} · {len(chunk_files)} photo(s) ──")
             log(f"Posting: {' '.join(cmd)}")
-            r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
-            for line in (r.stdout + r.stderr).splitlines():
+            env = {**os.environ}
+            fresh = fresh_buffer_cookies()
+            if fresh:
+                env["BUFFER_COOKIES"] = fresh
+            r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            out = r.stdout + r.stderr
+            # An expired access token surfaces as a 401 on the presign call.
+            # Ask Chrome to refresh the session once, then retry.
+            if r.returncode != 0 and "401" in out:
+                log("  Buffer session expired — refreshing it in Chrome and retrying…")
+                refreshed = (call_host("buffer-refresh", timeout=120).get("output") or "").strip()
+                cand = refreshed.splitlines()[-1] if refreshed else ""
+                if "buffer_access_token=" in cand:
+                    env["BUFFER_COOKIES"] = cand
+                    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                    out = r.stdout + r.stderr
+            for line in out.splitlines():
                 log(line)
             if r.returncode == 0:
                 log("🐦 Posted to Buffer!" if n == 1 else f"🐦 Post {i+1}/{n} queued!")
