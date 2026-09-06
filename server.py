@@ -222,7 +222,7 @@ def call_host(cmd: str, folder: str = None, body: dict = None, timeout: float = 
         return {"ok": False, "output": str(e)}
 
 
-def lr_progress() -> dict:
+def lr_modal_progress() -> dict:
     """Lightroom's own modal progress. Authoritative for 'is it still working?'
     — far better than inferring it from CPU, which idles between items and once
     let the pipeline march on mid-update."""
@@ -328,7 +328,7 @@ def _denoise_and_export_tail():
         # Lightroom's own progress modal is the real signal: while it is up,
         # work is definitively outstanding no matter what the CPU is doing.
         try:
-            prog = lr_progress()
+            prog = lr_modal_progress()
         except Exception as e:
             log(f"  (progress check failed, continuing: {e})")
             prog = {"active": False}
@@ -504,7 +504,7 @@ def _pick_export_post(trigger: bool = True):
         ticks += 1
         if ticks % 5 == 0:
             try:
-                prog = lr_progress()
+                prog = lr_modal_progress()
             except Exception as e:
                 log(f"  (progress check failed, continuing: {e})")
                 prog = {"active": False}
@@ -1521,7 +1521,7 @@ def export_progress():
 
 
 @app.get("/api/lr-progress")
-def lr_progress():
+def api_lr_progress():
     """Lightroom's own modal progress, for the UI to draw a bar while a long
     paste or denoise runs. Short timeout — it's polled."""
     try:
