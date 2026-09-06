@@ -302,6 +302,20 @@
       cursor: pointer; transition: background .15s; }
     .img-modal-tools button:hover { background: rgba(255,255,255,.24); }
     .img-modal-tools button[disabled] { opacity: .35; cursor: default; }
+    .img-modal-meta { position: absolute; z-index: 3; left: 50%; transform: translateX(-50%);
+      bottom: 54px; width: min(560px, 94vw); display: flex; flex-direction: column; gap: 6px; }
+    .img-modal-meta input { background: rgba(20,26,38,.92); border: 1px solid rgba(255,255,255,.22);
+      border-radius: 8px; padding: 9px 11px; color: #fff; font-size: 14px;
+      font-family: inherit; width: 100%; }
+    .img-modal-meta input:focus { outline: none; border-color: var(--blue); }
+    .img-modal-meta .chiprow { padding: 0; }
+    .img-modal-meta .vchip { background: rgba(20,26,38,.92); }
+    @media (max-width: 680px) {
+      .img-modal img { max-height: 44vh; }
+      .img-modal-name { bottom: calc(150px + env(safe-area-inset-bottom)); }
+      .img-modal-meta { bottom: calc(18px + env(safe-area-inset-bottom)); }
+      .img-modal-nav { top: 36%; }
+    }
     .img-modal-tools button.on { background: var(--blue); border-color: var(--blue); }
     .img-modal-tools button.crop-apply { background: rgba(52,211,153,.25); border-color: rgba(52,211,153,.6); }
     #modal-stage { position: relative; cursor: default; }
@@ -638,6 +652,7 @@
   </div>
   <button class="img-modal-nav" id="modal-next" onclick="event.stopPropagation();modalStep(1)">›</button>
   <div class="img-modal-name" id="modal-name"></div>
+  <div class="img-modal-meta" id="modal-meta" onclick="event.stopPropagation()"></div>
 </div>
 
 <script>
@@ -1731,7 +1746,16 @@ function filterChips(el) {
 // Tapping a chip behaves exactly like typing the value: it fills the field and
 // fills down to the photos after it, same as spreadSpecies/spreadLocation.
 function pickVal(btn) {
-  const el = document.getElementById(`${btn.dataset.k}-${fid(btn.dataset.f)}`);
+  const k = btn.dataset.k;
+  if (k === 'mmsp' || k === 'mmloc') {          // chips inside the carousel
+    const field = k === 'mmsp' ? 'species' : 'location';
+    const input = document.getElementById(k === 'mmsp' ? 'mm-sp' : 'mm-loc');
+    if (input) input.value = btn.dataset.v;
+    modalMetaEdit(field, btn.dataset.v);
+    renderModalMeta();
+    return;
+  }
+  const el = document.getElementById(`${k}-${fid(btn.dataset.f)}`);
   if (!el) return;
   el.dataset.prev = el.value;
   el.value = btn.dataset.v;
@@ -1879,6 +1903,7 @@ function openModal(src, name, files, idx) {
   document.getElementById("modal-img").src = src;
   document.getElementById("modal-name").textContent = modalCaption(name);
   document.getElementById("img-modal").classList.add("open");
+  renderModalMeta();
   const hasPrev = _modalFiles.length > 1;
   document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
   document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
@@ -1910,6 +1935,45 @@ function moveWithin(dir) {
   _modalIdx = Math.max(0, _modalFiles.indexOf(f));
   document.getElementById("modal-name").textContent = modalCaption(f);
   updateModalTools();
+}
+
+// Species/location, editable without leaving the photo — this is the moment
+// you actually know what the bird is.
+function renderModalMeta() {
+  const box = document.getElementById('modal-meta');
+  const f = _modalFile();
+  if (!box) return;
+  if (!f || lastState?.proc_step !== 'posting' || !modalPlace(f)) { box.innerHTML = ''; return; }
+  const m = photoMeta[f] || {};
+  const esc = s => String(s ?? '').replace(/"/g, '&quot;');
+  box.innerHTML =
+    `<input id="mm-sp" placeholder="Species…" value="${esc(m.species)}"
+            autocomplete="off" autocapitalize="words" spellcheck="false"
+            oninput="modalMetaEdit('species', this.value)" />
+     ${chipRow('mmsp', f, recentSpecies, m.species)}
+     <input id="mm-loc" placeholder="Location…" value="${esc(m.location)}"
+            autocomplete="off" autocapitalize="words" spellcheck="false"
+            oninput="modalMetaEdit('location', this.value)" />
+     ${chipRow('mmloc', f, recentLocations, m.location)}`;
+}
+
+let _mmTimer = null;
+function modalMetaEdit(field, value) {
+  const f = _modalFile();
+  if (!f) return;
+  const m = photoMeta[f] || (photoMeta[f] = {});
+  m[field] = value;
+  // Fill the rest of this post only where it's still blank — a post is
+  // usually one species, and this never overwrites something you typed.
+  const p = modalPlace(f);
+  if (p && value.trim()) {
+    for (const other of postLanes[p.lane]) {
+      const om = photoMeta[other] || (photoMeta[other] = {});
+      if (!(om[field] || '').trim()) om[field] = value;
+    }
+  }
+  clearTimeout(_mmTimer);
+  _mmTimer = setTimeout(syncArrangement, 400);
 }
 
 function preloadNeighbours() {
@@ -1954,6 +2018,7 @@ document.addEventListener('DOMContentLoaded', initModalSwipe);
 function closeModal() {
   exitCropMode();
   document.getElementById("img-modal").classList.remove("open");
+  rerenderPhotoCards();     // show any species/location typed in the carousel
 }
 
 // ✕ in the carousel — same path as the card ✕ (order-safe, restorable),
