@@ -213,7 +213,8 @@
     .excluded-tray.lane-over { border-color: var(--red); background: rgba(248,113,113,.06); }
     .move-sel {
       background: rgba(255,255,255,.07); color: var(--muted); border: 1px solid var(--border2);
-      border-radius: 6px; font-size: 11px; padding: 2px 4px; max-width: 74px; cursor: pointer;
+      border-radius: 6px; font-size: 11px; padding: 2px 4px; cursor: pointer;
+      flex: 0 0 auto; width: 42px; text-overflow: clip;
     }
     .move-sel:focus { outline: none; border-color: var(--accent, #4a8); }
     .photo-card {
@@ -239,10 +240,16 @@
     }
     .photo-card-img-row:hover .zoom-hint { opacity: 1; }
     .photo-card-fields { padding: 10px; display: flex; flex-direction: column; gap: 7px; }
-    .photo-card-header { display: flex; align-items: center; justify-content: space-between; }
-    .photo-fname { font-size: 10px; color: var(--muted); font-family: 'Menlo', monospace; }
+    /* Three items on one narrow row: the filename must be allowed to shrink
+       (min-width:0 + truncation) or it shoves the move picker and the ✕ off
+       the edge of the card. */
+    .photo-card-header { display: flex; align-items: center; gap: 6px; }
+    .photo-fname { font-size: 10px; color: var(--muted); font-family: 'Menlo', monospace;
+      flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; }
     .photo-card-remove { background: none; border: none; color: var(--dim); font-size: 15px;
-      cursor: pointer; padding: 0; line-height: 1; transition: color .15s; }
+      cursor: pointer; padding: 0 2px; line-height: 1; transition: color .15s;
+      flex: 0 0 auto; }
     .photo-card-remove:hover { color: var(--red); }
     .photo-card-fields input { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
       border-radius: 7px; padding: 7px 10px; color: var(--text); font-size: 13px;
@@ -476,6 +483,15 @@
         scrollbar-width: none; max-width: 100%; padding-bottom: 2px; }
       .filter-bar::-webkit-scrollbar { display: none; }
       .chip { white-space: nowrap; padding: 4px 10px; flex-shrink: 0; }
+
+      /* Two cards per row, not seven slivers — every control inside needs room */
+      .lane-cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+      .photo-card-fields { padding: 9px; gap: 8px; }
+      .photo-fname { font-size: 11px; }
+      .move-sel { width: 46px; font-size: 12px; padding: 4px; }
+      .photo-card-remove { font-size: 20px; padding: 0 6px; }
+      .oos-check { font-size: 12px; }
+      .oos-check input { width: 18px; height: 18px; }
 
       /* Progress bar: smaller dots so labels like “Denoise” fit untruncated */
       .prog-dot { width: 22px; height: 22px; font-size: 10px; }
