@@ -59,7 +59,7 @@ cmd_up() {
   # Cookies present but no session = logged out of Buffer. Posting would run
   # the whole resize/upload and only fail at the end, so say it now.
   case "$BUFFER_COOKIES" in
-    *buffer_session=*) ;;
+    *buffer_session=*|*buffer_access_token=*|*buffer_id_token=*) ;;
     *)
       echo "  ⚠ Buffer cookies found, but no buffer_session — you're logged out."
       echo "    Log in at https://publish.buffer.com in Chrome, then re-run ./bird up."

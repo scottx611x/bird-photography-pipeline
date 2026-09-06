@@ -928,7 +928,8 @@ def get_state():
             "post_error":     state.get("post_error", False),
             "thread_active":  state["thread_active"],
             "run_error":      state.get("run_error", ""),
-            "buffer_ready":   "buffer_session=" in os.environ.get("BUFFER_COOKIES", ""),
+            "buffer_ready":   any(f"{n}=" in os.environ.get("BUFFER_COOKIES", "")
+                                  for n in ("buffer_session", "buffer_access_token", "buffer_id_token")),
             "syno_skipped":   sorted(state["syno_skipped"]),
             "done_albums":    sorted(state["done_albums"]),
             "syno_fetching":  dict(state["syno_fetching"]),

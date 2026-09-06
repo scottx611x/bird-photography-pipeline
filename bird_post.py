@@ -44,6 +44,16 @@ BUFFER_TOKEN = os.environ.get("BUFFER_TOKEN", "")
 
 # ── Chrome session ─────────────────────────────────────────────────────────────
 
+# Buffer moved from a single "buffer_session" cookie to OIDC tokens
+# (buffer_access_token / buffer_id_token / buffer_refresh_token). Accept either,
+# so a login on the current scheme isn't rejected as "not logged in".
+SESSION_COOKIES = ("buffer_session", "buffer_access_token", "buffer_id_token")
+
+
+def _logged_in(cookies: dict) -> bool:
+    return any(cookies.get(n) for n in SESSION_COOKIES)
+
+
 def get_buffer_cookies() -> dict:
     raw_cookie = os.environ.get("BUFFER_COOKIES")
 
@@ -54,9 +64,11 @@ def get_buffer_cookies() -> dict:
                 k, v = part.strip().split("=", 1)
                 cookies[k] = v
 
-        if "buffer_session" not in cookies:
-            print("BUFFER_COOKIES is set, but buffer_session was not found.")
+        if not _logged_in(cookies):
+            print("BUFFER_COOKIES is set, but carries no Buffer session "
+                  f"(looked for {', '.join(SESSION_COOKIES)}).")
             print(f"Cookies found: {sorted(cookies.keys())}")
+            print("Log in at https://publish.buffer.com in Chrome, then ./bird up.")
             sys.exit(1)
 
         return cookies
@@ -70,11 +82,18 @@ def get_buffer_cookies() -> dict:
         sys.exit(1)
 
     # Local non-Docker fallback
-    jar = browser_cookie3.chrome(domain_name=".buffer.com")
-    cookies = {c.name: c.value for c in jar}
+    cookies = {}
+    for host in ("buffer.com", ".buffer.com", "publish.buffer.com",
+                 "login.buffer.com", "account.buffer.com"):
+        try:
+            for c in browser_cookie3.chrome(domain_name=host):
+                if "buffer.com" in (c.domain or ""):
+                    cookies[c.name] = c.value
+        except Exception:
+            continue
 
-    if "buffer_session" not in cookies:
-        print("No buffer_session in Chrome — log in to publish.buffer.com first.")
+    if not _logged_in(cookies):
+        print("No Buffer session in Chrome — log in to publish.buffer.com first.")
         sys.exit(1)
 
     return cookies
