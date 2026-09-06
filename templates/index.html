@@ -2026,7 +2026,17 @@ function _lockRatio(b, ax, ay) {
 
 function setCropRatio(r) {
   cropRatio = r;
-  if (r) cropBox = _lockRatio({...cropBox}, 0, 0);
+  if (r) {
+    // Fit the largest centred box of this ratio rather than nudging the
+    // current one. The default box is already 3:2 on a 3:2 photo, so the old
+    // behaviour left 3:2 looking like a dead button until another ratio had
+    // been picked first.
+    const img = document.getElementById("modal-img");
+    const W = img.naturalWidth || 3, H = img.naturalHeight || 2;
+    let w = 0.9, h = (w * W) / (r * H);
+    if (h > 0.9) { h = 0.9; w = (r * H * h) / W; }
+    cropBox = {x: (1 - w) / 2, y: (1 - h) / 2, w, h};
+  }
   positionCropBox(); updateModalTools();
 }
 
