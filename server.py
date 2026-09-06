@@ -1710,6 +1710,73 @@ def exclude_file():
     return jsonify({"ok": True})
 
 
+ARRANGE_LOG = DOWNLOADS / ".arrangement_log.jsonl"
+ARRANGE_LOG_KEEP = 400
+
+
+def _log_arrangement(arr, note=""):
+    """Append every arrangement to an audit trail. A bad keystroke once
+    excluded 31 photos with no way to tell which were deliberate — with this,
+    any previous state can be read back and restored."""
+    try:
+        from datetime import timezone
+        entry = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "note": note,
+            "lanes": arr.get("lanes") or [],
+            "excluded": arr.get("excluded") or [],
+            "meta": arr.get("meta") or {},
+            "batch": state.get("active"),
+        }
+        with ARRANGE_LOG.open("a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+        # keep the file bounded without losing recent history
+        lines = ARRANGE_LOG.read_text().splitlines()
+        if len(lines) > ARRANGE_LOG_KEEP * 1.5:
+            ARRANGE_LOG.write_text("\n".join(lines[-ARRANGE_LOG_KEEP:]) + "\n")
+    except Exception as e:
+        log(f"  (couldn't write arrangement history: {e})")
+
+
+def _read_arrangement_log():
+    try:
+        return [json.loads(l) for l in ARRANGE_LOG.read_text().splitlines() if l.strip()]
+    except Exception:
+        return []
+
+
+@app.get("/api/arrangement/history")
+def arrangement_history():
+    """Recent arrangements, newest first — how many photos were in posts vs
+    excluded at each point, so a bad change can be spotted and undone."""
+    out = []
+    for i, e in enumerate(_read_arrangement_log()):
+        out.append({"i": i, "at": e.get("at"), "note": e.get("note", ""),
+                    "batch": e.get("batch"),
+                    "in_posts": sum(len(l) for l in e.get("lanes") or []),
+                    "excluded": len(e.get("excluded") or []),
+                    "posts": len(e.get("lanes") or [])})
+    return jsonify({"ok": True, "history": out[-60:][::-1]})
+
+
+@app.post("/api/arrangement/restore")
+def arrangement_restore():
+    """Put a previous arrangement back."""
+    idx = (request.json or {}).get("i")
+    entries = _read_arrangement_log()
+    if not isinstance(idx, int) or not (0 <= idx < len(entries)):
+        return jsonify({"error": "unknown history entry"}), 400
+    e = entries[idx]
+    arr = {"lanes": e["lanes"], "excluded": e["excluded"], "meta": e["meta"]}
+    with lock:
+        state["arrangement"] = arr
+    save_state()
+    _log_arrangement(arr, note=f"restored from {e.get('at')}")
+    _sync_parked(arr["lanes"], arr["excluded"])
+    log(f"↩ Restored the arrangement saved at {e.get('at')}")
+    return jsonify({"ok": True, "at": e.get("at")})
+
+
 def _sync_parked(lanes, excluded):
     """Keep ~/Desktop/birbs in step with the arrangement: photos in a post live
     there, excluded ones sit in .excluded. Without this a photo restored to a
@@ -1748,6 +1815,7 @@ def save_arrangement():
     with lock:
         state["arrangement"] = arrangement
     save_state()
+    _log_arrangement(arrangement, note=data.get("note", ""))
     _sync_parked(arrangement["lanes"], arrangement["excluded"])
     return jsonify({"ok": True})
 
