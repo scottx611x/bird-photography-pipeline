@@ -257,11 +257,13 @@
     .photo-card-fields input:focus { outline: none; border-color: var(--blue); background: rgba(91,154,255,.1); }
     .photo-card-fields input::placeholder { color: var(--dim); }
     .chiprow { display: flex; gap: 5px; overflow-x: auto; padding: 1px 0 2px;
-      scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+      scrollbar-width: none; -webkit-overflow-scrolling: touch;
+      max-width: 100%; }
     .chiprow::-webkit-scrollbar { display: none; }
     .vchip { flex: 0 0 auto; background: rgba(255,255,255,.06); color: var(--muted);
       border: 1px solid var(--border2); border-radius: 999px; padding: 4px 9px;
-      font-size: 11px; white-space: nowrap; cursor: pointer; font-family: inherit; }
+      font-size: 11px; white-space: nowrap; cursor: pointer; font-family: inherit;
+      max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
     .vchip:hover { color: var(--text); border-color: var(--blue); }
     .vchip.hit { background: var(--blue); color: #fff; border-color: var(--blue); }
     @media (max-width: 680px) {
@@ -876,12 +878,12 @@ function renderPostForm(batch, data) {
                  autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false"
                  value="${esc(m.species)}" onfocus="this.dataset.prev=this.value"
                  oninput="spreadSpecies(this);filterChips(this)" />
-          ${chipRow('sp', f, recentSpecies)}
+          ${chipRow('sp', f, recentSpecies, m.species)}
           <input ${DL('location-list')} id="loc-${fid(f)}" data-file="${f}" placeholder="Rea St."
                  autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false"
                  value="${esc(m.location ?? defaultLoc)}" onfocus="this.dataset.prev=this.value"
                  oninput="spreadLocation(this);filterChips(this)" />
-          ${chipRow('loc', f, recentLocations)}
+          ${chipRow('loc', f, recentLocations, m.location ?? defaultLoc)}
           <label class="oos-check"><input type="checkbox" id="oos-${fid(f)}" data-file="${f}" ${m.oos ? 'checked' : ''} onchange="spreadOos(this)" /> ⚠️ out of area</label>
         </div>
       </div>`;
@@ -1685,7 +1687,10 @@ function restoreCard(f) {
 const COARSE = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
 const DL = (id) => COARSE ? "" : `list="${id}"`;
 
-function chipRow(kind, file, vals) {
+function chipRow(kind, file, vals, current) {
+  // Suggestions are only useful while a field is empty. Showing them on every
+  // card forever just ate the card and clipped the names mid-word.
+  if ((current || "").trim()) return "";
   const list = (vals || []).slice(0, 12);
   if (!list.length) return "";
   const a = s => String(s ?? "").replace(/"/g, "&quot;");
@@ -1698,6 +1703,11 @@ function filterChips(el) {
   const row = document.getElementById(`chips-${el.id}`);
   if (!row) return;
   const q = (el.value || "").trim().toLowerCase();
+  // An exact match means the value is settled — get the row out of the way.
+  if (q && [...row.querySelectorAll(".vchip")].some(b => b.dataset.v.toLowerCase() === q)) {
+    row.style.display = "none";
+    return;
+  }
   let shown = 0;
   row.querySelectorAll(".vchip").forEach(b => {
     const hit = !q || b.dataset.v.toLowerCase().includes(q);
