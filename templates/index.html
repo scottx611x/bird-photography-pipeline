@@ -301,6 +301,7 @@
       color: #fff; border-radius: 8px; padding: 6px 13px; font-size: 12px; font-weight: 600;
       cursor: pointer; transition: background .15s; }
     .img-modal-tools button:hover { background: rgba(255,255,255,.24); }
+    .img-modal-tools button[disabled] { opacity: .35; cursor: default; }
     .img-modal-tools button.on { background: var(--blue); border-color: var(--blue); }
     .img-modal-tools button.crop-apply { background: rgba(52,211,153,.25); border-color: rgba(52,211,153,.6); }
     #modal-stage { position: relative; cursor: default; }
@@ -1872,14 +1873,41 @@ function openModal(src, name, files, idx) {
   _modalName  = name;
   exitCropMode();
   document.getElementById("modal-img").src = src;
-  document.getElementById("modal-name").textContent =
-    (_modalFiles.length > 1) ? `${name}  ·  ${_modalIdx + 1}/${_modalFiles.length}` : name;
+  document.getElementById("modal-name").textContent = modalCaption(name);
   document.getElementById("img-modal").classList.add("open");
   const hasPrev = _modalFiles.length > 1;
   document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
   document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
   updateModalTools();
 }
+// Which post the current photo sits in, and where within it.
+function modalPlace(f) {
+  const li = postLanes.findIndex(l => l.includes(f));
+  if (li < 0) return null;
+  return {lane: li, pos: postLanes[li].indexOf(f), size: postLanes[li].length};
+}
+function modalCaption(f) {
+  const p = modalPlace(f);
+  return p ? `${f}  ·  Post ${p.lane + 1} — ${p.pos + 1}/${p.size}`
+           : `${f}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
+}
+
+// Reorder within the post without leaving the carousel: dragging cards is a
+// desktop-only gesture, and this is where you're already judging the sequence.
+function moveWithin(dir) {
+  const f = _modalFile(), p = modalPlace(f);
+  if (!p) return;
+  const j = p.pos + dir;
+  if (j < 0 || j >= p.size) return;
+  const lane = postLanes[p.lane];
+  lane.splice(p.pos, 1); lane.splice(j, 0, f);
+  rerenderPhotoCards();                 // redraws the cards and syncs to the server
+  _modalFiles = flatFiles();            // keep the carousel's order in step
+  _modalIdx = Math.max(0, _modalFiles.indexOf(f));
+  document.getElementById("modal-name").textContent = modalCaption(f);
+  updateModalTools();
+}
+
 function preloadNeighbours() {
   for (const d of [1, -1, 2]) {
     const f = _modalFiles[(_modalIdx + d + _modalFiles.length) % _modalFiles.length];
@@ -1893,8 +1921,7 @@ function modalStep(dir) {
   const f = _modalFiles[_modalIdx];
   _modalName = f;
   document.getElementById("modal-img").src = previewUrl(f);
-  document.getElementById("modal-name").textContent =
-    `${f}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
+  document.getElementById("modal-name").textContent = modalCaption(f);
   updateModalTools();
 }
 // Touch: swipe through the carousel. A swipe must not also register as the
@@ -1940,8 +1967,7 @@ function excludeFromModal() {
   // Remove button on the photo that replaced it.
   _modalName = nf;
   document.getElementById("modal-img").src = previewUrl(nf);
-  document.getElementById("modal-name").textContent =
-    `${nf}  ·  ${_modalIdx + 1}/${_modalFiles.length}`;
+  document.getElementById("modal-name").textContent = modalCaption(nf);
   const hasPrev = _modalFiles.length > 1;
   document.getElementById("modal-prev").style.display = hasPrev ? "" : "none";
   document.getElementById("modal-next").style.display = hasPrev ? "" : "none";
@@ -1971,7 +1997,15 @@ function updateModalTools() {
   const t = document.getElementById("modal-tools");
   const seq = ++_toolsSeq;
   if (!cropMode) {
-    let h = `<button onclick="startCrop()">✂ Crop</button>`;
+    let h = "";
+    const place = modalPlace(_modalFile());
+    if (place && place.size > 1) {
+      h += `<button onclick="moveWithin(-1)" ${place.pos === 0 ? 'disabled' : ''}
+              title="Move earlier in this post">⇤ Move</button>`
+         + `<button onclick="moveWithin(1)" ${place.pos === place.size - 1 ? 'disabled' : ''}
+              title="Move later in this post">Move ⇥</button>`;
+    }
+    h += `<button onclick="startCrop()">✂ Crop</button>`;
     const cur = _modalFile();
     // flatFiles() reads client-side lane state, which is empty for a beat after
     // a re-render — and the button vanishing mid-cull is worse than a no-op.
