@@ -2243,6 +2243,11 @@ async function resetCrop() {
 }
 document.addEventListener("keydown", e => {
   if (!document.getElementById("img-modal").classList.contains("open")) return;
+  // Never treat typing as a shortcut. The modal now holds species/location
+  // fields, and Backspace here means "delete a character", not "drop this
+  // photo" — which is exactly what it did.
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
   if (e.key === "Enter" && cropMode) { e.preventDefault(); applyCrop(); }
   if ((e.key === "x" || e.key === "Backspace") && !cropMode) { e.preventDefault(); excludeFromModal(); }
   if (e.key === "Escape")      cropMode ? exitCropMode() : closeModal();
