@@ -56,6 +56,16 @@ cmd_up() {
     echo "    Is Chrome open? Try again, or run: $PYTHON $DIR/extract_buffer_cookies.py"
     exit 1
   fi
+  # Cookies present but no session = logged out of Buffer. Posting would run
+  # the whole resize/upload and only fail at the end, so say it now.
+  case "$BUFFER_COOKIES" in
+    *buffer_session=*) ;;
+    *)
+      echo "  ⚠ Buffer cookies found, but no buffer_session — you're logged out."
+      echo "    Log in at https://publish.buffer.com in Chrome, then re-run ./bird up."
+      echo "    (Continuing: everything except posting to Buffer will work.)"
+      ;;
+  esac
   # BUFFER_TOKEN and SYNO_* come from .env via env_file in docker-compose.yml —
   # do NOT pass BUFFER_TOKEN here; a shell override would blank it in the container.
   docker compose up -d --build

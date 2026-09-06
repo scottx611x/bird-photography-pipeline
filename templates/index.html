@@ -846,7 +846,12 @@ function renderPostForm(batch, data) {
   const willSplit = nPosts > 1 || postLanes.length > 1;
   const overfull = postLanes.some(l => l.length > PER_POST);
 
-  const banner = `<div class="split-banner">📦 <b>${flatFiles().length} photos</b> in <b>${lanes.length} post${lanes.length === 1 ? '' : 's'}</b> · Instagram allows ${PER_POST} per post. <button class="btn btn-neutral btn-sm" onclick="rescanExports(this)">⟳ Rescan exports</button><br>Drag photos between posts to regroup; “＋ Add post” for a new one. Each post is scheduled on the next open day.</div>`;
+  const loginWarn = (lastState && lastState.buffer_ready === false)
+    ? `<div class="split-banner" style="border-color:var(--red);color:var(--red)">
+         ⚠ Not logged in to Buffer — posting will fail. Log in at
+         <b>publish.buffer.com</b> in Chrome on the Mac, then run <b>./bird up</b>.
+       </div>` : "";
+  const banner = loginWarn + `<div class="split-banner">📦 <b>${flatFiles().length} photos</b> in <b>${lanes.length} post${lanes.length === 1 ? '' : 's'}</b> · Instagram allows ${PER_POST} per post. <button class="btn btn-neutral btn-sm" onclick="rescanExports(this)">⟳ Rescan exports</button><br>Drag photos between posts to regroup; “＋ Add post” for a new one. Each post is scheduled on the next open day.</div>`;
 
   let gi = 0; // running index across all included photos (for modal nav)
   const card = (f) => {
