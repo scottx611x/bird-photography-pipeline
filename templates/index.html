@@ -1954,7 +1954,12 @@ function updateModalTools() {
   if (!cropMode) {
     let h = `<button onclick="startCrop()">✂ Crop</button>`;
     const cur = _modalFile();
-    if (lastState?.proc_step === 'posting' && cur && flatFiles().includes(cur))
+    // flatFiles() reads client-side lane state, which is empty for a beat after
+    // a re-render — and the button vanishing mid-cull is worse than a no-op.
+    // Fall back to the server's saved arrangement before hiding it.
+    const inLanes = cur && (flatFiles().includes(cur)
+      || (lastState?.arrangement?.lanes || []).some(l => l.includes(cur)));
+    if (lastState?.proc_step === 'posting' && inLanes)
       h += `<button onclick="excludeFromModal()" title="Exclude from posting — moves to the Excluded strip, order of the rest is untouched">✕ Remove</button>`;
     t.innerHTML = h;
     const f = cur;
