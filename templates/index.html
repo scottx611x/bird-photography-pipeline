@@ -522,6 +522,12 @@
       /* Step buttons: equal-width rows, no orphaned right-aligned Reset */
       .step-btns { gap: 6px; }
       .step-btns button { flex: 1 1 auto; margin-left: 0 !important; }
+
+      /* Caption date and Post-on sat side by side, squeezing the schedule
+         hint into a ragged wrap across the label. Stack them instead. */
+      .shared-fields .row { flex-direction: column; gap: 10px; }
+      .fld-lbl { display: flex; flex-wrap: wrap; gap: 4px; align-items: baseline; }
+      #pf-schedule-hint { flex-basis: 100%; }
     }
     /* Phone layout for the preview carousel. Must come after the base rules
        above or it silently loses to them. The photo is inset so the edge
