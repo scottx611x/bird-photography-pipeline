@@ -130,6 +130,34 @@ def test_import_verification_wired():
           '"import", "tone", "denoise", "pick", "collect"' in src)
 
 
+def test_denoise_spread_verified():
+    """"Denoise applied to all photos" was printed on the strength of a menu
+    click alone. The paste must be read back off real photos, and only once
+    Lightroom's own "Updating AI Settings" modal has cleared — that window
+    covers the Edit panel, so checking too early reads a good batch as broken."""
+    src = (ROOT / "server.py").read_text()
+    check("server: the spread is verified, not assumed", "_verify_spread(" in src)
+    check("server: an unspread denoise returns to the denoise gate",
+          'if spread == "none"' in src and 'set_step("denoise")' in src)
+    # order: paste → wait for Lightroom → verify → export gate
+    i_paste  = src.find("Denoise applied to all photos")
+    i_verify = src.find("spread = _verify_spread(")
+    i_export = src.find('set_step("export_ready")')
+    check("server: verification sits between the denoise wait and export",
+          0 < i_paste < i_verify < i_export)
+
+    den = (ROOT / "lr_denoise.py").read_text()
+    check("lr_denoise: has a spread sampler", "def cmd_spread(" in den)
+    check("lr_denoise: skips the check while a progress modal covers the panel",
+          '"progress" in lr_window_names().lower()' in den)
+    check("lr_denoise: an unreadable panel reports unknown, never a verdict",
+          den.count("spread: unknown") >= 2)
+    check("lr_denoise: collapses the multi-selection before looking",
+          "arrow(124)" in den and "arrow(123)" in den)
+    check("lr_host: allows denoise-spread", '"denoise-spread"' in
+          (ROOT / "lr_host.py").read_text())
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -251,6 +279,7 @@ def main():
     test_no_duplicate_defs()
     test_route_decorators_attached()
     test_import_verification_wired()
+    test_denoise_spread_verified()
     test_lr_verify_logic()
     test_container_has_server_imports()
 

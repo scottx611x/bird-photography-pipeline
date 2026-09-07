@@ -22,7 +22,8 @@ TOOLS  = Path(__file__).parent
 PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3")
 ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
-           "denoise-check", "denoise-probe", "dust-check", "dust-probe",
+           "denoise-check", "denoise-probe", "denoise-spread",
+           "dust-check", "dust-probe",
            "lr-dismiss", "buffer-refresh"}
 
 # One automation command at a time — concurrent Lightroom AppleScript runs (or
@@ -226,6 +227,12 @@ class Handler(BaseHTTPRequestHandler):
             print(f"→ lr_denoise.py {cmd}")
             args = [PYTHON, str(TOOLS / "lr_denoise.py"),
                     "enable" if cmd == "denoise-check" else "status"]
+        # Reads the Denoise checkbox on a few photos in turn, so the paste step
+        # can prove it spread instead of trusting a menu click.
+        elif cmd == "denoise-spread":
+            n = str(int(body.get("count") or 4))
+            print(f"→ lr_denoise.py spread {n}")
+            args = [PYTHON, str(TOOLS / "lr_denoise.py"), "spread", n]
         elif cmd in ("dust-check", "dust-probe"):
             print(f"→ lr_denoise.py {cmd}")
             args = [PYTHON, str(TOOLS / "lr_denoise.py"),

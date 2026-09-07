@@ -277,6 +277,28 @@ def lr_modal_progress() -> dict:
         return {"active": False}
 
 
+def _verify_spread(count: int = 4) -> str:
+    """Read the Denoise checkbox off `count` photos after a paste.
+
+    Returns "all", "partial", "none" or "unknown". Anything that goes wrong —
+    the bridge being down, the panel being unreadable — is "unknown", never a
+    verdict: a check that can't see must not fail a batch that is actually fine.
+    """
+    try:
+        out = (call_host("denoise-spread", body={"count": count},
+                         timeout=180).get("output") or "")
+    except Exception as e:
+        log(f"  (couldn't verify the spread: {e})")
+        return "unknown"
+    m = re.search(r"spread:\s*(\d+)\s*/\s*(\d+)", out)
+    if not m:
+        log("  Couldn't read Denoise back off the photos — verify by eye.")
+        return "unknown"
+    on, total = int(m.group(1)), int(m.group(2))
+    log(f"  Verified Denoise on {on} of {total} sampled photos.")
+    return "all" if on == total else ("none" if on == 0 else "partial")
+
+
 def _prog_line(p: dict) -> str:
     bits = [p.get("label") or "working"]
     if p.get("done") is not None and p.get("total") is not None:
@@ -353,6 +375,7 @@ def _denoise_and_export_tail():
         log(f"  {line}")
     log("Denoise applied to all photos." if result.get("ok") else "Paste may have failed — check Lightroom.")
 
+
     # Wait for Lightroom's background AI-denoise queue to drain — exporting
     # too early would write un-denoised JPEGs. LR pegs the CPU while
     # enhancing; treat sustained-quiet as done. Skippable via Continue.
@@ -395,6 +418,20 @@ def _denoise_and_export_tail():
     else:
         log("Denoise wait hit the 60-minute cap.")
     if state.get("stop_requested"): return
+
+    # The paste reports success from the menu click alone, and has spread edits
+    # carrying no Denoise at all — every photo kept its unticked box while the
+    # log said otherwise, and the batch exported noisy. Read the box back off a
+    # few photos now that Lightroom's own update has finished and the Edit
+    # panel is visible again.
+    spread = _verify_spread()
+    if spread == "none":
+        log("⚠ Denoise did NOT spread — the sampled photos have it unticked.")
+        log("Tick Denoise on one photo in Lightroom, then Continue again.")
+        set_step("denoise")
+        return
+    if spread == "partial":
+        log("⚠ Denoise reached only some photos — check Lightroom before export.")
 
     # ── Step 4: explicit export gate — never auto-trigger Lightroom's
     # Export-with-Previous (it can export the whole catalog if LR lost the

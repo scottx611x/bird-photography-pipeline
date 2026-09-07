@@ -355,10 +355,92 @@ def run(kind: str, enable: bool):
     sys.exit(4)
 
 
+def locate_denoise():
+    """Centre of the Denoise checkbox, or None. Same staged recovery as run(),
+    minus anything that clicks the box itself — this only ever looks."""
+    activate()
+    set_remove_tool(False)
+    for attempt in (1, 2, 3):
+        shot = grab()
+        hit = find_label(shot, "denoise", DETAIL_SCAN)
+        if hit:
+            return (COL_CENTRE, hit[0])
+        if attempt == 1:
+            activate()
+            click(EDIT_ICON)
+            time.sleep(1.8)
+            set_remove_tool(False)
+        elif attempt == 2:
+            single_panel_mode_on()
+            hdr = find_label(shot, "hdr_detail", (150, 950), 0.45, 1188)
+            if hdr:
+                activate()
+                click((1188 + 20, hdr[0]))
+                time.sleep(2.0)
+    return None
+
+
+def cmd_spread(count: int):
+    """Did the paste actually put Denoise on the other photos?
+
+    Copy-and-paste reports success from the menu click alone, so a paste that
+    carried no Denoise — or one taken from a photo that never had it — still
+    printed "Denoise applied to all photos" and the batch exported noisy. This
+    walks the filmstrip and reads the checkbox on each photo instead.
+
+    Prints "spread: k/n", or "spread: unknown" when the checkbox can't be
+    found — an unreadable panel must never be reported as a clean result.
+    """
+    if _osa(f'tell application "System Events" to return '
+            f'(exists process "{APP}")') != "true":
+        print("spread: unknown (Lightroom is not running)")
+        return
+
+    # "Updating AI Settings" sits over the Edit panel for as long as Lightroom
+    # takes to render the pasted Denoise — a dozen minutes on a big batch. The
+    # checkbox is genuinely not on screen then, so say so rather than reading
+    # the covered panel and calling a good batch broken.
+    if "progress" in lr_window_names().lower():   # e.g. batch_progress_dialog
+        print("spread: unknown (Lightroom is still updating AI settings)")
+        return
+
+    activate()
+
+    def arrow(code):
+        _osa(f'tell application "System Events" to tell process "{APP}" '
+             f'to key code {code}')
+        time.sleep(1.4)
+
+    # The paste leaves all photos selected, and the Edit panel shows no
+    # controls for a multi-selection — the checkbox is genuinely not on screen,
+    # and hunting for it only toggled the panel shut. Step off and back to
+    # collapse the selection to one photo without moving.
+    arrow(124)
+    arrow(123)
+
+    box = locate_denoise()
+    if not box:
+        print("spread: unknown (couldn't find the Denoise checkbox)")
+        return
+
+    on = 0
+    for i in range(count):
+        ticked = is_checked(grab(), box)
+        on += ticked
+        print(f"  photo {i + 1}: Denoise {'on' if ticked else 'OFF'}")
+        if i < count - 1:
+            arrow(124)                      # right
+    for _ in range(count - 1):              # put the user back where they were
+        arrow(123)
+    print(f"spread: {on}/{count}")
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd in ("dust", "dust-status"):
         run("dust", cmd == "dust")
+    elif cmd == "spread":
+        cmd_spread(int(sys.argv[2]) if len(sys.argv) > 2 else 4)
     else:
         run("denoise", cmd == "enable")
 
