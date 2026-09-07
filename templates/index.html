@@ -946,7 +946,6 @@ function renderPostForm(batch, data) {
                  autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false"
                  value="${esc(m.species)}" onfocus="this.dataset.prev=this.value"
                  oninput="spreadSpecies(this);filterChips(this)" />
-          ${chipRow('sp', f, recentSpecies, m.species)}
           <input ${DL('location-list')} id="loc-${fid(f)}" data-file="${f}" placeholder="Rea St."
                  autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false"
                  value="${esc(m.location ?? defaultLoc)}" onfocus="this.dataset.prev=this.value"
@@ -1756,6 +1755,10 @@ function restoreCard(f) {
 const COARSE = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
 const DL = (id) => COARSE ? "" : `list="${id}"`;
 
+// Locations only. Species chips are gone for good: a handful of recently-used
+// bird names is never the bird in front of you, so they were pure noise taking
+// up a row on every card. Locations repeat batch to batch, so those still earn
+// their place. Don't reinstate species chips.
 function chipRow(kind, file, vals, current) {
   // Suggestions are only useful while a field is empty. Showing them on every
   // card forever just ate the card and clipped the names mid-word.
@@ -1790,11 +1793,10 @@ function filterChips(el) {
 // fills down to the photos after it, same as spreadSpecies/spreadLocation.
 function pickVal(btn) {
   const k = btn.dataset.k;
-  if (k === 'mmsp' || k === 'mmloc') {          // chips inside the carousel
-    const field = k === 'mmsp' ? 'species' : 'location';
-    const input = document.getElementById(k === 'mmsp' ? 'mm-sp' : 'mm-loc');
+  if (k === 'mmloc') {                          // the chip row inside the carousel
+    const input = document.getElementById('mm-loc');
     if (input) input.value = btn.dataset.v;
-    modalMetaEdit(field, btn.dataset.v);
+    modalMetaEdit('location', btn.dataset.v);
     renderModalMeta();
     return;
   }
@@ -1802,7 +1804,7 @@ function pickVal(btn) {
   if (!el) return;
   el.dataset.prev = el.value;
   el.value = btn.dataset.v;
-  if (btn.dataset.k === "sp") spreadSpecies(el); else spreadLocation(el);
+  spreadLocation(el);
   capturePhotoInputs();
   btn.classList.add("hit");
   setTimeout(() => btn.classList.remove("hit"), 250);
@@ -2023,7 +2025,6 @@ function renderModalMeta() {
     `<input id="mm-sp" placeholder="Species…" value="${esc(m.species)}"
             autocomplete="off" autocapitalize="words" spellcheck="false"
             oninput="modalMetaEdit('species', this.value)" />
-     ${chipRow('mmsp', f, recentSpecies, m.species)}
      <input id="mm-loc" placeholder="Location…" value="${esc(m.location)}"
             autocomplete="off" autocapitalize="words" spellcheck="false"
             oninput="modalMetaEdit('location', this.value)" />
