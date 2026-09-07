@@ -777,6 +777,7 @@ let postState = { busy: false, msg: "", ok: true };
 // Lightroom reports its own progress ("Updating AI Settings, 5 of 7, 60%") in
 // the modal it puts up; mirror it so long steps aren't a blank wait.
 let lrProg = { active: false };
+let _progFails = 0;
 async function pollLrProgress() {
   if (!lastState || !lastState.active) { 
     if (lrProg.active) { lrProg = { active: false }; betaRerender(); }
@@ -794,7 +795,14 @@ async function pollLrProgress() {
                  || j.done !== lrProg.done || j.label !== lrProg.label;
     lrProg = j;
     if (changed) betaRerender();
-  } catch (e) { /* transient — keep the last reading */ }
+  } catch (e) {
+    // Keep the last reading briefly — lr_host drops out for a second now and
+    // then — but don't let a bar spin forever because polling stopped working.
+    _progFails = (_progFails || 0) + 1;
+    if (_progFails >= 4 && lrProg.active) { lrProg = { active: false }; betaRerender(); }
+    return;
+  }
+  _progFails = 0;
 }
 setInterval(pollLrProgress, 2500);
 

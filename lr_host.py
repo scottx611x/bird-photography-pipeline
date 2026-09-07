@@ -88,6 +88,14 @@ class Handler(BaseHTTPRequestHandler):
             pct = re.search(r"(\d{1,3})\s*%", joined)
             of = re.search(r"(\d+)\s+of\s+(\d+)", joined)
             eta = re.search(r"[Ee]stimated time[:\s]+(.+?)(?:\||$)", joined)
+            # Only a real progress window counts. Lightroom's tooltips are also
+            # unnamed windows carrying static text — the Denoise tooltip was
+            # being read as "Denoise, in progress" and left the bar spinning
+            # forever while Lightroom sat idle.
+            looks_like_progress = bool(pct or of or "progress" in title.lower())
+            if not looks_like_progress:
+                self._json(out)
+                return
             out = {
                 "active": True,
                 "title": title.strip(),
