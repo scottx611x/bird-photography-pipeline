@@ -2018,17 +2018,32 @@ let _mmTimer = null;
 function modalMetaEdit(field, value) {
   const f = _modalFile();
   if (!f) return;
-  const m = photoMeta[f] || (photoMeta[f] = {});
-  m[field] = value;
-  // Fill the rest of this post only where it's still blank — a post is
-  // usually one species, and this never overwrites something you typed.
-  const p = modalPlace(f);
-  if (p && value.trim()) {
-    for (const other of postLanes[p.lane]) {
-      const om = photoMeta[other] || (photoMeta[other] = {});
-      if (!(om[field] || '').trim()) om[field] = value;
-    }
+  // The card inputs are the source of truth — capturePhotoInputs() rebuilds
+  // photoMeta from them, so writing only to photoMeta here was reverted on the
+  // next re-render. Drive the same inputs the cards use, and fill down exactly
+  // like typing on a card does: later photos that are blank, or still hold the
+  // previous value, follow along.
+  const prefix = field === 'species' ? 'sp' : 'loc';
+  const prev = ((photoMeta[f] || {})[field] || '').trim();
+  const setBoth = (file, v) => {
+    const el = document.getElementById(`${prefix}-${fid(file)}`);
+    if (el) el.value = v;
+    photoMeta[file] = { ...(photoMeta[file] || {}), [field]: v };
+  };
+  setBoth(f, value);
+
+  if (value.trim()) {
+    const flat = flatFiles();
+    const myIdx = flat.indexOf(f);
+    flat.forEach((file, i) => {
+      if (i <= myIdx) return;
+      const el = document.getElementById(`${prefix}-${fid(file)}`);
+      const cur = ((el ? el.value : ((photoMeta[file] || {})[field] || ''))).trim();
+      if (!cur || cur === prev) setBoth(file, value);
+    });
   }
+
+  capturePhotoInputs();
   clearTimeout(_mmTimer);
   _mmTimer = setTimeout(syncArrangement, 400);
 }
