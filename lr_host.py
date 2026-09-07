@@ -23,7 +23,7 @@ PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3"
 ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
            "denoise-check", "denoise-probe", "dust-check", "dust-probe",
-           "lr-dismiss"}
+           "lr-dismiss", "buffer-refresh"}
 
 # One automation command at a time — concurrent Lightroom AppleScript runs (or
 # two fetches of the same album) would collide. Health checks skip the lock,
@@ -198,6 +198,15 @@ class Handler(BaseHTTPRequestHandler):
                     "awk '{s+=$1} END {printf \"%.0f\", s}'"]
         # Escape hatch: a modal Lightroom dialog (a failed import, say) blocks
         # every other command and used to need a mouse — i.e. a trip home.
+        # Buffer's OIDC access token dies after about an hour and only the
+        # browser can renew it. Nudge Chrome to load Buffer, then hand back
+        # the refreshed cookies. Runs only when a post has already hit 401.
+        elif cmd == "buffer-refresh":
+            print("→ refreshing the Buffer session in Chrome")
+            args = ["bash", "-c",
+                    "open -g -a 'Google Chrome' 'https://publish.buffer.com/all-channels' >/dev/null 2>&1; "
+                    "sleep 10; "
+                    f"'{PYTHON}' '{TOOLS}/extract_buffer_cookies.py'"]
         elif cmd == "lr-dismiss":
             print("→ dismissing Lightroom dialog")
             args = [PYTHON, str(TOOLS / "lr_dismiss.py")]

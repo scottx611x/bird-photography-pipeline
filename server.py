@@ -1248,8 +1248,23 @@ def post_to_buffer():
             if n > 1:
                 log(f"── Post {i+1}/{n} · {len(chunk_files)} photo(s) ──")
             log(f"Posting: {' '.join(cmd)}")
-            r = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ})
-            for line in (r.stdout + r.stderr).splitlines():
+            env = {**os.environ}
+            r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            out = r.stdout + r.stderr
+            # Buffer's access token expires roughly hourly and only the browser
+            # can renew it, so a 401 here isn't a real failure — refresh the
+            # session once and try again before giving up.
+            if r.returncode != 0 and "401" in out:
+                log("  Buffer session expired — refreshing it in Chrome, then retrying…")
+                fresh = (call_host("buffer-refresh", timeout=120).get("output") or "").strip()
+                cand = fresh.splitlines()[-1] if fresh else ""
+                if "buffer_access_token=" in cand:
+                    env["BUFFER_COOKIES"] = cand
+                    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                    out = r.stdout + r.stderr
+                else:
+                    log("  Couldn't refresh the session — is Chrome running?")
+            for line in out.splitlines():
                 log(line)
             if r.returncode == 0:
                 log("🐦 Posted to Buffer!" if n == 1 else f"🐦 Post {i+1}/{n} queued!")
