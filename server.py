@@ -2073,6 +2073,17 @@ def syno_fetch():
             log(line)
         if not r.get("ok"):
             log("Synology fetch failed — check log.")
+            # A failed fetch leaves an empty folder behind, which then shows up
+            # as a batch card offering "Process" with nothing in it. Clear it.
+            try:
+                dest = DOWNLOADS / album
+                if dest.is_dir() and not any(dest.iterdir()):
+                    dest.rmdir()
+                    with lock:
+                        state["batches"].pop(album, None)
+                    log(f"  (removed the empty {album} folder)")
+            except OSError:
+                pass
             return
         log("✓ Synology fetch complete.")
         if not then_process:
