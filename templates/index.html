@@ -772,7 +772,10 @@ let betaState = { busy: null, msg: "", ok: true };
 // Posting state must live outside the DOM: the poll rebuilds these cards every
 // second, so a disabled button or changed label was wiped within a second and
 // a post that worked looked like a dead button.
-let postState = { busy: false, msg: "", ok: true };
+// `lane` is which post is actually in flight. Without it every lane read the
+// one shared busy flag, so posting a single post made all of them announce
+// "⏳ Posting…" as though the whole batch had gone out.
+let postState = { busy: false, msg: "", ok: true, lane: null };
 
 // Lightroom reports its own progress ("Updating AI Settings, 5 of 7, 60%") in
 // the modal it puts up; mirror it so long steps aren't a blank wait.
@@ -908,9 +911,10 @@ function renderPostForm(batch, data) {
          <b>publish.buffer.com</b> in Chrome on the Mac, then run <b>./bird up</b>.
        </div>` : "";
   const posting = postState.busy || lastState?.posting;
+  const whichPost = postState.lane === null ? "" : ` Post ${postState.lane + 1}`;
   const postMsg = posting
     ? `<div class="split-banner post-status busy"><span class="beta-spin"></span>
-         Posting to Buffer — this takes a few seconds. Don't press again.</div>`
+         Posting${whichPost} to Buffer — this takes a few seconds. Don't press again.</div>`
     : (postState.msg
         ? `<div class="split-banner post-status ${postState.ok ? 'good' : 'bad'}">${postState.msg}</div>`
         : "");
@@ -967,11 +971,14 @@ function renderPostForm(batch, data) {
     const removeBtn = postLanes.length > 1
       ? `<button class="lane-remove" onclick="removeLane(${i})" title="Remove this post (photos move to Excluded)">✕</button>` : '';
     // "Post this" lets you schedule one of several posts now, leaving the rest staged
-    const busyNow = postState.busy || lastState?.posting;
+    // Any post in flight disables every button — the server allows one at a
+    // time — but only the lane being sent says so.
+    const anyBusy  = postState.busy || lastState?.posting;
+    const thisBusy = anyBusy && postState.lane === i;
     const postOneBtn = (lanes.length > 1 && lane.length && !over)
-      ? `<button class="lane-post" id="postlane-${i}" ${busyNow ? 'disabled' : ''}
+      ? `<button class="lane-post" id="postlane-${i}" ${anyBusy ? 'disabled' : ''}
            onclick="postLane(${i})" title="Schedule just this post now">${
-             busyNow ? '⏳ Posting…' : '▶ Post this'}</button>` : '';
+             thisBusy ? '⏳ Posting…' : '▶ Post this'}</button>` : '';
     return `
       <div class="post-lane ${over ? 'over' : ''}" data-lane="${i}"
            ondragover="onLaneOver(event)" ondragleave="onLaneLeave(event)" ondrop="onLaneDrop(event,${i})">
@@ -1905,7 +1912,7 @@ async function postLane(i) {
 
   localStorage.setItem('birdLocation', g[0].location);
   const species = g[0].species.replace("⚠️ ", "").trim();
-  postState = { busy: true, msg: "", ok: true };
+  postState = { busy: true, msg: "", ok: true, lane: i };
   rerenderPhotoCards();
   let accepted = false;
   try {
@@ -1917,10 +1924,10 @@ async function postLane(i) {
     });
     const d = await r.json().catch(() => ({}));
     accepted = r.ok && d.ok !== false;
-    if (!accepted) postState = { busy: false,
+    if (!accepted) postState = { busy: false, lane: null,
       msg: `✕ Post refused: ${d.error || 'HTTP ' + r.status}`, ok: false };
   } catch (e) {
-    postState = { busy: false, msg: "✕ Couldn't reach the server.", ok: false };
+    postState = { busy: false, msg: "✕ Couldn't reach the server.", ok: false, lane: null };
   }
   if (!accepted) { rerenderPhotoCards(); return; }   // lane kept; nothing queued
 
@@ -1933,16 +1940,16 @@ async function postLane(i) {
     if (s.posting) continue;
     const due = s.last_post?.due ? ` — scheduled ${String(s.last_post.due).slice(0,10)}` : '';
     if (s.post_error) {
-      postState = { busy: false, msg: "✕ The post failed — see the log.", ok: false };
+      postState = { busy: false, msg: "✕ The post failed — see the log.", ok: false, lane: null };
     } else {
-      postState = { busy: false, msg: `✓ ${species} queued to Buffer${due}`, ok: true };
+      postState = { busy: false, msg: `✓ ${species} queued to Buffer${due}`, ok: true, lane: null };
       postLanes.splice(i, 1);
       if (!postLanes.length) postLanes = [[]];
     }
     rerenderPhotoCards();
     return;
   }
-  postState = { busy: false, msg: "Still working — check the log.", ok: true };
+  postState = { busy: false, msg: "Still working — check the log.", ok: true, lane: null };
   rerenderPhotoCards();
 }
 

@@ -158,6 +158,26 @@ def test_denoise_spread_verified():
           (ROOT / "lr_host.py").read_text())
 
 
+def test_post_busy_is_per_lane():
+    """Posting one post used to light up every post's button as "⏳ Posting…",
+    because each lane read one shared busy flag. Only the lane in flight may
+    say it is posting — though all buttons still disable, since the server
+    permits one post at a time."""
+    _, _, js = page_parts(INDEX)
+    check("index: postState remembers which lane is in flight", "lane: null" in js
+          and "lane: i }" in js)
+    check("index: the label is per-lane", "thisBusy ? '⏳ Posting…'" in js)
+    check("index: every button still disables while one is posting",
+          "anyBusy ? 'disabled' : ''" in js)
+    check("index: busy lane is matched by index", "postState.lane === i" in js)
+    # every terminal transition must clear the lane, or a stale index would
+    # keep one button stuck reading "Posting…"
+    starts = js.count("postState = { busy: false")
+    clears = js.count("lane: null")
+    check("index: every finished post clears the lane", clears >= starts,
+          f"{starts} terminal states vs {clears} clears")
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -280,6 +300,7 @@ def main():
     test_route_decorators_attached()
     test_import_verification_wired()
     test_denoise_spread_verified()
+    test_post_busy_is_per_lane()
     test_lr_verify_logic()
     test_container_has_server_imports()
 
