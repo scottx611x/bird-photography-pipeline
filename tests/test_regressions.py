@@ -89,7 +89,7 @@ def test_js_syntax():
 
 def test_server_syntax():
     for f in ("server.py", "lr_host.py", "bird_post.py", "syno_fetch.py",
-              "syno_curate.py", "lr_denoise.py", "lr_dismiss.py"):
+              "syno_curate.py", "lr_denoise.py", "lr_dismiss.py", "lr_verify.py"):
         p = ROOT / f
         if not p.exists():
             continue
@@ -106,6 +106,88 @@ def test_no_duplicate_defs():
     names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
     dupes = {n for n in names if names.count(n) > 1}
     check("server: no duplicate top-level functions", not dupes, str(dupes))
+
+
+def test_import_verification_wired():
+    """The import step must not trust lr_auto's exit code alone — it has twice
+    reported success while Lightroom ingested nothing, leaving auto-tone to
+    run against the previous batch."""
+    src = (ROOT / "server.py").read_text()
+    check("server: import compares Lightroom's screen before/after",
+          "_await_import(" in src and "lr_verify.fingerprint(" in src)
+    check("server: a failed import stops the run",
+          'set_step("import_failed")' in src)
+    # auto-tone must come after that guard, never before it
+    i_guard = src.find('set_step("import_failed")')
+    i_tone = src.find('log("Applying Auto Settings to all photos…")')
+    check("server: auto-tone sits after the import guard",
+          0 < i_guard < i_tone)
+
+    html = INDEX.read_text()
+    check("index: import_failed has its own step card", "import_failed:" in html)
+    check("index: import_failed offers a retry", "retryImport" in html)
+    check("server: gotoStep accepts 'import' for that retry",
+          '"import", "tone", "denoise", "pick", "collect"' in src)
+
+
+def test_lr_verify_logic():
+    """The screen comparison itself: it must spot a changed filmstrip, ignore
+    an unchanged one, and report 'unknown' rather than 'unchanged' when there
+    is no screenshot — a missing capture is a permissions problem, not a
+    failed import."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        import lr_verify
+        from PIL import Image
+    except ImportError as e:
+        print(f"  skip  lr_verify logic ({e})")
+        return
+    import io
+
+    def shot(fill, band):
+        im = Image.new("L", (400, 300), fill)
+        for x in range(0, 320):                 # the filmstrip band
+            for y in range(240, 300):
+                im.putpixel((x, y), band)
+        buf = io.BytesIO(); im.save(buf, "PNG")
+        return buf.getvalue()
+
+    same_a = lr_verify.fingerprint(shot(40, 90))
+    same_b = lr_verify.fingerprint(shot(40, 90))
+    other  = lr_verify.fingerprint(shot(40, 220))
+
+    check("lr_verify: builds a fingerprint", bool(same_a))
+    check("lr_verify: identical screens read as unchanged",
+          lr_verify.changed(same_a, same_b) is False)
+    check("lr_verify: a different filmstrip reads as changed",
+          lr_verify.changed(same_a, other) is True)
+    check("lr_verify: no screenshot reads as unknown, not unchanged",
+          lr_verify.changed(same_a, None) is None
+          and lr_verify.fingerprint(b"") is None)
+    check("lr_verify: ignores changes outside the filmstrip band",
+          lr_verify.changed(lr_verify.fingerprint(shot(40, 90)),
+                            lr_verify.fingerprint(shot(200, 90))) is False)
+
+
+def test_container_has_server_imports():
+    """Every module server.py imports must be copied into the image. lr_verify
+    was added and not COPYed, so the import step would have raised
+    ModuleNotFoundError inside the container while passing every local check."""
+    import ast
+    src = (ROOT / "server.py").read_text()
+    tree = ast.parse(src)
+    local = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for n in node.names:
+                if (ROOT / f"{n.name}.py").exists():
+                    local.add(n.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if (ROOT / f"{node.module}.py").exists():
+                local.add(node.module)
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    for mod in sorted(local):
+        check(f"Dockerfile copies {mod}.py", f"COPY {mod}.py" in dockerfile)
 
 
 def test_route_decorators_attached():
@@ -168,6 +250,9 @@ def main():
     test_server_syntax()
     test_no_duplicate_defs()
     test_route_decorators_attached()
+    test_import_verification_wired()
+    test_lr_verify_logic()
+    test_container_has_server_imports()
 
     if "--live" in sys.argv:
         print("live checks")

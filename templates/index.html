@@ -721,6 +721,7 @@ const AUTO_STEPS = {
 };
 
 const STEP_INFO = {
+  import_failed:   { label: "Import",      msg: "Lightroom didn't take the import — its view never changed. Usually the photos are already in the catalogue, or a dialog is waiting (👁 LR → Dismiss dialog). Fix that, then Retry.", retryImport: true },
   importing:       { label: "Importing",   msg: "Lightroom is loading photos. Click Continue when all appear in the grid.", btns: true, pulse: true },
   continue_toning: { label: "Importing",   msg: "Finishing up…", pulse: true },
   toning:          { label: "Auto-tone",   msg: "Applying Auto Settings to all photos…", pulse: true },
@@ -837,6 +838,7 @@ function renderStepCard(step, batch, data) {
   const busy = betaState.busy;
   const lock = busy ? " disabled" : "";
   let btns = "";
+  if (s.retryImport) btns += `<button class="btn btn-primary btn-sm" onclick="gotoStep('import')">↻ Retry import</button>`;
   if (s.autoDenoise) {
     const dnTxt = busy === "denoise" ? "⏳ Working in Lightroom…" : "⚡ Auto-Denoise (beta)";
     const duTxt = busy === "dust"    ? "⏳ Working in Lightroom…" : "🧹 Auto-Dust (beta)";

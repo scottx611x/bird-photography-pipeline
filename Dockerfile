@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY bird_post.py .
 COPY server.py .
+COPY lr_verify.py .
 COPY templates/ templates/
 COPY static/ static/
 

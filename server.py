@@ -232,6 +232,40 @@ def call_host(cmd: str, folder: str = None, body: dict = None, timeout: float = 
         return {"ok": False, "output": str(e)}
 
 
+def _lr_screen_bytes() -> bytes:
+    """A screenshot from lr_host, or b'' if screen capture isn't available."""
+    try:
+        with httpx.Client(timeout=60) as client:
+            r = client.get(f"{HOST_BRIDGE}/screen")
+        if r.headers.get("content-type", "").startswith("image"):
+            return r.content
+    except Exception:
+        pass
+    return b""
+
+
+def _await_import(before, seconds: int = 30):
+    """Wait for Lightroom's filmstrip to change after an import was triggered.
+
+    Returns True (it changed), False (it demonstrably didn't) or None (no
+    screenshot, so we can't say). lr_auto.py's exit code can't distinguish a
+    real import from one Lightroom quietly refused, and everything downstream
+    then runs against the previous batch.
+    """
+    import lr_verify
+    for _ in range(seconds):
+        time.sleep(1)
+        with lock:
+            if state["stop_requested"] or state["proc_step"] == "continue_toning":
+                return True          # user moved it on; don't second-guess
+        verdict = lr_verify.changed(before, lr_verify.fingerprint(_lr_screen_bytes()))
+        if verdict:
+            return True
+        if verdict is None:
+            return None              # can't see the screen — don't block
+    return False
+
+
 def lr_modal_progress() -> dict:
     """Lightroom's own modal progress. Authoritative for 'is it still working?'
     — far better than inferring it from CPU, which idles between items and once
@@ -395,6 +429,8 @@ def _run_batch(folder_name: str, start_step: str = "import"):
         # ── Step 1: Import ────────────────────────────────────────────────────
         set_step("importing")
         log(f"Importing {folder_name} into Lightroom…")
+        import lr_verify
+        before = lr_verify.fingerprint(_lr_screen_bytes())
         result = call_host("import", folder=mac_path)
         for line in result.get("output", "").splitlines():
             log(f"  {line}")
@@ -403,16 +439,22 @@ def _run_batch(folder_name: str, start_step: str = "import"):
             set_step("import_failed")
             return
         log("Import triggered. Waiting for Lightroom to load photos…")
-        for _ in range(25):
-            time.sleep(1)
-            with lock:
-                stop = state["stop_requested"]
-                done = state["proc_step"] == "continue_toning"
-            if stop or done:
-                break
-        else:
-            set_step("continue_toning")
+        verdict = _await_import(before)
+        if verdict is False:
+            # Nothing in Lightroom changed, so it ingested nothing. Stop here:
+            # auto-tone would otherwise apply Auto Settings to whichever batch
+            # is still open, which has happened twice.
+            log("✗ Lightroom's view never changed — the import didn't take.")
+            log("  Often these photos are already in the catalogue, or an import "
+                "dialog needs dismissing (👁 LR → Dismiss dialog). Fix it, then Retry.")
+            set_step("import_failed")
+            return
+        if verdict is None:
+            log("  (couldn't screenshot Lightroom to confirm the import — continuing)")
         if state.get("stop_requested"): return
+        with lock:
+            if state["proc_step"] == "importing":
+                state["proc_step"] = "continue_toning"
 
     if start_step in ("import", "tone"):
         # ── Step 2: Auto-tone ─────────────────────────────────────────────────
@@ -1876,7 +1918,7 @@ def assign_birds(folder_name: str):
 
 @app.post("/api/goto-step")
 def goto_step():
-    VALID = {"tone", "denoise", "pick", "collect"}
+    VALID = {"import", "tone", "denoise", "pick", "collect"}
     data  = request.json or {}
     step  = data.get("step", "")
     if step not in VALID:
