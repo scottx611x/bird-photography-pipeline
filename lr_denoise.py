@@ -336,10 +336,12 @@ def run(kind: str, enable: bool):
         # tick and show a progress window, so a ticked box is NOT proof we got
         # the right one. Only the "Applying Denoise" window is. Undo otherwise.
         click(box)
-        print("That checkbox ticked, but Lightroom never showed the Denoise "
-              "progress window — it was probably Raw Details or Super "
-              "Resolution, so the change was undone. Scroll Edit > Detail to "
-              "the top and try again, or tick Denoise by hand.")
+        print("Ticked a checkbox but Lightroom never showed the Denoise "
+              "progress window, so the change was undone. Usually this means "
+              "Denoise itself is greyed out — Lightroom disables it (with a "
+              "warning triangle) while it is still loading the originals, or "
+              "when it only has a Smart Preview. Check Edit > Detail: if "
+              "Denoise is dimmed, wait for the import to finish and retry.")
         sys.exit(4)
 
     for _ in range(25):
