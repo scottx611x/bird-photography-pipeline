@@ -215,6 +215,10 @@ def test_curate_serves_previews():
     check("curate: the choice persists", "setItem('curate_full_size'" in cur)
     check("curate: preloads less far ahead at full size",
           "fullSize ? 4 : 10" in cur)
+    # The originals are ~26 MB NEFs and 1920x1280 is the largest rendition
+    # Synology serves, so the button must not promise "full size".
+    check("curate: the toggle does not claim to show the original",
+          "full size'" not in cur and "1920" in cur)
 
 
 def test_ig_post_contract():
