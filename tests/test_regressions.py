@@ -137,8 +137,15 @@ def test_denoise_spread_verified():
     covers the Edit panel, so checking too early reads a good batch as broken."""
     src = (ROOT / "server.py").read_text()
     check("server: the spread is verified, not assumed", "_verify_spread(" in src)
-    check("server: an unspread denoise returns to the denoise gate",
-          'if spread == "none"' in src and 'set_step("denoise")' in src)
+    # It must never block: reading a checkbox off a screenshot is not reliable
+    # enough to stop a run, and a false negative once trapped a good batch at
+    # the denoise gate with no way forward.
+    check("server: a failed spread check warns but does not block",
+          'if spread == "none"' in src and "Continuing anyway" in src)
+    i_sp = src.find("spread = _verify_spread(")
+    tail = src[i_sp:i_sp + 700]
+    check("server: verification never sends the run back a step",
+          'set_step("denoise")' not in tail)
     # order: paste → wait for Lightroom → verify → export gate
     i_paste  = src.find("Denoise applied to all photos")
     i_verify = src.find("spread = _verify_spread(")
@@ -151,7 +158,10 @@ def test_denoise_spread_verified():
     check("lr_denoise: skips the check while a progress modal covers the panel",
           '"progress" in lr_window_names().lower()' in den)
     check("lr_denoise: an unreadable panel reports unknown, never a verdict",
-          den.count("spread: unknown") >= 2)
+          den.count("spread: unknown") >= 3)
+    check("lr_denoise: re-finds the label on every frame",
+          'find_label(shot, "denoise", DETAIL_SCAN)' in den
+          and "panel not readable" in den)
     check("lr_denoise: collapses the multi-selection before looking",
           "arrow(124)" in den and "arrow(123)" in den)
     check("lr_host: allows denoise-spread", '"denoise-spread"' in

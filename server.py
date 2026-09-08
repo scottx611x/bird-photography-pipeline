@@ -425,14 +425,16 @@ def _denoise_and_export_tail():
     # log said otherwise, and the batch exported noisy. Read the box back off a
     # few photos now that Lightroom's own update has finished and the Edit
     # panel is visible again.
+    # This warns, it never blocks. Reading a checkbox off a screenshot is not
+    # reliable enough to stop a run: a collapsed Edit panel reads exactly like
+    # an unticked box, and a false "it didn't spread" bounced a perfectly good
+    # batch back to the denoise gate on a loop with no way past it.
     spread = _verify_spread()
     if spread == "none":
-        log("⚠ Denoise did NOT spread — the sampled photos have it unticked.")
-        log("Tick Denoise on one photo in Lightroom, then Continue again.")
-        set_step("denoise")
-        return
-    if spread == "partial":
-        log("⚠ Denoise reached only some photos — check Lightroom before export.")
+        log("⚠ Couldn't see Denoise on the sampled photos — worth an eyeball")
+        log("  in Lightroom before you export. Continuing anyway.")
+    elif spread == "partial":
+        log("⚠ Denoise reached only some sampled photos — check before export.")
 
     # ── Step 4: explicit export gate — never auto-trigger Lightroom's
     # Export-with-Previous (it can export the whole catalog if LR lost the

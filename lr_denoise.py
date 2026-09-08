@@ -423,16 +423,28 @@ def cmd_spread(count: int):
         print("spread: unknown (couldn't find the Denoise checkbox)")
         return
 
-    on = 0
+    on = seen = 0
     for i in range(count):
-        ticked = is_checked(grab(), box)
-        on += ticked
-        print(f"  photo {i + 1}: Denoise {'on' if ticked else 'OFF'}")
+        shot = grab()
+        # Re-find the label every frame. The panel can collapse or scroll while
+        # stepping through, and a blank panel reads exactly like an unticked
+        # box — which is how a fully denoised batch got reported as 0 of 4.
+        hit = find_label(shot, "denoise", DETAIL_SCAN)
+        if not hit:
+            print(f"  photo {i + 1}: panel not readable — skipped")
+        else:
+            ticked = is_checked(shot, (COL_CENTRE, hit[0]))
+            seen += 1
+            on += ticked
+            print(f"  photo {i + 1}: Denoise {'on' if ticked else 'OFF'}")
         if i < count - 1:
             arrow(124)                      # right
     for _ in range(count - 1):              # put the user back where they were
         arrow(123)
-    print(f"spread: {on}/{count}")
+    if not seen:
+        print("spread: unknown (the Edit panel never showed the checkbox)")
+        return
+    print(f"spread: {on}/{seen}")
 
 
 def main():
