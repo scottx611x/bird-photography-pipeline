@@ -134,8 +134,9 @@ function render(){
   zoomed=false;
   const s=sel[c.day].has(c.id), w=wl[c.day].has(c.id), sda=sd[c.day].has(c.id), fam=fm[c.day].has(c.id);
   const big=document.getElementById('big');
+  // Downscaled and cached app-side; falls back to the raw NAS thumbnail.
   big.onerror=()=>{big.onerror=null;big.src='/curate-thumb/m/'+c.id};
-  big.src='/curate-thumb/xl/'+c.id;
+  big.src='/curate-preview/'+c.id;
   big.className=(s?'sel ':'')+(w?'wild ':'')+(sda?'sadie ':'')+(fam?'family':'');
   document.getElementById('daylbl').textContent=c.day;
   const di=flat.filter(f=>f.day===c.day), pos=di.findIndex(f=>f.id===c.id);
@@ -165,7 +166,10 @@ function render(){
     im.onclick=()=>{idx=i;render()};
     strip.appendChild(im);
   }
-  for(let i=idx+1;i<Math.min(flat.length,idx+5);i++){(new Image()).src='/curate-thumb/xl/'+flat[i].id}
+  // Preload ahead, and two back so a bounce to the previous frame is instant.
+  // Deeper than it was: swiping quickly used to outrun a 5-frame window.
+  for(let i=idx+1;i<Math.min(flat.length,idx+10);i++){(new Image()).src='/curate-preview/'+flat[i].id}
+  for(let i=Math.max(0,idx-2);i<idx;i++){(new Image()).src='/curate-preview/'+flat[i].id}
 }
 async function push(kind, set, day){
   await q('/api/curate/set',{method:'POST',headers:{'Content-Type':'application/json'},

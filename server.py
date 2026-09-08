@@ -16,6 +16,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -1595,6 +1596,38 @@ def curate_thumb(size, iid):
     except Exception:
         pass
     return "", 404
+
+
+CURATE_PREVIEW_DIR = BIRDS_DIR / ".curate-previews"
+CURATE_PREVIEW_EDGE = 1280      # a phone screen is ~1300px at 3x; xl is 1920
+
+
+@app.get("/curate-preview/<int:iid>")
+def curate_preview(iid):
+    """A phone-sized copy of a Synology thumbnail, cached here in the app.
+
+    Synology's "xl" is 1920x1280 at around 500 KB, which is fine on the LAN
+    and slow over Tailscale on cellular — and the curator swipes through
+    hundreds of them. Downscaling lands about a quarter of that, and caching
+    it locally means a second pass never re-crosses the bridge at all.
+    """
+    from flask import send_file
+    from PIL import Image as PILImage
+    CURATE_PREVIEW_DIR.mkdir(exist_ok=True)
+    prev = CURATE_PREVIEW_DIR / f"{iid}.jpg"
+    if not prev.exists():
+        try:
+            with httpx.Client(timeout=60) as client:
+                r = client.get(f"{HOST_BRIDGE}/curate/thumb/xl/{iid}")
+            if not r.headers.get("content-type", "").startswith("image"):
+                return "", 404
+            img = PILImage.open(BytesIO(r.content))
+            img.thumbnail((CURATE_PREVIEW_EDGE, CURATE_PREVIEW_EDGE), PILImage.LANCZOS)
+            img.convert("RGB").save(prev, "JPEG", quality=80, optimize=True)
+        except Exception:
+            return "", 502
+    # These never change once written — the source is an immutable NAS asset.
+    return send_file(str(prev), mimetype="image/jpeg", max_age=604800)
 
 
 @app.get("/api/curate/exif/<int:iid>")

@@ -178,6 +178,24 @@ def test_post_busy_is_per_lane():
           f"{starts} terminal states vs {clears} clears")
 
 
+def test_curate_serves_previews():
+    """The curator swipes through hundreds of frames, and Synology's "xl" is
+    1920x1280 at ~500 KB — fine on the LAN, slow over Tailscale on cellular.
+    Serve a downscaled copy cached app-side, same as /bird-preview."""
+    src = (ROOT / "server.py").read_text()
+    check("server: curate previews are downscaled", "CURATE_PREVIEW_EDGE" in src
+          and "thumbnail((CURATE_PREVIEW_EDGE" in src)
+    check("server: curate previews are cached on disk", "CURATE_PREVIEW_DIR" in src)
+    check("server: a failed fetch is not cached as a good preview",
+          'return "", 502' in src)
+
+    cur = CURATE.read_text()
+    check("curate: the big image uses the preview", "'/curate-preview/'+c.id" in cur)
+    check("curate: still falls back to the raw thumbnail",
+          "big.src='/curate-thumb/m/'+c.id" in cur)
+    check("curate: preloads both directions", "idx+10" in cur and "idx-2" in cur)
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -301,6 +319,7 @@ def main():
     test_import_verification_wired()
     test_denoise_spread_verified()
     test_post_busy_is_per_lane()
+    test_curate_serves_previews()
     test_lr_verify_logic()
     test_container_has_server_imports()
 
