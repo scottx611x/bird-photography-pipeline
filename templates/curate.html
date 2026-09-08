@@ -56,6 +56,7 @@ kbd{background:#26262c;border-radius:4px;padding:1px 6px;margin:0 2px}
   <button class=gray onclick="setSadie()">🐕</button>
   <button class=gray onclick="setFamily()">👨‍👩‍👧</button></span>
   <button class=gray id=donebtn onclick="toggleDone()"></button>
+  <button class=gray id=fullbtn onclick="toggleFull()"></button>
   <button class=gray onclick="jumpDay(-1)">◀ day</button>
   <button class=gray onclick="jumpDay(1)">day ▶</button>
   <button id=syncbtn onclick="doSync()">⬆ Sync albums</button>
@@ -75,6 +76,20 @@ kbd{background:#26262c;border-radius:4px;padding:1px 6px;margin:0 2px}
 <script>
 let allDays=[], flat=[], idx=0, sel={}, wl={}, sd={}, fm={};
 let showDone = localStorage.getItem('curate_show_done')==='1';
+// Off by default: the downscaled preview is ~145 KB against ~500 KB for the
+// NAS original, which matters on cellular. On home wifi the bytes are free,
+// so this serves the full-resolution thumbnail for judging sharpness.
+let fullSize = localStorage.getItem('curate_full_size')==='1';
+function imgSrc(id){ return fullSize ? '/curate-thumb/xl/'+id : '/curate-preview/'+id; }
+function updateFullBtn(){
+  const b = document.getElementById('fullbtn');
+  if(b) b.textContent = fullSize ? '🖼 full size' : '🗜 fast';
+}
+function toggleFull(){
+  fullSize = !fullSize;
+  localStorage.setItem('curate_full_size', fullSize ? '1' : '0');
+  updateFullBtn(); render();
+}
 // A day is "done" once it has any album on the NAS — skip it by default so a
 // long backlog doesn't make you re-review work you've already finished.
 function dayDone(d){ return Object.values(d.albums||{}).some(v => v && v.length); }
@@ -108,7 +123,7 @@ async function boot(){
     sel[d.day]=new Set(d.sel.best); wl[d.day]=new Set(d.sel.wildlife);
     sd[d.day]=new Set(d.sel.sadie); fm[d.day]=new Set(d.sel.family);
   }
-  buildFlat(); updateDoneBtn();
+  buildFlat(); updateDoneBtn(); updateFullBtn();
   document.getElementById('load').remove();
   const last=parseInt(localStorage.getItem('curate_last_id')||'-1');
   const i=flat.findIndex(f=>f.id===last);
@@ -136,7 +151,7 @@ function render(){
   const big=document.getElementById('big');
   // Downscaled and cached app-side; falls back to the raw NAS thumbnail.
   big.onerror=()=>{big.onerror=null;big.src='/curate-thumb/m/'+c.id};
-  big.src='/curate-preview/'+c.id;
+  big.src=imgSrc(c.id);
   big.className=(s?'sel ':'')+(w?'wild ':'')+(sda?'sadie ':'')+(fam?'family':'');
   document.getElementById('daylbl').textContent=c.day;
   const di=flat.filter(f=>f.day===c.day), pos=di.findIndex(f=>f.id===c.id);
@@ -168,8 +183,10 @@ function render(){
   }
   // Preload ahead, and two back so a bounce to the previous frame is instant.
   // Deeper than it was: swiping quickly used to outrun a 5-frame window.
-  for(let i=idx+1;i<Math.min(flat.length,idx+10);i++){(new Image()).src='/curate-preview/'+flat[i].id}
-  for(let i=Math.max(0,idx-2);i<idx;i++){(new Image()).src='/curate-preview/'+flat[i].id}
+  // Preload less far ahead at full size — those are ~3.5x the bytes.
+  const ahead = fullSize ? 4 : 10;
+  for(let i=idx+1;i<Math.min(flat.length,idx+ahead);i++){(new Image()).src=imgSrc(flat[i].id)}
+  for(let i=Math.max(0,idx-2);i<idx;i++){(new Image()).src=imgSrc(flat[i].id)}
 }
 async function push(kind, set, day){
   await q('/api/curate/set',{method:'POST',headers:{'Content-Type':'application/json'},

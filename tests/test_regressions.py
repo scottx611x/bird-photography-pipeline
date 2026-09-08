@@ -201,10 +201,20 @@ def test_curate_serves_previews():
           'return "", 502' in src)
 
     cur = CURATE.read_text()
-    check("curate: the big image uses the preview", "'/curate-preview/'+c.id" in cur)
+    check("curate: the big image goes through the source picker",
+          "big.src=imgSrc(c.id)" in cur and "'/curate-preview/'+id" in cur)
     check("curate: still falls back to the raw thumbnail",
           "big.src='/curate-thumb/m/'+c.id" in cur)
-    check("curate: preloads both directions", "idx+10" in cur and "idx-2" in cur)
+    check("curate: preloads both directions", "idx+ahead" in cur and "idx-2" in cur)
+    # Full size is opt-in: it is ~3.5x the bytes, which is the whole point of
+    # the preview. It must never be the default a phone on cellular gets.
+    check("curate: full size is off unless explicitly turned on",
+          "localStorage.getItem('curate_full_size')==='1'" in cur)
+    check("curate: the toggle switches the source", "function imgSrc(" in cur
+          and "fullSize ? '/curate-thumb/xl/'" in cur)
+    check("curate: the choice persists", "setItem('curate_full_size'" in cur)
+    check("curate: preloads less far ahead at full size",
+          "fullSize ? 4 : 10" in cur)
 
 
 def test_ig_post_contract():
