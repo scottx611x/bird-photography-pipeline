@@ -89,7 +89,8 @@ def test_js_syntax():
 
 def test_server_syntax():
     for f in ("server.py", "lr_host.py", "bird_post.py", "syno_fetch.py",
-              "syno_curate.py", "lr_denoise.py", "lr_dismiss.py", "lr_verify.py"):
+              "syno_curate.py", "lr_denoise.py", "lr_dismiss.py", "lr_verify.py",
+              "ig_post.py"):
         p = ROOT / f
         if not p.exists():
             continue
@@ -204,6 +205,28 @@ def test_curate_serves_previews():
     check("curate: still falls back to the raw thumbnail",
           "big.src='/curate-thumb/m/'+c.id" in cur)
     check("curate: preloads both directions", "idx+10" in cur and "idx-2" in cur)
+
+
+def test_ig_post_contract():
+    """The Buffer replacement. These are the details that fail silently or
+    embarrassingly if they drift, so they are pinned."""
+    src = (ROOT / "ig_post.py").read_text()
+    # The Instagram Login token is rejected by graph.facebook.com, which is the
+    # older Page-linked flow — an easy and confusing mix-up.
+    check("ig_post: talks to graph.instagram.com",
+          'API = "https://graph.instagram.com"' in src
+          and 'API = "https://graph.facebook.com"' not in src)
+    check("ig_post: waits for the container before publishing",
+          "_await_container(" in src and '"FINISHED"' in src)
+    check("ig_post: honours the 10-image carousel limit", "MAX_CAROUSEL = 10" in src)
+    check("ig_post: uploads stay private, shared by presigned link",
+          "generate_presigned_url" in src and "public-read" not in src)
+    check("ig_post: reuses the pipeline's resize and caption",
+          "from bird_post import" in src and "resize_for_instagram" in src)
+    check("ig_post: can verify credentials without posting", "def check(" in src)
+    check("ig_post: can roll the 60-day token", "ig_refresh_token" in src)
+    check("Dockerfile copies ig_post.py", "COPY ig_post.py" in
+          (ROOT / "Dockerfile").read_text())
 
 
 def test_lr_verify_logic():
@@ -330,6 +353,7 @@ def main():
     test_denoise_spread_verified()
     test_post_busy_is_per_lane()
     test_curate_serves_previews()
+    test_ig_post_contract()
     test_lr_verify_logic()
     test_container_has_server_imports()
 
