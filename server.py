@@ -278,6 +278,50 @@ def lr_modal_progress() -> dict:
         return {"active": False}
 
 
+NEON_LIMIT = 0.005          # fraction of impossible pixels that means damage
+
+
+def _corrupt_fraction(path: Path) -> float:
+    """How much of an image is pixels a camera cannot produce.
+
+    Lightroom has three times now written an export whose lower portion is
+    magenta/blue scanline garbage — a valid JPEG of the right size, so nothing
+    downstream noticed and one reached the posting screen. The damage always
+    looks the same: saturated neon magenta or neon green, colours that do not
+    occur in a photograph of a bird in a tree.
+    """
+    from PIL import Image as PILImage
+    try:
+        with PILImage.open(path) as im:
+            px = list(im.convert("RGB").resize((200, 140)).getdata())
+    except Exception:
+        return 0.0                      # unreadable is a different problem
+    bad = sum(1 for r, g, b in px
+              if (r > 180 and b > 180 and g < 90) or (g > 180 and r < 90 and b < 90))
+    return bad / len(px)
+
+
+def _flag_corrupt_exports(names: list[str]):
+    """Park any export Lightroom rendered as garbage, before it can be posted.
+
+    Parking rather than deleting: the RAW is fine, so the fix is a re-export,
+    and the damaged file is worth keeping until that happens.
+    """
+    for n in names:
+        p = bird_file(n)
+        if not p.is_file():
+            continue
+        frac = _corrupt_fraction(p)
+        if frac > NEON_LIMIT:
+            log(f"⚠ {n} exported corrupted ({frac * 100:.0f}% garbled) — parking it.")
+            log("  The RAW is fine; re-export this one from Lightroom.")
+            try:
+                EXCLUDED_DIR.mkdir(exist_ok=True)
+                p.replace(EXCLUDED_DIR / n)
+            except OSError as e:
+                log(f"  (couldn't park it: {e})")
+
+
 def _verify_spread(count: int = 4) -> str:
     """Read the Denoise checkbox off `count` photos after a paste.
 
@@ -625,6 +669,7 @@ def _pick_export_post(trigger: bool = True):
     if state.get("stop_requested"): return
 
     new = _exported()
+    _flag_corrupt_exports(new)
     _record_photo_dates(new)
     with lock:
         folder = state["active"]

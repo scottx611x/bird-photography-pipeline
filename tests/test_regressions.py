@@ -243,6 +243,51 @@ def test_ig_post_contract():
           (ROOT / "Dockerfile").read_text())
 
 
+def test_corrupt_exports_are_caught():
+    """Lightroom has three times written an export whose lower half is magenta
+    scanline garbage — a valid JPEG of plausible size, so nothing downstream
+    noticed and one reached the posting screen. Detect it at collection."""
+    src = (ROOT / "server.py").read_text()
+    check("server: exports are scanned for render corruption",
+          "_flag_corrupt_exports(" in src and "def _corrupt_fraction(" in src)
+    check("server: the scan runs at collection, before dates or posting",
+          src.find("_flag_corrupt_exports(new)") < src.find("_record_photo_dates(new)"))
+    check("server: a corrupt export is parked, not deleted",
+          "EXCLUDED_DIR / n" in src)
+    # The RAW is always fine — say so, so nobody deletes a good photo.
+    check("server: it says the RAW is fine", "The RAW is fine" in src)
+
+    sys.path.insert(0, str(ROOT))
+    try:
+        from PIL import Image
+    except ImportError:
+        print("  skip  corruption detector (no Pillow)")
+        return
+    import importlib.util, tempfile, os
+    spec = importlib.util.spec_from_file_location("_srv", ROOT / "server.py")
+    # Importing server.py starts Flask machinery, so re-implement the same
+    # arithmetic here and assert the constant it uses is sane.
+    check("server: the neon threshold is a small fraction",
+          0 < float(re.search(r"NEON_LIMIT = ([\d.]+)", src).group(1)) < 0.05)
+
+    def frac(img):
+        px = list(img.convert("RGB").resize((200, 140)).getdata())
+        bad = sum(1 for r, g, b in px
+                  if (r > 180 and b > 180 and g < 90) or (g > 180 and r < 90 and b < 90))
+        return bad / len(px)
+
+    sky = Image.new("RGB", (400, 300), (120, 160, 210))      # a normal photo
+    check("detector: a clean photo reads as undamaged", frac(sky) < 0.005)
+    # Bands, not alternating rows: real damage comes in blocks tens of pixels
+    # deep, which is what survives the downscale the detector does.
+    damaged = sky.copy()
+    for y in range(150, 300):
+        band = (255, 40, 255) if (y // 8) % 2 else (40, 255, 40)
+        for x in range(400):
+            damaged.putpixel((x, y), band)
+    check("detector: scanline garbage is caught", frac(damaged) > 0.005)
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -368,6 +413,7 @@ def main():
     test_post_busy_is_per_lane()
     test_curate_serves_previews()
     test_ig_post_contract()
+    test_corrupt_exports_are_caught()
     test_lr_verify_logic()
     test_container_has_server_imports()
 
