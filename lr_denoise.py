@@ -85,6 +85,50 @@ def menu_click(item: str, sub: str = "Edit Tools"):
     time.sleep(1.2)
 
 
+def _view_flag(item: str) -> bool:
+    """Checkmark state of a top-level View item (no submenu)."""
+    got = _osa('tell application "System Events" to tell process "%s"\n'
+               'try\n'
+               'if (value of attribute "AXMenuItemMarkChar" of menu item "%s" '
+               'of menu 1 of menu bar item "View" of menu bar 1) '
+               'is not missing value then return "on"\n'
+               'end try\n'
+               'return "off"\n'
+               'end tell' % (APP, item))
+    return got == "on"
+
+
+def edit_panel_open() -> bool:
+    """Is the right-hand Edit panel showing? `View > Edit` is ticked when it is."""
+    return _view_flag("Edit")
+
+
+def open_edit_panel() -> bool:
+    """Show the Edit panel, and leave it alone if it is already showing.
+
+    The tool-rail icon *toggles*. The old code clicked it whenever the Denoise
+    label wasn't matched, on the assumption that meant the panel was shut — so
+    when the panel was already open but Detail was collapsed or scrolled away,
+    the click closed the one thing we needed and every later attempt searched a
+    blank panel. Ask the menu instead of guessing.
+    """
+    if edit_panel_open():
+        return False
+    _osa('tell application "System Events" to tell process "%s" to click '
+         'menu item "Edit" of menu 1 of menu bar item "View" of menu bar 1' % APP)
+    time.sleep(1.5)
+    return True
+
+
+def show_detail_section() -> bool:
+    """Make sure the Detail section itself is not hidden. This one also
+    toggles, so only click it when it is currently unticked."""
+    if menu_flag("Detail", "Edit Panels"):
+        return False
+    menu_click("Detail", "Edit Panels")
+    return True
+
+
 def set_remove_tool(on: bool) -> bool:
     """Pin the Remove (eraser) tool on or off so we know which panel shows."""
     if menu_flag("Remove") != on:
@@ -277,12 +321,21 @@ def run(kind: str, enable: bool):
             break
         if attempt == 1:
             activate()
-            click(ERASER_ICON if kind == "dust" else EDIT_ICON)
-            time.sleep(1.8)
-            # That icon toggles, so it may have switched tools as well as
-            # opening the panel — re-assert the one we need via the menu.
-            set_remove_tool(want_remove)
-            print("Opened the side panel")
+            if kind == "dust":
+                click(ERASER_ICON)
+                time.sleep(1.8)
+                # That icon toggles, so it may have switched tools as well as
+                # opening the panel — re-assert the one we need via the menu.
+                set_remove_tool(want_remove)
+                print("Opened the side panel")
+            else:
+                if open_edit_panel():
+                    print("Opened the side panel")
+                else:
+                    print("Side panel already open — not toggling it")
+                if show_detail_section():
+                    print("Detail section was hidden — unhidden it")
+                set_remove_tool(False)
         elif attempt == 2:
             if kind == "denoise":
                 print(f"Single-Panel Mode: {single_panel_mode_on()}")
@@ -367,8 +420,8 @@ def locate_denoise():
             return (COL_CENTRE, hit[0])
         if attempt == 1:
             activate()
-            click(EDIT_ICON)
-            time.sleep(1.8)
+            open_edit_panel()          # no-op when it is already open
+            show_detail_section()
             set_remove_tool(False)
         elif attempt == 2:
             single_panel_mode_on()

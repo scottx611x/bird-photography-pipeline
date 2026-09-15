@@ -288,6 +288,29 @@ def test_corrupt_exports_are_caught():
     check("detector: scanline garbage is caught", frac(damaged) > 0.005)
 
 
+def test_edit_panel_not_blindly_toggled():
+    """The tool-rail icon toggles. The locate step used to click it whenever
+    the Denoise label wasn't matched, assuming that meant the panel was shut —
+    so with the panel already open but Detail collapsed or scrolled, the click
+    closed the only thing it needed and every later attempt read a blank panel.
+    `View > Edit` carries a checkmark when the panel is open; ask, don't guess."""
+    den = (ROOT / "lr_denoise.py").read_text()
+    check("lr_denoise: reads the panel's open state from the menu",
+          "def edit_panel_open(" in den and '_view_flag("Edit")' in den)
+    check("lr_denoise: opening an open panel is a no-op",
+          "if edit_panel_open():\n        return False" in den)
+    check("lr_denoise: Detail is only unhidden when hidden",
+          "def show_detail_section(" in den
+          and 'if menu_flag("Detail", "Edit Panels"):' in den)
+    # The blind click must be gone from both the denoise paths. The dust path
+    # still uses its own icon, so only EDIT_ICON is checked here.
+    for fn in ("def run(", "def locate_denoise("):
+        i = den.find(fn)
+        body = den[i:i + 1600]
+        check(f"lr_denoise: {fn.strip('def (')} no longer blind-clicks EDIT_ICON",
+              "click(EDIT_ICON)" not in body)
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -414,6 +437,7 @@ def main():
     test_curate_serves_previews()
     test_ig_post_contract()
     test_corrupt_exports_are_caught()
+    test_edit_panel_not_blindly_toggled()
     test_lr_verify_logic()
     test_container_has_server_imports()
 
