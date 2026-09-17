@@ -147,12 +147,16 @@ def test_denoise_spread_verified():
     tail = src[i_sp:i_sp + 700]
     check("server: verification never sends the run back a step",
           'set_step("denoise")' not in tail)
-    # order: paste → wait for Lightroom → verify → export gate
-    i_paste  = src.find("Denoise applied to all photos")
-    i_verify = src.find("spread = _verify_spread(")
-    i_export = src.find('set_step("export_ready")')
+    # order within the tail: paste → wait for Lightroom → verify → export gate.
+    # Measured inside the function, not by position in the file — the gate was
+    # extracted above it, which made a whole-file offset comparison meaningless.
+    tail = src[src.find("def _denoise_and_export_tail("):]
+    tail = tail[:tail.find("\ndef ", 1)]
+    i_paste  = tail.find("Denoise applied to all photos")
+    i_verify = tail.find("spread = _verify_spread(")
+    i_gate   = tail.find("_export_gate()")
     check("server: verification sits between the denoise wait and export",
-          0 < i_paste < i_verify < i_export)
+          0 < i_paste < i_verify < i_gate)
 
     den = (ROOT / "lr_denoise.py").read_text()
     check("lr_denoise: has a spread sampler", "def cmd_spread(" in den)
@@ -311,6 +315,35 @@ def test_edit_panel_not_blindly_toggled():
               "click(EDIT_ICON)" not in body)
 
 
+def test_every_goto_step_is_handled():
+    """"pick" was accepted by /api/goto-step and /api/run and handled by
+    nothing: _run_batch matched none of its start_step blocks and returned
+    instantly, so clicking Export in the progress bar logged "Restarting
+    from: pick" and did nothing. Every step the API accepts must be reachable."""
+    src = (ROOT / "server.py").read_text()
+    m = re.search(r'VALID = \{([^}]*)\}', src)
+    valid = set(re.findall(r'"([a-z_]+)"', m.group(1)))
+    check("server: goto-step advertises the expected steps",
+          valid == {"import", "tone", "denoise", "pick", "collect"}, str(valid))
+
+    body = src[src.find("def _run_batch("):]
+    body = body[:body.find("\ndef ", 1)]
+    handled = set()
+    for frag in re.findall(r'if start_step (?:==|in) ([^:]+):', body):
+        handled |= set(re.findall(r'"([a-z_]+)"', frag))
+    missing = valid - handled
+    check("server: _run_batch handles every accepted step", not missing,
+          f"unreachable: {sorted(missing)}")
+
+    check("server: the export gate is its own function so 'pick' can reach it",
+          "def _export_gate(" in src and "_export_gate()" in body)
+
+    html = INDEX.read_text()
+    backs = set(re.findall(r'back:\s*"([a-z_]+)"', html))
+    check("server: every progress-bar back target is accepted", backs <= valid,
+          f"UI sends {sorted(backs - valid)} which the API rejects")
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -438,6 +471,7 @@ def main():
     test_ig_post_contract()
     test_corrupt_exports_are_caught()
     test_edit_panel_not_blindly_toggled()
+    test_every_goto_step_is_handled()
     test_lr_verify_logic()
     test_container_has_server_imports()
 

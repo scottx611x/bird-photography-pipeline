@@ -408,6 +408,31 @@ def process_batch(folder_name: str, no_post: bool = False, start_step: str = "im
             state["thread_active"] = False
 
 
+def _export_gate():
+    """Park at the export gate and act on whichever button the user presses.
+
+    Its own function so "pick" — the step the progress bar's Export stage
+    sends you back to — can reach it. It was accepted by /api/goto-step and
+    by /api/run, and handled by neither: _run_batch ran none of its blocks
+    for "pick" and returned instantly, so clicking Export in the progress bar
+    logged "Restarting from: pick" and did nothing at all.
+    """
+    set_step("export_ready")
+    log("Denoise done. Click ▶ Export to trigger Lightroom, or export yourself and click Collect.")
+    while True:
+        time.sleep(0.5)
+        with lock:
+            step_changed = state["proc_step"] != "export_ready"
+            stopped      = state["stop_requested"]
+        if step_changed or stopped:
+            break
+    if state.get("stop_requested"): return False
+    with lock:
+        mode = state.pop("_export_mode", "trigger")
+    _pick_export_post(trigger=(mode != "collect"))
+    return True
+
+
 def _denoise_and_export_tail():
     """Everything after the manual Denoise gate: spread the settings, wait out
     Lightroom's AI queue, then park at the export gate. Split out of _run_batch
@@ -480,24 +505,7 @@ def _denoise_and_export_tail():
     elif spread == "partial":
         log("⚠ Denoise reached only some sampled photos — check before export.")
 
-    # ── Step 4: explicit export gate — never auto-trigger Lightroom's
-    # Export-with-Previous (it can export the whole catalog if LR lost the
-    # batch context, e.g. after a restart). The user chooses: trigger it,
-    # or export manually and have the files collected. ────────────────────────
-    set_step("export_ready")
-    log("Denoise done. Click ▶ Export to trigger Lightroom, or export yourself and click Collect.")
-    while True:
-        time.sleep(0.5)
-        with lock:
-            step_changed = state["proc_step"] != "export_ready"
-            stopped      = state["stop_requested"]
-        if step_changed or stopped:
-            break
-    if state.get("stop_requested"): return False
-    with lock:
-        mode = state.pop("_export_mode", "trigger")
-    _pick_export_post(trigger=(mode != "collect"))
-    return True
+    return _export_gate()
 
 
 def _run_batch(folder_name: str, start_step: str = "import"):
@@ -507,6 +515,11 @@ def _run_batch(folder_name: str, start_step: str = "import"):
         # User drove Lightroom themselves — don't send it any commands, just
         # adopt whatever they exported and continue to posting.
         _pick_export_post(trigger=False)
+        return
+
+    if start_step == "pick":
+        # Straight to the export gate: Lightroom work is already done.
+        _export_gate()
         return
 
     if start_step == "import":
