@@ -278,6 +278,8 @@ def lr_modal_progress() -> dict:
         return {"active": False}
 
 
+STALL_AFTER = 120      # seconds of a frozen progress count before nudging
+MAX_NUDGES = 6         # bounded: never sit in a nudge loop forever
 NEON_LIMIT = 0.005          # fraction of impossible pixels that means damage
 
 
@@ -451,7 +453,10 @@ def _denoise_and_export_tail():
     # enhancing; treat sustained-quiet as done. Skippable via Continue.
     set_step("denoising")
     log("Lightroom is denoising every photo — you'll choose when to export once it finishes.")
+    # stall detection: the render wedges every couple of dozen photos — the
+    # dialog freezes on one count while Lightroom goes idle behind it.
     quiet, waited, last_note = 0, 0, ""
+    last_done, stalled_for, nudges = None, 0, 0
     while waited < 3600:
         time.sleep(10); waited += 10
         with lock:
@@ -475,6 +480,24 @@ def _denoise_and_export_tail():
             if note != last_note:
                 log(f"  {note}")
                 last_note = note
+
+            # A frozen count with Lightroom idle is the wedge, not slow work.
+            done = prog.get("done")
+            stalled_for = stalled_for + 10 if done == last_done else 0
+            last_done = done
+            if stalled_for >= STALL_AFTER and nudges < MAX_NUDGES:
+                try:
+                    idle = float(call_host("lr-busy", timeout=15).get("output") or 0) < 15
+                except (TypeError, ValueError):
+                    idle = False
+                if idle:
+                    nudges += 1
+                    log(f"  ⚠ Stuck on {done} for {stalled_for}s with Lightroom "
+                        f"idle — nudging it (attempt {nudges}/{MAX_NUDGES}).")
+                    out = call_host("ai-resume", timeout=120).get("output", "")
+                    for line in out.splitlines():
+                        log(f"    {line}")
+                    stalled_for, last_note = 0, ""
             continue
 
         try:

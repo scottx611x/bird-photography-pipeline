@@ -21,6 +21,7 @@ from pathlib import Path
 TOOLS  = Path(__file__).parent
 PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3")
 ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
+           "ai-resume",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
            "denoise-check", "denoise-probe", "denoise-spread",
            "dust-check", "dust-probe",

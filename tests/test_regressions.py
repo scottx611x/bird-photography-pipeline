@@ -372,6 +372,29 @@ def test_denoise_is_actually_rendered():
           0 < i_paste < i_render)
 
 
+def test_stalled_render_is_nudged():
+    """The AI render wedges every couple of dozen photos: the dialog freezes
+    on one count while Lightroom drops to idle. Recovery is always Stop →
+    reselect → re-trigger, so the wait loop does it rather than making someone
+    nurse a 94-photo batch by hand."""
+    src = (ROOT / "server.py").read_text()
+    check("server: a frozen progress count is detected",
+          "stalled_for" in src and "STALL_AFTER" in src)
+    check("server: it only nudges when Lightroom is also idle",
+          "idle = float(call_host(\"lr-busy\"" in src)
+    check("server: nudging is bounded", "MAX_NUDGES" in src
+          and "nudges < MAX_NUDGES" in src)
+
+    auto = (ROOT / "lr_auto.py").read_text()
+    check("lr_auto: ai-resume exists", "def cmd_ai_resume(" in auto)
+    # Dismissing the dialog collapses the selection to one photo, which drops
+    # the count from the menu item — reselecting is what makes the retry work.
+    check("lr_auto: ai-resume reselects before re-triggering",
+          'lr_menu_click("Edit", "Select All")' in
+          auto[auto.find("def cmd_ai_resume("):auto.find("def cmd_import(")])
+    check("lr_host: allows ai-resume", '"ai-resume"' in (ROOT / "lr_host.py").read_text())
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -501,6 +524,7 @@ def main():
     test_edit_panel_not_blindly_toggled()
     test_every_goto_step_is_handled()
     test_denoise_is_actually_rendered()
+    test_stalled_render_is_nudged()
     test_lr_verify_logic()
     test_container_has_server_imports()
 

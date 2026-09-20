@@ -106,6 +106,79 @@ def render_ai_settings():
     return name
 
 
+CLICLICK = "/opt/homebrew/bin/cliclick"
+
+
+def _progress_window():
+    """(x, y, w, h) of Lightroom's progress dialog, or None."""
+    out = run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    repeat with w in windows
+      set n to ""
+      try
+        set n to name of w
+      end try
+      if n contains "progress" or n contains "Updating" then
+        set p to position of w
+        set s to size of w
+        return ((item 1 of p) as string) & " " & ((item 2 of p) as string) & " " & ¬
+               ((item 1 of s) as string) & " " & ((item 2 of s) as string)
+      end if
+    end repeat
+    return ""
+  end tell
+end tell
+''').strip()
+    parts = out.split()
+    return tuple(int(v) for v in parts) if len(parts) == 4 else None
+
+
+def cmd_ai_resume(args):
+    """Unstick a stalled "Updating AI Settings" pass and restart it.
+
+    The render wedges every couple of dozen photos: the dialog freezes on one
+    count while Lightroom drops to idle, and nothing behind it proceeds. The
+    recovery is always the same three steps, so do them rather than making
+    someone sit and nurse a 94-photo batch:
+
+      1. click Stop, which dismisses the stuck dialog (already-rendered photos
+         keep their render — it resumes from where it stopped, not from one);
+      2. re-select everything, because dismissing it collapses the selection
+         to a single photo and the menu item then loses its count;
+      3. ask for the render again.
+    """
+    if not lr_is_running():
+        print("Lightroom is not running.")
+        sys.exit(1)
+
+    box = _progress_window()
+    if box:
+        x, y, w, h = box
+        run_applescript('tell application "Adobe Lightroom" to activate')
+        time.sleep(1.0)
+        subprocess.run([CLICLICK, f"c:{x + w - 60},{y + h - 40}"],
+                       capture_output=True, timeout=20)
+        print(f"  Dismissed the stalled dialog at {x},{y}")
+        time.sleep(3)
+    else:
+        print("  No progress dialog up — nothing to dismiss.")
+
+    run_applescript('tell application "Adobe Lightroom" to activate')
+    time.sleep(0.5)
+    run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    keystroke "g"
+    delay 1.5
+  end tell
+end tell
+''')
+    lr_menu_click("Edit", "Select All")
+    time.sleep(1.0)
+    render_ai_settings()
+
+
 def cmd_import(args):
     """Open a batch folder in Lightroom's Add Photos dialog."""
     folder = Path(args.folder) if args.folder else _latest_batch()
@@ -516,6 +589,7 @@ def main():
     sub.add_parser("copy-and-paste", help="Copy edits from current photo → paste to all selected")
     sub.add_parser("export",         help="Export with Previous settings in Lightroom")
     sub.add_parser("status",         help="Dump Lightroom windows/dialogs via accessibility")
+    sub.add_parser("ai-resume",      help="Unstick and restart a stalled AI-settings render")
 
     args = p.parse_args()
     {
@@ -525,6 +599,7 @@ def main():
         "copy-and-paste": cmd_copy_and_paste,
         "export":         cmd_export,
         "status":         cmd_status,
+        "ai-resume":      cmd_ai_resume,
     }[args.cmd](args)
 
 
