@@ -344,6 +344,34 @@ def test_every_goto_step_is_handled():
           f"UI sends {sorted(backs - valid)} which the API rejects")
 
 
+def test_denoise_is_actually_rendered():
+    """Pasting only ticks the Denoise checkbox. Lightroom keeps the AI edit
+    *pending* — it shows a yellow badge reading "Highlighted settings need to
+    be updated to properly render your photo" — and exporting in that state
+    produces an un-denoised JPEG that the pipeline cheerfully called denoised.
+    The paste step must explicitly ask Lightroom to render."""
+    auto = (ROOT / "lr_auto.py").read_text()
+    check("lr_auto: the paste step renders the AI settings",
+          "def render_ai_settings(" in auto and "render_ai_settings()" in auto)
+    # The label carries a photo count, so it can't be matched by exact name;
+    # and clicking the loop variable doesn't open the menu, which made this
+    # look like a no-op the first time round.
+    check("lr_auto: the counted menu item is matched by prefix",
+          'starts with "{prefix}"' in auto or "_click_menu_item_by_prefix(" in auto)
+    check("lr_auto: it clicks by the resolved exact name",
+          "lr_menu_click(menu_name, name)" in auto)
+    check("lr_auto: nothing pending is not an error",
+          "already rendered" in auto)
+    # Scoped to the paste function — the module-level def also contains the
+    # call's spelling, so a whole-file search matches the wrong thing.
+    body = auto[auto.find("def cmd_copy_and_paste("):]
+    body = body[:body.find("\ndef ", 1)]
+    i_paste  = body.find("Pasting to entire selection")
+    i_render = body.find("render_ai_settings()")
+    check("lr_auto: the render is asked for after the paste",
+          0 < i_paste < i_render)
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -472,6 +500,7 @@ def main():
     test_corrupt_exports_are_caught()
     test_edit_panel_not_blindly_toggled()
     test_every_goto_step_is_handled()
+    test_denoise_is_actually_rendered()
     test_lr_verify_logic()
     test_container_has_server_imports()
 

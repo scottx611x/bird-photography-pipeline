@@ -60,6 +60,52 @@ end tell
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+def _click_menu_item_by_prefix(menu_name: str, prefix: str):
+    """Click a menu item whose label carries a count ("Update AI Settings in
+    94 Photos"). Two steps on purpose: read the exact name, then click it by
+    that name. Clicking the loop variable directly does not open the menu and
+    silently does nothing — which is why this looked like a no-op the first
+    time it was tried."""
+    name = run_applescript(f'''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    repeat with mi in menu items of menu 1 of menu bar item "{menu_name}" of menu bar 1
+      set n to name of mi
+      if n is not missing value then
+        if n starts with "{prefix}" then
+          if enabled of mi then return n
+          return "disabled"
+        end if
+      end if
+    end repeat
+    return ""
+  end tell
+end tell
+''').strip()
+    if not name or name == "disabled":
+        return None
+    lr_menu_click(menu_name, name)
+    return name
+
+
+def render_ai_settings():
+    """Actually render the pasted Denoise.
+
+    Pasting only ticks the checkbox. Lightroom holds the AI edit as *pending*
+    and shows a yellow badge saying "Highlighted settings need to be updated
+    to properly render your photo" — export it in that state and you get an
+    un-denoised JPEG. Lightroom sometimes kicks the render off by itself after
+    a paste, but when the paste dialog wedges it never does, so ask explicitly.
+    Harmless when nothing is pending: the menu item is disabled and we skip.
+    """
+    name = _click_menu_item_by_prefix("Photo", "Update AI Settings")
+    if name:
+        print(f"  Rendering denoise: {name}")
+    else:
+        print("  AI settings already rendered — nothing pending.")
+    return name
+
+
 def cmd_import(args):
     """Open a batch folder in Lightroom's Add Photos dialog."""
     folder = Path(args.folder) if args.folder else _latest_batch()
@@ -355,6 +401,12 @@ tell application "System Events"
   end tell
 end tell
 ''')
+
+    # The paste only sets the checkbox; this makes Lightroom actually
+    # render it, which is the difference between a denoised export and
+    # a noisy one that claimed to be denoised.
+    time.sleep(1.5)
+    render_ai_settings()
 
     print("Done — denoise + CA settings applied to all. Now pick your best shot.")
 
