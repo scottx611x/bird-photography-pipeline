@@ -393,6 +393,11 @@ def test_stalled_render_is_nudged():
           'lr_menu_click("Edit", "Select All")' in
           auto[auto.find("def cmd_ai_resume("):auto.find("def cmd_import(")])
     check("lr_host: allows ai-resume", '"ai-resume"' in (ROOT / "lr_host.py").read_text())
+    # The paste dialog's bottom-right button reads "Update AI Settings Later".
+    # Clicking it skips the render — the very thing ai-resume exists to ensure.
+    body = auto[auto.find("def cmd_ai_resume("):auto.find("def cmd_import(")]
+    check("lr_auto: ai-resume refuses to click a paste dialog",
+          '"Pasting" in label' in body)
 
 
 def test_lr_verify_logic():

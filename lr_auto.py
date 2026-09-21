@@ -152,6 +152,33 @@ def cmd_ai_resume(args):
         print("Lightroom is not running.")
         sys.exit(1)
 
+    # NEVER touch a "Pasting Settings" dialog. Its bottom-right button reads
+    # "Update AI Settings Later" — clicking it tells Lightroom to skip the
+    # denoise render entirely, which is the exact failure this whole command
+    # exists to prevent. Only the "Updating AI Settings" dialog has a Stop.
+    label = run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    repeat with w in windows
+      set acc to ""
+      try
+        repeat with t in every static text of w
+          try
+            set acc to acc & (value of t) & " "
+          end try
+        end repeat
+      end try
+      if acc is not "" then return acc
+    end repeat
+    return ""
+  end tell
+end tell
+''').strip()
+    if "Pasting" in label:
+        print("  A paste is still running — leaving it alone "
+              "(its button means 'skip the render', not 'stop').")
+        return
+
     box = _progress_window()
     if box:
         x, y, w, h = box
