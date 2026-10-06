@@ -188,20 +188,31 @@ def find_label(im: Image.Image, name: str, span, threshold: float = 0.55,
                    for y in range(0, th, 2) for x in range(0, tw, 2)])
 
     top, bottom = span
+    # Scan a band of x offsets, not one fixed column. Templates are cropped
+    # from /screen (1500x974) but matched against grab()'s logical space
+    # (1512x982) — a 0.8% difference that lands the text up to ~20px right of
+    # a hardcoded x. A fixed column silently scored near zero on a label that
+    # was plainly on screen, which is how "Dust" went unmatched while
+    # "Reflections" won by accident.
+    base = LABEL_X0 if label_x is None else label_x
+    x_offsets = range(-6, 30, 2)
     best, best_y = -2.0, None
     for cy in range(top, bottom):
         y0 = cy - th // 2
         if y0 < 0 or y0 + th >= im.height:
             continue
-        lx = LABEL_X0 if label_x is None else label_x
-        vals = [im.getpixel((lx + x, y0 + y))
-                for y in range(0, th, 2) for x in range(0, tw, 2)]
-        if max(vals) - min(vals) < 20:        # flat region, no text here
-            continue
-        nv = _norm(vals)
-        score = sum(a * b for a, b in zip(tvals, nv)) / len(nv)
-        if score > best:
-            best, best_y = score, cy
+        for dx in x_offsets:
+            lx = base + dx
+            if lx < 0 or lx + tw >= im.width:
+                continue
+            vals = [im.getpixel((lx + x, y0 + y))
+                    for y in range(0, th, 2) for x in range(0, tw, 2)]
+            if max(vals) - min(vals) < 20:    # flat region, no text here
+                continue
+            nv = _norm(vals)
+            score = sum(a * b for a, b in zip(tvals, nv)) / len(nv)
+            if score > best:
+                best, best_y = score, cy
     if best_y is not None and best >= threshold:
         return best_y, best
     return None
@@ -347,7 +358,14 @@ def run(kind: str, enable: bool):
             activate()
             click((hdr_x + 20, hy))
             time.sleep(2.0)
-    if not box:
+    if not box and kind != "dust":
+        # Not safe for "dust": Distraction Removal now has three collapsible
+        # sub-sections (Reflections, People, Dust) that all show an identical
+        # "Apply" checkbox once expanded. A shape search can't tell them apart
+        # — it previously grabbed Reflections' checkbox while printing "Dust >
+        # Apply", which ticked the wrong control with no error. Only a real
+        # header-label match (which proves we opened Dust specifically) is
+        # trusted for this kind.
         shot = grab()
         box = find_checkbox(shot, span)      # last resort; every toggle is proved anyway
         if box:

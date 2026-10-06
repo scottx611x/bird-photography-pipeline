@@ -400,6 +400,37 @@ def test_stalled_render_is_nudged():
           '"Pasting" in label' in body)
 
 
+def test_dust_section_not_ambiguous():
+    """Distraction Removal grew two more collapsible sub-sections above Dust
+    (Reflections, People) with an identically-labelled "Apply" checkbox each.
+    A stale header template once matched "Reflections" while printing "Dust >
+    Apply", silently ticking the wrong one. The header template must be a real
+    crop of the word "Dust" (not reused from an older, differently-shaped
+    panel), and the shape-search fallback — which can't tell three identical
+    checkboxes apart — must never run for this kind."""
+    tpl = ROOT / "lr_templates" / "hdr_dust.png"
+    check("hdr_dust.png exists", tpl.exists())
+    try:
+        from PIL import Image
+        im = Image.open(tpl)
+        check("hdr_dust.png is a small greyscale crop, not a placeholder",
+              im.mode == "L" and 20 <= im.width <= 120 and 10 <= im.height <= 40,
+              str(im.size))
+    except ImportError:
+        print("  skip  hdr_dust.png shape check (no Pillow)")
+
+    den = (ROOT / "lr_denoise.py").read_text()
+    check("lr_denoise: the shape-search fallback is skipped for dust",
+          'if not box and kind != "dust":' in den)
+    check("lr_denoise: says why — three identical Apply checkboxes now exist",
+          "Reflections, People, Dust" in den or "three collapsible" in den)
+    # Templates are cropped from /screen (1500x974) but matched in grab()'s
+    # logical space (1512x982) — 0.8% off, enough to miss a label entirely if
+    # only one x column is sampled.
+    check("lr_denoise: find_label scans an x-band, not one fixed column",
+          "x_offsets" in den and "for dx in x_offsets:" in den)
+
+
 def test_lr_verify_logic():
     """The screen comparison itself: it must spot a changed filmstrip, ignore
     an unchanged one, and report 'unknown' rather than 'unchanged' when there
@@ -530,6 +561,7 @@ def main():
     test_every_goto_step_is_handled()
     test_denoise_is_actually_rendered()
     test_stalled_render_is_nudged()
+    test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_container_has_server_imports()
 
