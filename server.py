@@ -903,6 +903,57 @@ def record_post(chunk: list, caption_text: str, scheduled_at: str):
         log(f"  📤 Post record shipped ({len(records)} total).")
     except Exception as e:
         log(f"  (post record kept locally; S3 push failed: {e})")
+    archive_originals(chunk)
+
+
+# The full-resolution exports, archived as they are posted. Instagram only ever
+# gets a 2.4 MP copy; the 20-24 MP file it came from lived solely in
+# ~/Desktop/birbs, which is on one drive and in no backup set. Keyed by
+# filename because the Instagram post id does not exist yet — the post is
+# queued to Buffer and publishes days later — so the website's sync does the
+# rename once it can match the record to a real post.
+ORIGINALS_PREFIX = os.environ.get("ORIGINALS_PREFIX", "birds/originals/by-file/")
+
+
+def archive_originals(chunk: list):
+    """Ship this chunk's full-size exports to S3. Never raises.
+
+    GLACIER_IR: retrieved in milliseconds (so the site can serve them) at about
+    a sixth of Standard. Already-present files are skipped, so re-posting the
+    same frame costs nothing.
+    """
+    try:
+        import boto3
+        from botocore.exceptions import ClientError
+    except Exception:
+        return
+    s3 = boto3.client("s3")
+    sent = skipped = 0
+    for p in chunk:
+        name = os.path.basename(p.get("file", "") or "")
+        if not name:
+            continue
+        src = BIRDS_DIR / name          # ~/Desktop/birbs, mounted at /birds
+        if not src.exists():
+            continue
+        key = ORIGINALS_PREFIX + name
+        try:
+            s3.head_object(Bucket=RECORDS_BUCKET, Key=key)
+            skipped += 1
+            continue
+        except ClientError:
+            pass
+        try:
+            s3.upload_file(str(src), RECORDS_BUCKET, key, ExtraArgs={
+                "StorageClass": "GLACIER_IR",
+                "ContentType": "image/jpeg",
+                "Metadata": {"original": name},
+            })
+            sent += 1
+        except Exception as e:
+            log(f"  (original {name} not archived: {str(e)[:60]})")
+    if sent or skipped:
+        log(f"  🗄️  Originals archived: {sent} new, {skipped} already there.")
 
 
 def _batch_raw_stems(folder: str) -> set:
