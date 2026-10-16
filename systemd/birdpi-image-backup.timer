@@ -1,0 +1,12 @@
+[Unit]
+Description=Monthly birdpi disk image
+
+[Timer]
+# Monthly, not weekly: Deep Archive bills a 180-day minimum per object, and
+# each run writes ~12GB to the SD card this is meant to protect.
+OnCalendar=*-*-01 02:00:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

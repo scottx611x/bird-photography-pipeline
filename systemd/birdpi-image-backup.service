@@ -1,0 +1,13 @@
+[Unit]
+Description=birdpi monthly bootable SD-card image to S3 Deep Archive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Takes over an hour: it reads and writes the same SD card. Niced so it never
+# competes with birdnet-go, which is the one service that must not miss audio.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=4h
+ExecStart=/usr/local/sbin/pi_image_backup.sh --s3 s3://birds-scott-ouellette/birds/pi-images

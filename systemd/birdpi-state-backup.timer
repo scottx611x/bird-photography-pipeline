@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily birdpi state snapshot
+
+[Timer]
+# Early morning, after the night's detections have settled.
+OnCalendar=*-*-* 04:30:00
+# The Pi is always on, but Persistent catches a missed run after a reboot.
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

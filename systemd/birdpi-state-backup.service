@@ -1,0 +1,8 @@
+[Unit]
+Description=birdpi daily state snapshot to S3 (birdnet.db, configs, queue)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pi_state_backup.sh --s3 s3://birds-scott-ouellette/birds/pi-state
