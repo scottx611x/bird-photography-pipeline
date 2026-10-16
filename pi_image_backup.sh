@@ -25,7 +25,14 @@
 #   `sudo raspi-config --expand-rootfs && sudo reboot` to reclaim the rest.
 #
 # USAGE
-#   sudo ./pi_image_backup.sh [--dest user@host:/path] [--keep N]
+#   sudo ./pi_image_backup.sh [--s3 s3://bucket/prefix] [--class CLASS]
+#                             [--dest user@host:/path] [--keep N]
+#
+#   Default storage class is GLACIER_IR (Glacier Instant Retrieval): about
+#   $0.06/month for three ~5GB images, restorable immediately. DEEP_ARCHIVE is
+#   cheaper by pennies but takes 12-48h to retrieve, which is the wrong trade
+#   when the card has just failed. Note the 90-day minimum billing duration —
+#   monthly images suit it; weekly just pays the minimum repeatedly.
 
 set -euo pipefail
 
@@ -36,10 +43,14 @@ BOOT_MB=512
 SLACK_MB=1500                      # headroom so the restored fs isn't 100% full
 KEEP=3
 DEST=""
+S3_DEST=""
+S3_CLASS="${S3_CLASS:-GLACIER_IR}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --dest) DEST="$2"; shift 2 ;;
+        --s3) S3_DEST="${2%/}"; shift 2 ;;
+        --class) S3_CLASS="$2"; shift 2 ;;
         --keep) KEEP="$2"; shift 2 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -176,13 +187,22 @@ zstd -q -T0 -6 --rm "$IMG" -o "$IMG.zst"
 SIZE=$(du -h "$IMG.zst" | cut -f1)
 echo "   $IMG.zst ($SIZE)"
 
-if [ -n "$DEST" ]; then
+if [ -n "$S3_DEST" ]; then
+    echo "→ uploading to $S3_DEST ($S3_CLASS)"
+    # GLACIER_IR, not DEEP_ARCHIVE: the price gap at this size is pennies a
+    # month, while Deep Archive takes 12-48h to restore — in the one scenario
+    # this exists for, the card has just died and you want it back tonight.
+    aws s3 cp "$IMG.zst" "$S3_DEST/$(basename "$IMG.zst")" \
+        --storage-class "$S3_CLASS" --only-show-errors
+    echo "   uploaded; removing local copy"
+    rm -f "$IMG.zst"
+elif [ -n "$DEST" ]; then
     echo "→ shipping to $DEST"
     rsync -a --partial "$IMG.zst" "$DEST/" && rm -f "$IMG.zst"
     echo "   sent; local copy removed"
 else
-    echo "   NOTE: no --dest given, so this image is still on the SD card it"
-    echo "   is meant to protect. Pass --dest user@nas:/path to make it a backup."
+    echo "   NOTE: no destination given, so this image is still on the SD card"
+    echo "   it is meant to protect. Pass --s3 or --dest to make it a backup."
 fi
 
 # ── 6. retention ─────────────────────────────────────────────────────────────
