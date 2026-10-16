@@ -28,11 +28,14 @@
 #   sudo ./pi_image_backup.sh [--s3 s3://bucket/prefix] [--class CLASS]
 #                             [--dest user@host:/path] [--keep N]
 #
-#   Default storage class is GLACIER_IR (Glacier Instant Retrieval): about
-#   $0.06/month for three ~5GB images, restorable immediately. DEEP_ARCHIVE is
-#   cheaper by pennies but takes 12-48h to retrieve, which is the wrong trade
-#   when the card has just failed. Note the 90-day minimum billing duration —
-#   monthly images suit it; weekly just pays the minimum repeatedly.
+#   Default storage class is DEEP_ARCHIVE — roughly $0.02/month for six ~3GB
+#   images. Retrieval takes 12-48 hours, which is an accepted tradeoff here:
+#   the Pi is not load-bearing enough to need same-day recovery.
+#
+#   Deep Archive bills a 180-day MINIMUM per object, so --keep defaults to 6
+#   (six monthly images ~= 180 days). Keeping fewer does not save money; it
+#   just throws away images you have already paid to store. Run this monthly,
+#   not weekly — weekly pays the minimum over and over and wears the card.
 
 set -euo pipefail
 
@@ -41,10 +44,10 @@ SRC_BOOT="/boot/firmware"
 BUILD_DIR="${BUILD_DIR:-/var/backups/pi-image}"
 BOOT_MB=512
 SLACK_MB=1500                      # headroom so the restored fs isn't 100% full
-KEEP=3
+KEEP=6
 DEST=""
 S3_DEST=""
-S3_CLASS="${S3_CLASS:-GLACIER_IR}"
+S3_CLASS="${S3_CLASS:-DEEP_ARCHIVE}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -189,9 +192,8 @@ echo "   $IMG.zst ($SIZE)"
 
 if [ -n "$S3_DEST" ]; then
     echo "→ uploading to $S3_DEST ($S3_CLASS)"
-    # GLACIER_IR, not DEEP_ARCHIVE: the price gap at this size is pennies a
-    # month, while Deep Archive takes 12-48h to restore — in the one scenario
-    # this exists for, the card has just died and you want it back tonight.
+    # DEEP_ARCHIVE by deliberate choice: 12-48h to restore is fine for this
+    # box. Mind the 180-day minimum billing duration when changing --keep.
     aws s3 cp "$IMG.zst" "$S3_DEST/$(basename "$IMG.zst")" \
         --storage-class "$S3_CLASS" --only-show-errors
     echo "   uploaded; removing local copy"
