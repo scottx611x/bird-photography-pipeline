@@ -2376,6 +2376,75 @@ def syno_unskip():
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
 
+# ── birdqueue: the self-hosted replacement for Buffer ─────────────────────────
+#
+# The queue itself lives on birdpi so scheduled posts fire with nobody logged in.
+# This Mac reaches it through an SSH tunnel (com.scott.birdqueue-tunnel), because
+# birdqueue binds loopback-only there and this host runs Tailscale in userspace
+# mode and cannot route tailnet IPs.
+#
+# Everything here is additive. The Buffer path above is untouched, so both can
+# run side by side until the new one has earned the switch.
+
+BIRDQUEUE_URL = os.environ.get("BIRDQUEUE_URL", "http://127.0.0.1:8910")
+
+
+def _bq(method: str, path: str, **kw):
+    """Proxy one call to birdqueue, preserving its status code and JSON."""
+    try:
+        with httpx.Client(timeout=30) as c:
+            r = c.request(method, f"{BIRDQUEUE_URL}{path}", **kw)
+    except Exception as exc:
+        return jsonify({"error": f"birdqueue unreachable: {exc}",
+                        "hint": "is com.scott.birdqueue-tunnel loaded?"}), 503
+    try:
+        return jsonify(r.json()), r.status_code
+    except ValueError:
+        return Response(r.content, status=r.status_code,
+                        content_type=r.headers.get("content-type", "application/octet-stream"))
+
+
+@app.get("/queue")
+def queue_page():
+    return render_template("queue.html")
+
+
+@app.get("/api/bq/health")
+def bq_health():
+    return _bq("GET", "/api/health")
+
+
+@app.get("/api/bq/queue")
+def bq_queue():
+    return _bq("GET", "/api/queue")
+
+
+@app.patch("/api/bq/posts/<pid>")
+def bq_patch(pid):
+    return _bq("PATCH", f"/api/posts/{pid}", json=request.get_json(silent=True) or {})
+
+
+@app.post("/api/bq/queue/reorder")
+def bq_reorder():
+    return _bq("POST", "/api/queue/reorder", json=request.get_json(silent=True) or {})
+
+
+@app.delete("/api/bq/posts/<pid>")
+def bq_delete(pid):
+    return _bq("DELETE", f"/api/posts/{pid}")
+
+
+@app.post("/api/bq/posts/<pid>/publish-now")
+def bq_publish_now(pid):
+    return _bq("POST", f"/api/posts/{pid}/publish-now")
+
+
+@app.get("/api/bq/media/<pid>/<path:filename>")
+def bq_media(pid, filename):
+    """Thumbnails for the queue screen, proxied so the browser needs no tunnel."""
+    return _bq("GET", f"/media/{pid}/{filename}")
+
+
 if __name__ == "__main__":
     # Restore persisted Synology skip list + posted-album memory
     _saved = load_saved_statuses()

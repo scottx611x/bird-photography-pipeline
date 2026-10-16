@@ -1,0 +1,22 @@
+[Unit]
+Description=birdqueue - self-hosted Instagram post queue (replaces Buffer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scott
+Group=scott
+WorkingDirectory=/srv/birdqueue
+EnvironmentFile=-/srv/birdqueue/.env
+ExecStart=/srv/birdqueue/.venv/bin/python /srv/birdqueue/birdqueue.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/birdqueue
+
+[Install]
+WantedBy=multi-user.target

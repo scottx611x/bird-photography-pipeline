@@ -63,6 +63,61 @@ A single post (≤ 10 photos) keeps it simple — one carousel, with a manual sc
 
 ---
 
+## birdqueue: posting without Buffer
+
+Buffer was doing five jobs here — hosting images, holding a dated queue, telling us
+the next open day, remembering past captions for autocomplete, and giving a UI to
+reorder and reschedule. `birdqueue.py` does all five, on hardware we own, with no
+session cookies to go stale.
+
+**It runs on the Pi, not the Mac.** A post scheduled for Thursday has to fire with
+nobody logged in — this Mac sleeps aggressively and its launchd agents need a login
+session. The Pi is already always-on.
+
+```
+Mac (Lightroom work)                     birdpi (always on)
+  resize + caption          ──push──>    SQLite queue + images on disk
+  /queue page               <──API──>    publisher thread, ticks every 60s
+                                         due? → host images → publish → record
+```
+
+- **`/queue`** in the web UI: drag to reorder, edit the date inline, pause, delete,
+  post-now. Same one-post-per-day slotting as Buffer, so "next open day" means what
+  it always did.
+- **Images reach Meta via Tailscale Funnel.** Meta insists on fetching by URL, so
+  the Pi exposes each image publicly for the length of one publish and then stops.
+  `MEDIA_BACKEND=s3` is the alternative if you'd rather use a private bucket.
+- **Species autocomplete** now comes from `docs/species_history.json` (144 names,
+  extracted from the Buffer export) rather than mining Buffer's last 50 posts.
+- The Mac reaches the Pi through an SSH tunnel — `launchd/com.scott.birdqueue-tunnel.plist`
+  — because birdqueue binds loopback-only and this Mac runs Tailscale in userspace
+  mode and can't route tailnet IPs.
+
+### Gotchas that cost real time
+
+- **Funnel needs ~20–30s to start serving** after `tailscale funnel --bg`, and the
+  hostname resolves to several ingress addresses that propagate independently. One
+  successful probe proves nothing: Meta opens its own connection and can hit a node
+  that isn't ready. The readiness gate requires **5 consecutive 200s on fresh
+  connections** before handing URLs over.
+- **`sudo` can't work from the service** — it sets `NoNewPrivileges=true`, which
+  disables setuid. Use `tailscale set --operator=scott` instead and keep the
+  hardening.
+- **Config errors must not count as failed attempts**, or a few minutes of bad
+  config permanently exhausts every queued post's retry budget. Hence `ConfigError`.
+- **Publishing to your own account needs no Meta App Review** (verified Oct 2026).
+  A carousel counts as one post, ≤10 images. Quota is 50–100/24h — query
+  `content_publishing_limit` live rather than hardcoding — and there's a separate
+  **200 API calls/hour** ceiling, so a 10-image carousel (~22 calls) caps near 9/hour.
+
+### Migration state
+
+Buffer history is exported to `docs/buffer_history_export.json` (223 posts,
+2026-03 → 2026-10). **Don't cancel Buffer until birdqueue has posted successfully a
+few times** — both paths run side by side and the Buffer code here is untouched.
+
+---
+
 ## Quick start
 
 ### Requirements

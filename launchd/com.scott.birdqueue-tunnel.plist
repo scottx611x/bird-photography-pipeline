@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scott.birdqueue-tunnel</string>
+
+  <!-- birdqueue binds loopback-only on birdpi, and this Mac runs Tailscale in
+       userspace mode so it cannot route tailnet IPs. An SSH tunnel is the one
+       path that needs no new listening port on the Pi and no LAN exposure. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-N</string>
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <string>-o</string><string>ServerAliveInterval=30</string>
+    <string>-o</string><string>ServerAliveCountMax=3</string>
+    <string>-o</string><string>StrictHostKeyChecking=accept-new</string>
+    <string>-L</string><string>127.0.0.1:8910:127.0.0.1:8910</string>
+    <string>birdpi</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/birdqueue-tunnel.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/birdqueue-tunnel.err</string>
+</dict>
+</plist>
