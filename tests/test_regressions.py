@@ -154,14 +154,15 @@ def test_denoise_spread_verified():
     tail = tail[:tail.find("\ndef ", 1)]
     i_paste  = tail.find("Denoise applied to all photos")
     i_verify = tail.find("spread = _verify_spread(")
-    i_gate   = tail.find("_export_gate()")
+    i_gate   = tail.rfind("_export_gate()")   # the early one is the still-rendering bail-out
     check("server: verification sits between the denoise wait and export",
           0 < i_paste < i_verify < i_gate)
 
     den = (ROOT / "lr_denoise.py").read_text()
     check("lr_denoise: has a spread sampler", "def cmd_spread(" in den)
     check("lr_denoise: skips the check while a progress modal covers the panel",
-          '"progress" in lr_window_names().lower()' in den)
+          'in lr_window_names().lower()' in den or '"progress" in names' in den
+          or '("progress", "updating", "pasting")' in den)
     check("lr_denoise: an unreadable panel reports unknown, never a verdict",
           den.count("spread: unknown") >= 3)
     check("lr_denoise: re-finds the label on every frame",
@@ -380,10 +381,27 @@ def test_stalled_render_is_nudged():
     src = (ROOT / "server.py").read_text()
     check("server: a frozen progress count is detected",
           "stalled_for" in src and "STALL_AFTER" in src)
-    check("server: it only nudges when Lightroom is also idle",
-          "idle = float(call_host(\"lr-busy\"" in src)
+    # Denoise renders on the GPU, so Lightroom reads idle between photos while
+    # working fine. Gating on CPU restarted a healthy render again and again.
+    check("server: a nudge is not gated on CPU",
+          "idle = float(call_host(\"lr-busy\"" not in src)
+    m = re.search(r"^STALL_AFTER = (\d+)", src, re.M)
+    check("server: a stall is minutes, not one slow photo (~25s)",
+          bool(m) and int(m.group(1)) >= 300)
     check("server: nudging is bounded", "MAX_NUDGES" in src
           and "nudges < MAX_NUDGES" in src)
+    check("server: the nudge budget resets when the count moves",
+          "stalled_for, nudges = 0, 0" in src)
+    check("server: no fixed 60-minute cap on a big batch",
+          "while waited < 3600" not in src and "DENOISE_CAP" in src)
+    tail = src[src.find("def _denoise_and_export_tail("):src.find("def _run_batch(")]
+    check("server: never runs the spread check while Lightroom is rendering",
+          tail.find('lr_modal_progress().get("active")') < tail.find("_verify_spread()"))
+
+    den = (ROOT / "lr_denoise.py").read_text()
+    spread = den[den.find("def cmd_spread("):]
+    check("lr_denoise: spread check stands down for the render dialog too",
+          '"updating"' in spread and '"pasting"' in spread)
 
     auto = (ROOT / "lr_auto.py").read_text()
     check("lr_auto: ai-resume exists", "def cmd_ai_resume(" in auto)
@@ -393,12 +411,55 @@ def test_stalled_render_is_nudged():
           'lr_menu_click("Edit", "Select All")' in
           auto[auto.find("def cmd_ai_resume("):auto.find("def cmd_import(")])
     check("lr_host: allows ai-resume", '"ai-resume"' in (ROOT / "lr_host.py").read_text())
-    # The paste dialog's bottom-right button reads "Update AI Settings Later".
-    # Clicking it skips the render — the very thing ai-resume exists to ensure.
+    # A wedged paste is unstuck with "Update AI Settings Later" — safe only
+    # because ai-resume then reselects and asks for the render itself.
     body = auto[auto.find("def cmd_ai_resume("):auto.find("def cmd_import(")]
-    check("lr_auto: ai-resume refuses to click a paste dialog",
-          '"Pasting" in label' in body)
-
+    check("lr_auto: ai-resume unsticks a paste by its button name",
+          '"Pasting" in label' in body
+          and 'click button "Update AI Settings Later"' in body)
+    check("lr_auto: Stop is clicked by name, not a screen coordinate",
+          'click button "Stop" of w' in auto and "CLICLICK, f\"c:{x + w" not in body)
+    check("lr_auto: never starts a render beside a running one",
+          "if _render_dialog_count():" in auto[auto.find("def render_ai_settings("):])
+    check("lr_auto: ai-resume bails if a render dialog won't close",
+          "sys.exit(1)" in body[body.find("_stop_render_dialogs()"):])
+    rend = auto[auto.find("def render_ai_settings("):auto.find("CLICLICK = ")]
+    check("lr_auto: render refuses a selection that isn't the batch",
+          "got != expect" in rend)
+    check("lr_auto: ai-resume refuses to run without a batch size",
+          "if args.expect is None:" in body)
+    check("lr_host: passes the batch size through",
+          '"--expect"' in (ROOT / "lr_host.py").read_text())
+    check("server: every render request carries the batch size",
+          src.count('body={"expect": _batch_size()}') == 3)
+    each = auto[auto.find("def cmd_render_each("):auto.find("# ── Main")]
+    check("lr_auto: render-each exists and is allowed through the bridge",
+          bool(each) and '"render-each"' in (ROOT / "lr_host.py").read_text())
+    check("lr_auto: render-each checks view, selection and dialogs per photo",
+          '_selection_header()' in each and '== 1 else None' in each
+          and each.count("_render_dialog_count()") >= 4)
+    check("lr_auto: render-each skips a wedged photo instead of stalling",
+          "bad.append(i)" in each and "RENDER_EACH_LIMIT" in each)
+    check("server: falls back to render-each once nudges stop helping",
+          'call_host("render-each"' in src and "went_each = True" in src)
+    exp = auto[auto.find("def cmd_export("):auto.find("def cmd_status(")]
+    check("lr_auto: export refuses when Lightroom would write elsewhere",
+          "_lr_export_folder()" in exp and "!= BIRDS_DIR" in exp)
+    check("lr_auto: export Select All is checked against the batch size",
+          "got != args.expect" in exp)
+    check("server: Post can send to birdqueue instead of Buffer",
+          'data.get("backend") == "birdqueue"' in src and "def _queue_to_birdqueue(" in src)
+    check("server: birdqueue posts skip Buffer's calendar",
+          "if use_bq:\n            slots = []" in src)
+    check("server: both backends record a chunk the same way",
+          src.count("_mark_chunk_posted(chunk_files)") == 2)
+    check("compose: container reaches the birdqueue tunnel on the host",
+          "BIRDQUEUE_URL=http://host.docker.internal:8910" in (ROOT / "docker-compose.yml").read_text())
+    ui = (ROOT / "templates/index.html").read_text()
+    check("ui: both Post buttons say where to send",
+          ui.count("backend: postBackend()") == 2 and 'id="pf-bq"' in ui)
+    check("lr_auto: ...and still renders afterwards",
+          body.rfind("render_ai_settings()") > body.find("Update AI Settings Later\""))
 
 def test_dust_section_not_ambiguous():
     """Distraction Removal grew two more collapsible sub-sections above Dust

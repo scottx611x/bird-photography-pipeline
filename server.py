@@ -278,8 +278,24 @@ def lr_modal_progress() -> dict:
         return {"active": False}
 
 
-STALL_AFTER = 120      # seconds of a frozen progress count before nudging
-MAX_NUDGES = 6         # bounded: never sit in a nudge loop forever
+# A wedge is judged on the count alone. CPU is no signal: Denoise renders on
+# the GPU/Neural Engine, so Lightroom reads ~2% CPU between photos while working
+# fine, and nudging on "frozen + idle" killed a healthy render over and over.
+# Photos take ~25s each, so five minutes without one finishing is a real wedge.
+def _batch_size():
+    """RAWs in the active batch — what a Select All in its album must show.
+    Lets lr_auto refuse to render when Lightroom is on some other view."""
+    try:
+        a = state["active"]
+        d = DOWNLOADS / (a["folder"] if isinstance(a, dict) else a)
+        return sum(1 for f in d.iterdir() if f.suffix.lower() in RAW_SUFFIXES) or None
+    except Exception:
+        return None
+
+
+STALL_AFTER = 300      # seconds without the count moving before nudging
+MAX_NUDGES = 3         # in a row without progress; resets when the count moves
+DENOISE_CAP = 6 * 3600 # a 228-photo batch takes ~95 min; this is only a backstop
 NEON_LIMIT = 0.005          # fraction of impossible pixels that means damage
 
 
@@ -442,7 +458,7 @@ def _denoise_and_export_tail():
     the step is restored from disk) can be resumed from the UI."""
     set_step("copy_pasting")
     log("Spreading Denoise settings to all photos…")
-    result = call_host("copy-and-paste")
+    result = call_host("copy-and-paste", body={"expect": _batch_size()})
     for line in result.get("output", "").splitlines():
         log(f"  {line}")
     log("Denoise applied to all photos." if result.get("ok") else "Paste may have failed — check Lightroom.")
@@ -453,11 +469,12 @@ def _denoise_and_export_tail():
     # enhancing; treat sustained-quiet as done. Skippable via Continue.
     set_step("denoising")
     log("Lightroom is denoising every photo — you'll choose when to export once it finishes.")
-    # stall detection: the render wedges every couple of dozen photos — the
-    # dialog freezes on one count while Lightroom goes idle behind it.
+    # stall detection: the render (and the paste before it) can wedge — the
+    # dialog freezes on one count and never moves again.
     quiet, waited, last_note = 0, 0, ""
     last_done, stalled_for, nudges = None, 0, 0
-    while waited < 3600:
+    went_each = False
+    while waited < DENOISE_CAP:
         time.sleep(10); waited += 10
         with lock:
             step_changed = state["proc_step"] != "denoising"
@@ -481,23 +498,37 @@ def _denoise_and_export_tail():
                 log(f"  {note}")
                 last_note = note
 
-            # A frozen count with Lightroom idle is the wedge, not slow work.
+            # Only a count frozen for STALL_AFTER is a wedge — see STALL_AFTER.
             done = prog.get("done")
-            stalled_for = stalled_for + 10 if done == last_done else 0
+            if done == last_done:
+                stalled_for += 10
+            else:
+                stalled_for, nudges = 0, 0
             last_done = done
-            if stalled_for >= STALL_AFTER and nudges < MAX_NUDGES:
-                try:
-                    idle = float(call_host("lr-busy", timeout=15).get("output") or 0) < 15
-                except (TypeError, ValueError):
-                    idle = False
-                if idle:
+            if stalled_for >= STALL_AFTER:
+                if nudges < MAX_NUDGES:
                     nudges += 1
-                    log(f"  ⚠ Stuck on {done} for {stalled_for}s with Lightroom "
-                        f"idle — nudging it (attempt {nudges}/{MAX_NUDGES}).")
-                    out = call_host("ai-resume", timeout=120).get("output", "")
+                    log(f"  ⚠ No photo finished in {stalled_for // 60} min (stuck on "
+                        f"{done}) — nudging it (attempt {nudges}/{MAX_NUDGES}).")
+                    out = call_host("ai-resume", body={"expect": _batch_size()},
+                                    timeout=120).get("output", "")
                     for line in out.splitlines():
                         log(f"    {line}")
                     stalled_for, last_note = 0, ""
+                elif not went_each:
+                    # Restarts aren't helping: the batch render wedges on the
+                    # same spot each time, yet the photos render fine alone.
+                    went_each = True
+                    log(f"  ⚠ Still stuck on {done} after {MAX_NUDGES} nudges — "
+                        "rendering the rest one photo at a time instead.")
+                    out = call_host("render-each", body={"expect": _batch_size()},
+                                    timeout=6 * 3600).get("output", "")
+                    for line in out.splitlines():
+                        log(f"    {line}")
+                    stalled_for, last_note = 0, ""
+                elif stalled_for % 600 == 0:
+                    log(f"  ⚠ Still stuck on {done} after one-by-one too — "
+                        "needs a hand in Lightroom. Waiting, not exporting.")
             continue
 
         try:
@@ -509,8 +540,15 @@ def _denoise_and_export_tail():
             log("Lightroom is idle and no update is running — denoise finished.")
             break
     else:
-        log("Denoise wait hit the 60-minute cap.")
+        log(f"Denoise wait hit the {DENOISE_CAP // 3600}-hour cap.")
     if state.get("stop_requested"): return
+
+    # Never drive Lightroom while it is still rendering: the spread check below
+    # arrow-keys through photos, and doing that mid-render wedged it at 107.
+    if lr_modal_progress().get("active"):
+        log("⚠ Lightroom is still rendering Denoise — skipping the check.")
+        log("  Don't export until its progress dialog is gone.")
+        return _export_gate()
 
     # The paste reports success from the menu click alone, and has spread edits
     # carrying no Denoise at all — every photo kept its unticked box while the
@@ -618,7 +656,7 @@ def _pick_export_post(trigger: bool = True):
     else:
         export_start = time.time() - 2  # small slack for filesystem/clock skew
         log("Exporting all photos…")
-        result = call_host("export", body={"all": True})
+        result = call_host("export", body={"all": True, "expect": _batch_size()})
     for line in result.get("output", "").splitlines():
         log(f"  {line}")
 
@@ -1363,6 +1401,50 @@ def _free_local_raws(folder: str):
         log(f"  (couldn't free local RAWs for {folder}: {e})")
 
 
+def _mark_chunk_posted(chunk_files: list):
+    """Record a queued chunk at once — if a later chunk fails, its photos must
+    not linger as "staged" (re-posting them from the UI would queue them
+    twice)."""
+    with lock:
+        folder = state["active"]
+        if folder and folder in state["batches"]:
+            b = state["batches"][folder]
+            cur = b.get("birds", [])
+            b["birds"] = cur + [f for f in chunk_files if f not in cur]   # accumulate posted
+            state["new_birds"] = [f for f in state["new_birds"] if f not in chunk_files]
+    save_state()
+
+
+def _queue_to_birdqueue(chunk_files: list, caption_text: str):
+    """Resize one post's photos for Instagram and hand them to birdqueue on the
+    Pi, which picks the next open day itself. Returns (ok, due_at)."""
+    import tempfile
+    from bird_post import resize_for_instagram
+    with tempfile.TemporaryDirectory() as tmp:
+        parts = []
+        for f in chunk_files:
+            dst = Path(tmp) / f
+            resize_for_instagram(BIRDS_DIR / f, dst)
+            parts.append(dst)
+        handles = [p.open("rb") for p in parts]
+        try:
+            with httpx.Client(timeout=120) as c:
+                r = c.post(f"{BIRDQUEUE_URL}/api/posts",
+                           data={"caption": caption_text},
+                           files=[("images", (p.name, h, "image/jpeg"))
+                                  for p, h in zip(parts, handles)])
+        except httpx.HTTPError as exc:
+            log(f"  birdqueue unreachable: {exc} — is com.scott.birdqueue-tunnel loaded?")
+            return False, ""
+        finally:
+            for h in handles:
+                h.close()
+    if r.status_code != 201:
+        log(f"  birdqueue refused the post: HTTP {r.status_code} {r.text[:200]}")
+        return False, ""
+    return True, r.json().get("due_at", "")
+
+
 @app.post("/api/post")
 def post_to_buffer():
     """Post selected photo to Buffer."""
@@ -1419,6 +1501,9 @@ def post_to_buffer():
                             "error": "A post is already running — wait for it to finish."}), 409
         state["posting"] = True
 
+    use_bq = data.get("backend") == "birdqueue"
+    dest_name = "birdqueue" if use_bq else "Buffer"
+
     def _post():
         import subprocess
         with lock:
@@ -1439,9 +1524,13 @@ def post_to_buffer():
         chunks = capped or chunks
         n = len(chunks)
         # One open day per split post; a single post keeps the old behaviour
-        # (honour a manual slot, else next open slot).
-        slots = (get_next_open_scheduled_ats(n) if n > 1
-                 else [scheduled_at or get_next_open_scheduled_at()])
+        # (honour a manual slot, else next open slot). birdqueue slots each
+        # post itself, one per open day, so it skips Buffer's calendar.
+        if use_bq:
+            slots = []
+        else:
+            slots = (get_next_open_scheduled_ats(n) if n > 1
+                     else [scheduled_at or get_next_open_scheduled_at()])
 
         with lock:
             photo_dates = dict(state.get("photo_dates", {}))
@@ -1454,6 +1543,20 @@ def post_to_buffer():
             exif_dates = list(dict.fromkeys(d for d in (photo_dates.get(f) for f in chunk_files) if d))
             chunk_cap = cap_date or " & ".join(exif_dates) or batch_cap
             caption_text = _caption_for(chunk, chunk_cap)
+            if use_bq:
+                if n > 1:
+                    log(f"── Post {i+1}/{n} · {len(chunk_files)} photo(s) ──")
+                ok, due = _queue_to_birdqueue(chunk_files, caption_text)
+                if not ok:
+                    all_ok = False
+                    log(f"Post {i+1}/{n} failed — check log.")
+                    break
+                log(f"🐦 Queued to birdqueue for {due}" if n == 1
+                    else f"🐦 Post {i+1}/{n} queued to birdqueue for {due}")
+                record_post(chunk, caption_text, due)
+                last_due = due or last_due
+                _mark_chunk_posted(chunk_files)
+                continue
             cmd = ["/usr/local/bin/python", "/app/bird_post.py",
                    "--file"] + chunk_files + ["--text", caption_text]
             slot = slots[i] if i < len(slots) else ""
@@ -1487,17 +1590,7 @@ def post_to_buffer():
                             for l in (r.stdout + r.stderr).splitlines()
                             if "Scheduled for:" in l), "")
                 last_due = due or last_due
-                # Record this chunk immediately — if a later chunk fails, its
-                # photos must not linger as "staged" (re-posting them from the
-                # UI would queue duplicates in Buffer).
-                with lock:
-                    folder = state["active"]
-                    if folder and folder in state["batches"]:
-                        b = state["batches"][folder]
-                        cur = b.get("birds", [])
-                        b["birds"] = cur + [f for f in chunk_files if f not in cur]   # accumulate posted
-                        state["new_birds"] = [f for f in state["new_birds"] if f not in chunk_files]
-                save_state()
+                _mark_chunk_posted(chunk_files)
             else:
                 all_ok = False
                 log(f"Post {i+1}/{n} failed — check log.")
@@ -1518,8 +1611,10 @@ def post_to_buffer():
                         state["arrangement"] = None
                         finalized_folder = folder
                 state["last_post"] = {"due": last_due, "url": "https://publish.buffer.com"}
+                if use_bq:
+                    state["last_post"] = {"due": last_due, "url": "/queue"}
             if finalized_folder:
-                log("✓ All posts queued to Buffer." if finalize else "✓ Final post queued — batch complete.")
+                log(f"✓ All posts queued to {dest_name}." if finalize else "✓ Final post queued — batch complete.")
             else:
                 log(f"✓ Post queued — {remaining_n} photo(s) still staged.")
             save_state()

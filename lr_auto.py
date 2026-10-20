@@ -21,6 +21,7 @@ Typical workflow (driven by the web UI at localhost:8765):
 """
 
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -88,7 +89,27 @@ end tell
     return name
 
 
-def render_ai_settings():
+def _menu_item_count(menu_name: str, prefix: str):
+    """The number in a menu item like "Update AI Settings in 5,762 Items",
+    read without clicking. None when the item is absent or carries no count."""
+    name = run_applescript(f'''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    repeat with mi in menu items of menu 1 of menu bar item "{menu_name}" of menu bar 1
+      set n to name of mi
+      if n is not missing value then
+        if n starts with "{prefix}" then return n
+      end if
+    end repeat
+    return ""
+  end tell
+end tell
+''').strip()
+    m = re.search(r"in ([\d,]+)", name)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def render_ai_settings(expect: int = None):
     """Actually render the pasted Denoise.
 
     Pasting only ticks the checkbox. Lightroom holds the AI edit as *pending*
@@ -97,7 +118,21 @@ def render_ai_settings():
     un-denoised JPEG. Lightroom sometimes kicks the render off by itself after
     a paste, but when the paste dialog wedges it never does, so ask explicitly.
     Harmless when nothing is pending: the menu item is disabled and we skip.
+    Never starts a second render beside a running one — two at once fight and
+    look exactly like a wedge.
     """
+    if _render_dialog_count():
+        print("  A render is already running — not starting another.")
+        return None
+    # Select All selects whatever view Lightroom is on. After a relaunch that
+    # was All Photos, and a render began on 5,762 library photos (2026-10-18).
+    # When the batch size is known, render only if the selection matches it.
+    if expect is not None:
+        got = _menu_item_count("Photo", "Update AI Settings")
+        if got != expect:
+            print(f"  Refusing to render: selection is {got} photos, the batch "
+                  f"is {expect}. Is Lightroom showing the batch's album?")
+            return None
     name = _click_menu_item_by_prefix("Photo", "Update AI Settings")
     if name:
         print(f"  Rendering denoise: {name}")
@@ -134,6 +169,40 @@ end tell
     return tuple(int(v) for v in parts) if len(parts) == 4 else None
 
 
+def _render_dialog_count() -> int:
+    """How many dialogs are rendering, or about to: "Updating AI Settings",
+    plus the paste dialog, whose own text promises "AI Settings will be
+    updated next" — asking for a render during a paste stacks a second one on
+    the render Lightroom starts itself. Should be 0 or 1."""
+    out = run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    return count of (every window whose name is "Updating AI Settings" or name is "batch_progress_dialog")
+  end tell
+end tell
+''').strip()
+    return int(out) if out.isdigit() else 0
+
+
+def _stop_render_dialogs() -> int:
+    """Click Stop on every render dialog; returns how many it clicked."""
+    out = run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    set n to 0
+    repeat with w in (every window whose name is "Updating AI Settings")
+      try
+        click button "Stop" of w
+        set n to n + 1
+      end try
+    end repeat
+    return n
+  end tell
+end tell
+''').strip()
+    return int(out) if out.isdigit() else 0
+
+
 def cmd_ai_resume(args):
     """Unstick a stalled "Updating AI Settings" pass and restart it.
 
@@ -151,11 +220,17 @@ def cmd_ai_resume(args):
     if not lr_is_running():
         print("Lightroom is not running.")
         sys.exit(1)
+    if args.expect is None:
+        print("ai-resume needs --expect <batch size>: it selects all in "
+              "whatever view is open, so it must know what it should see.")
+        sys.exit(1)
 
-    # NEVER touch a "Pasting Settings" dialog. Its bottom-right button reads
-    # "Update AI Settings Later" — clicking it tells Lightroom to skip the
-    # denoise render entirely, which is the exact failure this whole command
-    # exists to prevent. Only the "Updating AI Settings" dialog has a Stop.
+    # The paste wedges too ("Pasting 70 of 228", Lightroom idle, forever), and
+    # its only button is "Update AI Settings Later". That is safe to click
+    # *here*: it lets the paste finish on every photo and defers only the
+    # render, which the Select All + render_ai_settings() below asks for right
+    # away (seen 2026-10-18: Later, then "Update AI Settings in 228 Photos").
+    # Click it by name — it is not a Stop, so the coordinate click is wrong.
     label = run_applescript('''
 tell application "System Events"
   tell process "Adobe Lightroom"
@@ -174,21 +249,36 @@ tell application "System Events"
   end tell
 end tell
 ''').strip()
+    box = None
     if "Pasting" in label:
-        print("  A paste is still running — leaving it alone "
-              "(its button means 'skip the render', not 'stop').")
-        return
-
-    box = _progress_window()
-    if box:
-        x, y, w, h = box
-        run_applescript('tell application "Adobe Lightroom" to activate')
-        time.sleep(1.0)
-        subprocess.run([CLICLICK, f"c:{x + w - 60},{y + h - 40}"],
-                       capture_output=True, timeout=20)
-        print(f"  Dismissed the stalled dialog at {x},{y}")
+        run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    click button "Update AI Settings Later" of window "batch_progress_dialog"
+  end tell
+end tell
+''')
+        print("  Paste was stuck — let it finish with the render deferred.")
         time.sleep(3)
     else:
+        box = _progress_window()
+    if box:
+        # Stop EVERY render dialog by its button name, then make sure they are
+        # gone. The old coordinate click could miss, and the render requested
+        # below then ran alongside the wedged one: on 2026-10-18 two renders
+        # (31 and 51 of 228) fought each other all evening, which looked like
+        # stalls and counts running backwards.
+        for _ in range(3):
+            n = _stop_render_dialogs()
+            if n == 0:
+                break
+            print(f"  Stopped {n} render dialog(s).")
+            time.sleep(3)
+        if _render_dialog_count():
+            print("  A render dialog would not close — not starting another "
+                  "on top of it. Needs a hand in Lightroom.")
+            sys.exit(1)
+    elif "Pasting" not in label:
         print("  No progress dialog up — nothing to dismiss.")
 
     run_applescript('tell application "Adobe Lightroom" to activate')
@@ -203,7 +293,7 @@ end tell
 ''')
     lr_menu_click("Edit", "Select All")
     time.sleep(1.0)
-    render_ai_settings()
+    render_ai_settings(expect=args.expect)
 
 
 def cmd_import(args):
@@ -504,17 +594,42 @@ end tell
 
     # The paste only sets the checkbox; this makes Lightroom actually
     # render it, which is the difference between a denoised export and
-    # a noisy one that claimed to be denoised.
-    time.sleep(1.5)
-    render_ai_settings()
+    # a noisy one that claimed to be denoised. On a big batch Lightroom shows
+    # its paste dialog and renders by itself, and render_ai_settings() stands
+    # down rather than stack a second render — so give the dialog time to show.
+    time.sleep(4)
+    render_ai_settings(expect=args.expect)
 
     print("Done — denoise + CA settings applied to all. Now pick your best shot.")
+
+
+LR_PREFS = (Path.home() / "Library/Containers/com.adobe.mas.lightroomCC/Data"
+            "/Library/Preferences/com.adobe.mas.lightroomCC")
+
+
+def _lr_export_folder():
+    """Where Lightroom's Export with Previous will write, or None if unknown."""
+    r = subprocess.run(["defaults", "read", str(LR_PREFS),
+                        "AgExport_File_destinationFolder"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() or None
 
 
 def cmd_export(args):
     """Trigger Export with Previous settings in Lightroom."""
     if not lr_is_running():
         print("Lightroom is not running.")
+        sys.exit(1)
+
+    # "Export with Previous" goes wherever the last manual export went. On
+    # 2026-10-19 that had become ~/Documents/birbs: the sandboxed (App Store)
+    # Lightroom holds no folder grant there, so all 228 failed with "The file
+    # could not be created" — and the pipeline watches ~/Desktop/birbs anyway.
+    dest = _lr_export_folder()
+    if dest and Path(dest) != BIRDS_DIR:
+        print(f"Refusing to export: Lightroom's Export with Previous goes to "
+              f"{dest}, not {BIRDS_DIR}. Export once by hand to {BIRDS_DIR} "
+              f"to reset it.")
         sys.exit(1)
 
     run_applescript('tell application "Adobe Lightroom" to activate')
@@ -534,6 +649,13 @@ end tell
 ''')
         lr_menu_click("Edit", "Select All")
         time.sleep(0.5)
+        # Same trap as the render: Select All grabs whatever view is open.
+        if args.expect is not None:
+            got = _menu_item_count("Photo", "Update AI Settings")
+            if got != args.expect:
+                print(f"Refusing to export: selection is {got} photos, the "
+                      f"batch is {args.expect}. Is Lightroom showing the batch?")
+                sys.exit(1)
 
     print("Triggering Export with Previous…")
     lr_menu_click("File", "Export with Previous...")
@@ -601,6 +723,101 @@ def _latest_batch() -> Path | None:
     return folders[0] if folders else None
 
 
+RENDER_EACH_LIMIT = 240   # one photo renders in ~30s; 100s+ happens; 4 min is a wedge
+
+
+def _selection_header() -> str:
+    """The grid header's "1 of 228 photos" — proof of view and selection."""
+    return run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    repeat with b in (every button of group 2 of window "Adobe Lightroom")
+      try
+        set n to name of b
+        if n contains " photos" then return n
+      end try
+    end repeat
+    return ""
+  end tell
+end tell''').strip()
+
+
+def _arrow(code: int, pause: float = 0.9):
+    run_applescript('tell application "Adobe Lightroom" to activate')
+    time.sleep(0.3)
+    run_applescript(f'tell application "System Events" to key code {code}')
+    time.sleep(pause)
+
+
+def cmd_render_each(args):
+    """Render pending AI settings one photo at a time — the fallback when the
+    batch render keeps wedging.
+
+    On 2026-10-18 a 228-photo batch render froze at ~29 on every restart, while
+    the same photos rendered fine one by one (the slow one took 103s alone).
+    Guards before each photo — any failing stops the run, never guesses:
+    the header reads "1 of N photos", the menu reads "in 1 Photo", and no
+    render dialog is up. A photo still rendering after RENDER_EACH_LIMIT is
+    stopped, reported, and skipped, so one bad photo can't hold up the rest.
+    """
+    n = args.expect
+    if not n:
+        print("render-each needs --expect <batch size>.")
+        sys.exit(1)
+    for _ in range(3):                  # the wedged batch render, if any
+        if not _render_dialog_count():
+            break
+        _stop_render_dialogs()
+        time.sleep(3)
+    if _render_dialog_count():
+        print("A render dialog won't close — not rendering on top of it.")
+        sys.exit(1)
+    run_applescript('tell application "Adobe Lightroom" to activate')
+    run_applescript('tell application "System Events" to tell process "Adobe Lightroom" to keystroke "g"')
+    time.sleep(1.5)
+    _arrow(124); _arrow(123)            # collapse any multi-selection to one
+    for _ in range(n + 2):              # left arrow clamps at the first photo
+        run_applescript('tell application "System Events" to key code 123')
+        time.sleep(0.12)
+    time.sleep(1)
+
+    bad, rendered = [], 0
+    for i in range(1, n + 1):
+        h = _selection_header()
+        if h != f"1 of {n} photos":
+            print(f"Stopped at photo {i}: header reads {h!r}, not '1 of {n} photos'.")
+            sys.exit(1)
+        if _render_dialog_count():
+            print(f"Stopped at photo {i}: a render dialog is already up.")
+            sys.exit(1)
+        name = _click_menu_item_by_prefix("Photo", "Update AI Settings") \
+            if _menu_item_count("Photo", "Update AI Settings") == 1 else None
+        if name:
+            t0 = time.time()
+            while time.time() - t0 < 10 and not _render_dialog_count():
+                time.sleep(1)
+            while _render_dialog_count() and time.time() - t0 < RENDER_EACH_LIMIT:
+                time.sleep(3)
+            if _render_dialog_count():
+                print(f"  photo {i}: still rendering after {RENDER_EACH_LIMIT}s — skipped")
+                for _ in range(3):
+                    _stop_render_dialogs()
+                    time.sleep(3)
+                    if not _render_dialog_count():
+                        break
+                if _render_dialog_count():
+                    print(f"Stopped at photo {i}: its render dialog won't close.")
+                    sys.exit(1)
+                bad.append(i)
+            elif time.time() - t0 > 10:
+                rendered += 1
+        if i < n:
+            _arrow(124)
+    print(f"Rendered {rendered} photo(s) one by one.")
+    if bad:
+        print(f"Could not render photo(s) {bad} (grid order) — check them by eye.")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -608,6 +825,8 @@ def main():
     p.add_argument("--folder", help="Path to batch folder (for import command)")
     p.add_argument("--all", action="store_true",
                    help="export: Select All before Export with Previous")
+    p.add_argument("--expect", type=int,
+                   help="batch size: only render AI settings on a selection of exactly this many")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("import",         help="Open a batch folder in Lightroom's Add Photos dialog")
@@ -617,6 +836,7 @@ def main():
     sub.add_parser("export",         help="Export with Previous settings in Lightroom")
     sub.add_parser("status",         help="Dump Lightroom windows/dialogs via accessibility")
     sub.add_parser("ai-resume",      help="Unstick and restart a stalled AI-settings render")
+    sub.add_parser("render-each",    help="Render pending AI settings one photo at a time")
 
     args = p.parse_args()
     {
@@ -627,6 +847,7 @@ def main():
         "export":         cmd_export,
         "status":         cmd_status,
         "ai-resume":      cmd_ai_resume,
+        "render-each":    cmd_render_each,
     }[args.cmd](args)
 
 

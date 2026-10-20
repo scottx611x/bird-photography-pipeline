@@ -1036,6 +1036,10 @@ function renderPostForm(batch, data) {
       <button class="btn btn-success" id="post-btn" onclick="doPost()" style="flex:1" ${overfull ? 'disabled' : ''}>${postLabel}</button>
       <button class="btn btn-neutral" id="resize-btn" onclick="doResizeOnly()" title="Resize images into .ready without posting">⤵ Resize only</button>
     </div>
+    <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-top:6px">
+      <input type="checkbox" id="pf-bq" ${postBackend() === 'birdqueue' ? 'checked' : ''} onchange="setPostBackend(this.checked)" />
+      Send to birdqueue (the Pi) instead of Buffer — <a href="/queue" target="_blank">open queue</a>
+    </label>
   </div>`;
 }
 
@@ -1856,6 +1860,14 @@ async function doResizeOnly() {
   setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = '⤵ Resize only'; } }, 4000);
 }
 
+// Where Post sends things: "buffer" (default) or "birdqueue". Per-browser.
+function postBackend() {
+  try { return localStorage.getItem('postBackend') || 'buffer'; } catch (e) { return 'buffer'; }
+}
+function setPostBackend(on) {
+  try { localStorage.setItem('postBackend', on ? 'birdqueue' : 'buffer'); } catch (e) {}
+}
+
 async function doPost() {
   capturePhotoInputs();
   const date = document.getElementById("pf-date")?.value.trim() || "";
@@ -1888,7 +1900,7 @@ async function doPost() {
   postingInFlight = true;
   await fetch("/api/post", {
     method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, finalize: true }),
+    body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, finalize: true, backend: postBackend() }),
   });
 }
 
@@ -1920,7 +1932,7 @@ async function postLane(i) {
       method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ groups: [g], date,
         schedule_date: document.getElementById('pf-schedule')?.value || '',
-        scheduled_at: _scheduledAt || '', finalize: false }),
+        scheduled_at: _scheduledAt || '', finalize: false, backend: postBackend() }),
     });
     const d = await r.json().catch(() => ({}));
     accepted = r.ok && d.ok !== false;

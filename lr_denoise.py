@@ -471,7 +471,11 @@ def cmd_spread(count: int):
     # takes to render the pasted Denoise — a dozen minutes on a big batch. The
     # checkbox is genuinely not on screen then, so say so rather than reading
     # the covered panel and calling a good batch broken.
-    if "progress" in lr_window_names().lower():   # e.g. batch_progress_dialog
+    # The render dialog is titled "Updating AI Settings", not "...progress...":
+    # matching only "progress" let this arrow-key through photos mid-render on
+    # 2026-10-18 and wedged it at 107 of 228. Any of these means hands off.
+    names = lr_window_names().lower()
+    if any(w in names for w in ("progress", "updating", "pasting")):
         print("spread: unknown (Lightroom is still updating AI settings)")
         return
 
