@@ -301,6 +301,7 @@ def _batch_size():
 
 AUTO_DENOISE = os.environ.get("AUTO_DENOISE", "1") != "0"
 AUTO_EXPORT  = os.environ.get("AUTO_EXPORT", "1") != "0"
+AUTO_DENOISE_TRIES = 2
 EXPORT_NOTHING_AFTER = 15 * 60   # an export that lands nothing in birbs for this long went elsewhere
 AUTO_DENOISE_LOG = DOWNLOADS / ".auto_denoise.jsonl"
 
@@ -666,9 +667,26 @@ def _run_batch(folder_name: str, start_step: str = "import"):
         set_step("denoise")
         if AUTO_DENOISE:
             log("⚡ Ticking Denoise in Lightroom automatically…")
-            r = call_host("denoise-check", timeout=180)
-            for line in (r.get("output", "") or "").splitlines():
-                log(f"  {line}")
+            with lock:
+                state["auto_denoising"] = True
+            try:
+                for attempt in range(AUTO_DENOISE_TRIES):
+                    if attempt:
+                        # Lightroom greys Denoise out while it is still pulling
+                        # in a fresh import's originals. Give it a minute. A
+                        # box that did get ticked is left alone on the retry.
+                        log("  Trying Denoise again in a minute — Lightroom may still be loading the import.")
+                        time.sleep(60)
+                        if state.get("stop_requested"):
+                            return
+                    r = call_host("denoise-check", timeout=240)
+                    for line in (r.get("output", "") or "").splitlines():
+                        log(f"  {line}")
+                    if r.get("ok"):
+                        break
+            finally:
+                with lock:
+                    state["auto_denoising"] = False
             _record_auto_denoise(folder_name, bool(r.get("ok")))
             if r.get("ok"):
                 with lock:
@@ -3009,7 +3027,9 @@ def _crank_tick() -> float:
             save_state()
             return 5
         if alive:
-            gate = CRANK_GATES.get(step)
+            with lock:
+                trying = state.get("auto_denoising")
+            gate = None if trying else CRANK_GATES.get(step)
             _crank_status(f"needs you — {active}: {gate}" if gate else f"{active}: {step}")
             return 30
         _crank_status(f"needs you — {active} stopped at '{step}'"

@@ -930,7 +930,17 @@ def test_denoise_survives_a_slow_first_photo():
           "place_window()" in act and 'set position of window' in act)
     und = den[den.find("tick and show a progress window"):den.find("sys.exit(4)", den.find("tick and show a progress window"))]
     check("denoise: a late progress window stops the undo click",
-          und.find('wait_window("denoise"') < und.find("click(box)"))
+          und.find('wait_window("applying denoise"') < und.find("click(box)"))
+    check("denoise: finds the progress dialog by its text, not only its window name",
+          "def lr_dialog_text" in den and "every static text of w" in den
+          and 'wait_window("denoise"' not in den)
+    srv = (ROOT / "server.py").read_text()
+    step = srv[srv.find("if AUTO_DENOISE:"):srv.find("_record_auto_denoise(folder_name")]
+    check("denoise: auto-Denoise retries once Lightroom has loaded the import",
+          "for attempt in range(AUTO_DENOISE_TRIES)" in step and "time.sleep(60)" in step)
+    tick = srv[srv.find("def _crank_tick"):srv.find("def _crank_process")]
+    check("crank: no 'needs you' while auto-Denoise is still trying",
+          'trying = state.get("auto_denoising")' in tick)
 
 
 def test_export_runs_unattended():

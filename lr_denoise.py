@@ -313,17 +313,49 @@ def lr_window_names() -> str:
                 'end tell' % APP) or ""
 
 
+def lr_dialog_text() -> str:
+    """Names and visible text of every Lightroom window but the main one.
+    Its progress dialogs can be unnamed: on 2026-11-22 "Applying Denoise" sat
+    on screen in an untitled window, a name-only check never saw it, and a
+    Denoise click that had worked was reported as failed."""
+    return _osa('tell application "System Events" to tell process "%s"\n'
+                'set acc to ""\n'
+                'repeat with w in every window\n'
+                'try\n'
+                'set nm to name of w\n'
+                'if nm is missing value then set nm to ""\n'
+                'if nm is not "%s" then\n'
+                'set acc to acc & nm & "|"\n'
+                'repeat with t in every static text of w\n'
+                'try\n'
+                'set acc to acc & (value of t) & "|"\n'
+                'end try\n'
+                'end repeat\n'
+                'end if\n'
+                'end try\n'
+                'end repeat\n'
+                'return acc\n'
+                'end tell' % (APP, APP), timeout=15) or ""
+
+
+def _showing(word: str) -> bool:
+    word = word.lower()
+    return word in lr_window_names().lower() or word in lr_dialog_text().lower()
+
+
 def wait_window(word: str, seconds: int) -> bool:
-    for _ in range(seconds):
-        if word.lower() in lr_window_names().lower():
+    end = time.time() + seconds
+    while time.time() < end:
+        if _showing(word):
             return True
         time.sleep(1)
-    return False
+    return _showing(word)
 
 
 def wait_window_gone(word: str, seconds: int):
-    for _ in range(seconds // 2):
-        if word.lower() not in lr_window_names().lower():
+    end = time.time() + seconds
+    while time.time() < end:
+        if not _showing(word):
             return
         time.sleep(2)
 
@@ -438,9 +470,9 @@ def run(kind: str, enable: bool):
     # pulling in the original, and on 2026-11-22 its "Applying Denoise" window
     # came up only after a 12s wait had given up — so a click that worked was
     # "undone" with a second click that landed mid-render.
-    if kind == "denoise" and wait_window("denoise", DENOISE_WINDOW_WAIT):
+    if kind == "denoise" and wait_window("applying denoise", DENOISE_WINDOW_WAIT):
         print("Lightroom is applying Denoise…")
-        wait_window_gone("denoise", 300)
+        wait_window_gone("applying denoise", 300)
         print("Denoise is now ON (confirmed by Lightroom's progress window).")
         return
 
@@ -457,9 +489,9 @@ def run(kind: str, enable: bool):
         # the right one. Only the "Applying Denoise" window is. Undo otherwise
         # — unless it turns up late after all, when a second click would
         # land mid-render and untick the box it was rendering.
-        if wait_window("denoise", 5):
+        if wait_window("applying denoise", 5):
             print("Lightroom is applying Denoise (late start)…")
-            wait_window_gone("denoise", 300)
+            wait_window_gone("applying denoise", 300)
             print("Denoise is now ON (confirmed by Lightroom's progress window).")
             return
         click(box)
