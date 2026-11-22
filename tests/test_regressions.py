@@ -629,6 +629,28 @@ def test_sort_batch():
     check("lr_denoise: switches to Detail view before hunting the checkbox",
           "show_detail_view()" in body
           and body.find("show_detail_view()") < body.find("find_label("))
+    import time as _t
+    now = _t.mktime((2026, 11, 22, 10, 0, 0, 0, 0, -1))
+    ok = bs.classify_run('{"type":"result","is_error":false,"result":"Sorted. Warning: '
+                         'this sign-in ends between 2026-11-27 and 2026-11-30. Run claude '
+                         'auth login before then"}', 0, now)
+    check("sort: a good run is ok even with the sign-in expiry warning", ok[0] == "ok", str(ok))
+    lim = bs.classify_run('{"is_error":true,"result":"You\'ve hit your limit · resets 3pm"}', 1, now)
+    check("sort: a usage limit waits until it resets (3pm -> just after 3pm)",
+          lim[0] == "wait" and 15 * 3600 <= (lim[1] - now + 10 * 3600) <= 15 * 3600 + 600, str(lim))
+    vague = bs.classify_run("Claude usage limit reached", 1, now)
+    check("sort: a limit with no reset time retries in ~half an hour",
+          vague[0] == "wait" and 1500 <= vague[1] - now <= 2400, str(vague))
+    auth = bs.classify_run('{"is_error":true,"result":"Invalid API key · Please run /login"}', 1, now)
+    check("sort: a lapsed sign-in waits and retries instead of failing",
+          auth[0] == "wait" and "auth login" in auth[2], str(auth))
+    bad = bs.classify_run('{"is_error":true,"result":"Plan rejected: post 1 is empty"}', 1, now)
+    check("sort: a real failure isn't retried forever", bad[0] == "fail", str(bad))
+    check("sort_batch.sh: asks pending before every attempt and waits on wait",
+          'bird_sort.py pending' in sh and 'sleep_until "$wake"' in sh
+          and "GIVE_UP_AFTER" in sh and "--output-format json" in sh)
+    check("sort_batch.sh: needs no long-lived token", "oauth_token" not in sh
+          and "CLAUDE_CODE_OAUTH_TOKEN" not in sh)
     skill = (ROOT / ".claude/skills/sort-batch/SKILL.md").read_text()
     check("skill: never posts and never asks",
           "never post" in skill and "Never stop to ask" in skill)

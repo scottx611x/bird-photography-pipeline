@@ -512,6 +512,106 @@ def cmd_grid(args):
         print(out)
 
 
+def _sort_status(st, folder):
+    """(touched, ours) for the batch's current arrangement. The app seeds an
+    untouched batch with filename-order lanes and blank species; anything
+    beyond that — a species typed, a photo excluded — is Scott's, unless it is
+    exactly what this tool last saved."""
+    cur = st.get("arrangement") or {}
+    touched = bool(cur.get("excluded")) or any(
+        (m or {}).get("species") for m in (cur.get("meta") or {}).values())
+    last = WORK_ROOT / folder / "applied.json"
+    ours = touched and last.exists() and json.loads(last.read_text()).get("arrangement") == {
+        k: cur.get(k) for k in ("lanes", "excluded", "meta")}
+    return touched, ours
+
+
+def cmd_pending(args):
+    """Exit 0 when a batch on the posting step still wants sorting, else 1.
+    sort_batch.sh asks before every attempt, so a run that waited out a usage
+    limit doesn't re-sort something already sorted (by us or by Scott)."""
+    st, folder = (batch_state()[:2] if os.environ.get("BIRD_SORT_TEST")
+                  else (api("/api/state"), None))
+    folder = folder or (st.get("active") or {}).get("folder")
+    if st.get("proc_step") != "posting" or not folder or not st.get("new_birds"):
+        print("Nothing to sort: no batch with exports on the posting step.")
+        sys.exit(1)
+    touched, ours = _sort_status(st, folder)
+    if ours:
+        print(f"{folder} is already sorted.")
+        sys.exit(1)
+    if touched:
+        print(f"Scott has started sorting {folder} himself — leaving it.")
+        sys.exit(1)
+    print(f"{folder} needs sorting.")
+
+
+# What a failed headless run means. Usage limits and a lapsed sign-in both
+# clear up on their own schedule — the limit resets, Scott logs in again — so
+# the run waits and retries rather than giving up; anything else is a real
+# failure and is reported once.
+LIMIT_RE = (r"(usage|rate|session|weekly|5-hour) limit|limit (reached|exceeded|hit)"
+            r"|hit your (usage )?limit|out of (extra )?usage|too many requests"
+            r"|\b429\b|overloaded|\b529\b")
+AUTH_RE = (r"not logged in|please (run )?(/login|claude (auth )?login)|log ?in again"
+           r"|authenticat|unauthori[sz]ed|\b401\b|token (has )?expired|expired token"
+           r"|invalid (api key|token|credentials)|sign-in (has )?(ended|expired)")
+LIMIT_WAIT, AUTH_WAIT, BUFFER = 30 * 60, 2 * 3600, 120
+
+
+def reset_time(text, now):
+    """When a limit message says the limit resets, as epoch seconds, or None.
+    Understands "|1732300000", "resets 3pm", "resets at 3:30 PM", "in 2 hours"."""
+    import re
+    m = re.search(r"\|(\d{10})\b", text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"in (\d+)\s*(minute|min|hour|hr)s?\b", text, re.I)
+    if m:
+        n = int(m.group(1))
+        return now + n * (3600 if m.group(2).lower().startswith("h") else 60)
+    m = re.search(r"reset\w*\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)", text, re.I)
+    if m:
+        h = int(m.group(1)) % 12 + (12 if m.group(3).lower().startswith("p") else 0)
+        t = datetime.fromtimestamp(now).replace(hour=h, minute=int(m.group(2) or 0),
+                                                second=0, microsecond=0).timestamp()
+        return int(t if t > now else t + 86400)
+    return None
+
+
+def classify_run(output, code, now):
+    """('ok'|'wait'|'fail', wake epoch or 0, reason) for one `claude -p` run."""
+    import re
+    result, is_error = output, code != 0
+    try:                                   # --output-format json
+        j = json.loads(output[output.index("{"):])
+        result = str(j.get("result") or "")
+        is_error = is_error or bool(j.get("is_error"))
+    except (ValueError, AttributeError):
+        pass
+    if not is_error:
+        return "ok", 0, "sorted"
+    if re.search(LIMIT_RE, output, re.I):
+        wake = reset_time(output, now) or now + LIMIT_WAIT
+        return "wait", int(max(wake, now + 60) + BUFFER), "usage limit"
+    if re.search(AUTH_RE, output, re.I):
+        return "wait", int(now + AUTH_WAIT), "Claude sign-in lapsed — run `claude auth login`"
+    return "fail", 0, (result or output).strip().splitlines()[-1][:200] if (result or output).strip() else f"exit {code}"
+
+
+def cmd_classify(args):
+    """stdin = a run's output; argv = its exit code. Prints the run's own
+    summary, then a last line: `ok 0 …`, `wait <epoch> <reason>`, `fail 0 <reason>`."""
+    out = sys.stdin.read()
+    code = int(args[0]) if args else 0
+    try:
+        print(str(json.loads(out[out.index("{"):]).get("result") or "").strip())
+    except (ValueError, AttributeError):
+        print(out.strip()[-4000:])
+    verdict, wake, reason = classify_run(out, code, time.time())
+    print(f"{verdict} {wake} {reason}")
+
+
 def _load_plan(path, an, files):
     plan = json.loads(Path(path).read_text())
     posts = plan.get("posts") or []
@@ -608,15 +708,8 @@ def cmd_apply(args):
     wd, an = _analysis()
     plan = _load_plan(args[0], an, files)
 
-    # Never overwrite Scott's own sorting. The app seeds an untouched batch
-    # with filename-order lanes and blank species; anything beyond that —
-    # a species typed, a photo excluded — is his, unless we wrote it.
-    cur = st.get("arrangement") or {}
-    touched = bool(cur.get("excluded")) or any(
-        (m or {}).get("species") for m in (cur.get("meta") or {}).values())
+    touched, ours = _sort_status(st, folder)
     last = wd / "applied.json"
-    ours = last.exists() and json.loads(last.read_text()).get("arrangement") == {
-        k: cur.get(k) for k in ("lanes", "excluded", "meta")}
     if touched and not ours and not force:
         sys.exit("The batch already has a sorting that this tool didn't write "
                  "(species or exclusions set). Not overwriting it — rerun with "
@@ -676,6 +769,7 @@ def cmd_apply(args):
 
 
 COMMANDS = {"prepare": cmd_prepare, "zoom": cmd_zoom, "grid": cmd_grid,
+            "pending": cmd_pending, "classify": cmd_classify,
             "preview": cmd_preview, "apply": cmd_apply}
 
 
