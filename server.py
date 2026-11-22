@@ -2919,23 +2919,40 @@ CRANK_GATES = {               # steps where a live run is waiting on a person
 SORT_RUN_CAP      = 2 * 3600   # nor is one still "sorting" after this
 
 
-def _crank_groups(albums, taken, today=None) -> list:
+def _best_album_day(name: str):
+    """The day of a -best album (e.g. 2026-09-27-best), or None for anything else."""
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})-(.+)$", name or "")
+    if not m:
+        return None
+    kind = m.group(4).lower()
+    if not kind.startswith("best") or "vid" in kind:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _crank_groups(albums, taken, today=None, left_out=None) -> list:
     """The Synology albums still to run, oldest first, grouped into batches.
     Only -best albums: -wildlife and -sadie take the website's manual path and
     -family stays on the NAS (Scott, 2026-11-22). Small days combine until a
-    batch holds about CRANK_TARGET photos."""
+    batch holds about CRANK_TARGET photos.
+
+    Never reaches back behind what has already run: an unrun album older than
+    the newest -best album already handled was passed over for a reason, and
+    the crank once padded 9/27 with a lone 7/9 photo that way (2026-11-22).
+    Those go in `left_out` so the crank can say so."""
+    frontier = max(filter(None, map(_best_album_day, taken)), default=None)
     cands = []
     for a in albums or []:
         name = a.get("name") or ""
-        m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})-(.+)$", name)
-        if not m or name in taken or not a.get("item_count"):
+        day = _best_album_day(name)
+        if day is None or name in taken or not a.get("item_count"):
             continue
-        kind = m.group(4).lower()
-        if not kind.startswith("best") or "vid" in kind:
-            continue
-        try:
-            day = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        except ValueError:
+        if frontier and day < frontier:
+            if left_out is not None:
+                left_out.append(name)
             continue
         cands.append((day, name, a))
     cands.sort(key=lambda t: (t[0], t[1]))
@@ -2956,6 +2973,9 @@ def _crank_groups(albums, taken, today=None) -> list:
         if n >= CRANK_TARGET or (today - newest).days >= CRANK_HOLD_DAYS:
             groups.append(cur)
     return [[a for _, a in g] for g in groups]
+
+
+_crank_left_out = set()   # stragglers already mentioned in the log
 
 
 def _crank_status(text: str):
@@ -3068,7 +3088,13 @@ def _crank_tick() -> float:
     if albums is None:
         _crank_status("waiting — can't reach Synology")
         return 300
-    groups = _crank_groups(albums, _crank_taken())
+    left_out = []
+    groups = _crank_groups(albums, _crank_taken(), left_out=left_out)
+    for name in left_out:
+        if name not in _crank_left_out:
+            _crank_left_out.add(name)
+            log(f"⚙ Crank: leaving {name} alone — it's older than albums already run. "
+                "Fetch it by hand if you want it.")
     if not groups:
         _crank_status("all caught up — checking for new albums every 30 min")
         return 1800

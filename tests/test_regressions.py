@@ -714,20 +714,25 @@ def test_crank_and_review():
     src = srv.read_text()
 
     # ── which albums run next, and how they combine ──
-    ns = _load_funcs(srv, {"_crank_groups", "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP",
-                           "CRANK_HOLD_DAYS"}, {"re": re, "datetime": datetime})
+    ns = _load_funcs(srv, {"_crank_groups", "_best_album_day", "CRANK_TARGET", "CRANK_SMALL",
+                           "CRANK_CAP", "CRANK_HOLD_DAYS"}, {"re": re, "datetime": datetime})
     alb = lambda n, c: {"name": n, "item_count": c}
     albums = [alb("2026-09-26-best", 85), alb("2026-09-27-best", 24), alb("2026-09-27-wildlife", 9),
               alb("2026-09-28-best", 31), alb("2026-09-25-family", 33), alb("2026-09-29-best", 17),
               alb("2026-09-30-best", 16), alb("2026-10-03-best", 13), alb("2026-10-05-best", 7),
               alb("2026-10-06-best", 11), alb("2026-10-07-best", 29), alb("2026-10-12-best", 1),
               alb("2026-10-13-best", 14), alb("2026-10-14-best", 53), alb("2026-01-24-25-best-vids", 9),
-              alb("2026-10-14-sadie", 5), alb("2026-mems-day-birds", 122), alb("2026-10-20-best", 0)]
-    groups = ns["_crank_groups"](albums, {"2026-09-26-best"}, today=datetime(2026, 11, 22))
+              alb("2026-10-14-sadie", 5), alb("2026-mems-day-birds", 122), alb("2026-10-20-best", 0),
+              alb("2026-07-09-best", 1)]
+    left_out = []
+    groups = ns["_crank_groups"](albums, {"2026-09-26-best", "2026-10-24-multi-9-19_thru_10-24"},
+                                 today=datetime(2026, 11, 22), left_out=left_out)
     names = [[a["name"][5:10] for a in g] for g in groups]
     check("crank: -best only, oldest first, small days combined to ~25",
           names == [["09-27"], ["09-28"], ["09-29", "09-30"], ["10-03", "10-05", "10-06"],
                     ["10-07"], ["10-12", "10-13"], ["10-14"]], str(names))
+    check("crank: never reaches back behind what already ran (a lone 7/9 padded 9/27)",
+          left_out == ["2026-07-09-best"], str(left_out))
     recent = ns["_crank_groups"]([alb("2026-11-20-best", 6)], set(), today=datetime(2026, 11, 22))
     check("crank: a short newest batch waits a week for more albums", recent == [])
     old = ns["_crank_groups"]([alb("2026-11-01-best", 6)], set(), today=datetime(2026, 11, 22))
@@ -826,7 +831,8 @@ def test_crank_and_review():
            "_multi_name": lambda n: "multi",
            "threading": type("Th", (), {"Lock": threading.Lock, "Thread": _SyncThread})}
     ns = _load_funcs(srv, {"_crank_tick", "_crank_process", "_crank_status", "_crank_taken",
-                           "_crank_groups", "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP",
+                           "_crank_groups", "_best_album_day", "_crank_left_out",
+                           "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP",
                            "CRANK_HOLD_DAYS", "CRANK_MIN_FREE_GB", "SORT_START_GRACE",
                            "SORT_RUN_CAP", "CRANK_GATES"}, env)
     tick = ns["_crank_tick"]
