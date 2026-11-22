@@ -917,6 +917,22 @@ def test_import_needs_no_keystrokes():
           "never showed" in imp and "sys.exit(1)" in imp)
 
 
+def test_denoise_survives_a_slow_first_photo():
+    """2026-11-22: the window had drifted half off screen, so the Denoise box
+    was never found; then the first photo after an import took over 12s to
+    show "Applying Denoise", and the click that worked was undone."""
+    den = (ROOT / "lr_denoise.py").read_text()
+    m = re.search(r"DENOISE_WINDOW_WAIT = (\d+)", den)
+    check("denoise: waits long enough for a fresh import's first render",
+          bool(m) and int(m.group(1)) >= 30)
+    act = den[den.find("def activate():"):den.find("def grab(")]
+    check("denoise: puts Lightroom's window back to full screen before reading it",
+          "place_window()" in act and 'set position of window' in act)
+    und = den[den.find("tick and show a progress window"):den.find("sys.exit(4)", den.find("tick and show a progress window"))]
+    check("denoise: a late progress window stops the undo click",
+          und.find('wait_window("denoise"') < und.find("click(box)"))
+
+
 def test_keys_only_reach_lightroom():
     """2026-11-22: Lightroom's activate timed out and a filename meant for its
     search box was typed into Scott's terminal. Keystrokes go to whatever app
@@ -1131,6 +1147,7 @@ def main():
     test_crank_and_review()
     test_keys_only_reach_lightroom()
     test_import_needs_no_keystrokes()
+    test_denoise_survives_a_slow_first_photo()
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_container_has_server_imports()

@@ -163,6 +163,18 @@ def single_panel_mode_on() -> str:
 def activate():
     _osa(f'tell application "{APP}" to activate', timeout=15)
     time.sleep(1.2)
+    place_window()
+
+
+def place_window():
+    """Everything here reads and clicks by screen position, which assumes
+    Lightroom fills the screen. On 2026-11-22 its window had drifted to
+    (-286, 217), half off the edge, and the Denoise box was never found.
+    macOS keeps a window below the menu bar, so (0, 0) lands at the top."""
+    _osa(f'tell application "System Events" to tell process "{APP}"\n'
+         f'set position of window "{APP}" to {{0, 0}}\n'
+         f'set size of window "{APP}" to {{{LOG_W}, {LOG_H}}}\n'
+         f'end tell')
 
 
 def grab() -> Image.Image:
@@ -176,6 +188,7 @@ def grab() -> Image.Image:
 
 
 TEMPLATES = Path(__file__).parent / "lr_templates"
+DENOISE_WINDOW_WAIT = 45           # seconds for "Applying Denoise" to appear
 LABEL_X0, LABEL_X1 = 1238, 1302   # where a control's label text begins
 
 
@@ -421,7 +434,11 @@ def run(kind: str, enable: bool):
     activate()
     click(box)
 
-    if kind == "denoise" and wait_window("denoise", 12):
+    # 45s, not 12: on the first photo after an import Lightroom is still
+    # pulling in the original, and on 2026-11-22 its "Applying Denoise" window
+    # came up only after a 12s wait had given up — so a click that worked was
+    # "undone" with a second click that landed mid-render.
+    if kind == "denoise" and wait_window("denoise", DENOISE_WINDOW_WAIT):
         print("Lightroom is applying Denoise…")
         wait_window_gone("denoise", 300)
         print("Denoise is now ON (confirmed by Lightroom's progress window).")
@@ -437,7 +454,14 @@ def run(kind: str, enable: bool):
     if kind == "denoise":
         # Raw Details and Super Resolution sit right below Denoise and also
         # tick and show a progress window, so a ticked box is NOT proof we got
-        # the right one. Only the "Applying Denoise" window is. Undo otherwise.
+        # the right one. Only the "Applying Denoise" window is. Undo otherwise
+        # — unless it turns up late after all, when a second click would
+        # land mid-render and untick the box it was rendering.
+        if wait_window("denoise", 5):
+            print("Lightroom is applying Denoise (late start)…")
+            wait_window_gone("denoise", 300)
+            print("Denoise is now ON (confirmed by Lightroom's progress window).")
+            return
         click(box)
         print("Ticked a checkbox but Lightroom never showed the Denoise "
               "progress window, so the change was undone. Usually this means "

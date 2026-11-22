@@ -107,6 +107,9 @@ def main():
     # Escape and the coordinate clicks below land on whatever app is in
     # front. Never send them anywhere but Lightroom.
     osa(f'tell application "{APP}" to activate', timeout=15)
+    # The click targets below are screen positions for a full-screen window.
+    osa(f'tell application "System Events" to tell process "{APP}"\n'
+        f'set position of window "{APP}" to {{0, 0}}\nend tell')
     time.sleep(1.0)
     front = osa('tell application "System Events" to return name of '
                 '(first process whose frontmost is true)')
