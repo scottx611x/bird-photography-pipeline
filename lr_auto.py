@@ -695,7 +695,38 @@ end tell
 
     print("Triggering Export with Previous…")
     lr_menu_click("File", "Export with Previous...")
+    # Photos whose AI settings (Denoise) never finished rendering make
+    # Lightroom ask "AI Update Required" first. Its Export button sends them
+    # out un-denoised (the Nov 10 owls scored 5-10 on noise vs ~2), so never
+    # take it: cancel, and let the caller render them one by one and retry.
+    if _cancel_ai_update_dialog():
+        print(f"{AI_UPDATE_MARKER}: some photos' Denoise hadn't rendered. "
+              "Cancelled the export rather than send them out noisy.")
+        sys.exit(3)
     print(f"Export started → check {BIRDS_DIR}")
+
+
+AI_UPDATE_MARKER = "AI UPDATE REQUIRED"
+
+
+def _cancel_ai_update_dialog(wait: float = 8.0) -> bool:
+    """Click Cancel — by name, never the default Export — on Lightroom's
+    "AI Update Required" dialog if it shows up within `wait` seconds."""
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        try:
+            names = run_applescript('tell application "System Events" to tell '
+                                    'process "Adobe Lightroom" to get name of every window')
+        except RuntimeError:
+            names = ""
+        if "AI Update Required" in names:
+            run_applescript('tell application "System Events" to tell process '
+                            '"Adobe Lightroom" to click button "Cancel" of window '
+                            '"AI Update Required"')
+            time.sleep(1.5)
+            return True
+        time.sleep(1)
+    return False
 
 
 def cmd_status(args):

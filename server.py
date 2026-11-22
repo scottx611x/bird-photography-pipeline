@@ -686,7 +686,21 @@ def _pick_export_post(trigger: bool = True):
     else:
         export_start = time.time() - 2  # small slack for filesystem/clock skew
         log("Exporting all photos…")
-        result = call_host("export", body={"all": True, "expect": _batch_size()})
+        result = call_host("export", body={"all": True, "expect": _batch_size()},
+                           timeout=180)
+        if not result.get("ok") and "AI UPDATE REQUIRED" in result.get("output", ""):
+            # Some photos' Denoise never rendered; lr_auto cancelled the
+            # export instead of letting them go out noisy. Render them one by
+            # one (the fix that worked on Nov 10) and try once more.
+            for line in result.get("output", "").splitlines():
+                log(f"  {line}")
+            log("Rendering the unfinished Denoise one photo at a time, then exporting again…")
+            r = call_host("render-each", body={"expect": _batch_size()}, timeout=6 * 3600)
+            for line in (r.get("output", "") or "").splitlines():
+                log(f"    {line}")
+            log("Exporting all photos (second try)…")
+            result = call_host("export", body={"all": True, "expect": _batch_size()},
+                               timeout=180)
     for line in result.get("output", "").splitlines():
         log(f"  {line}")
     if not result.get("ok"):

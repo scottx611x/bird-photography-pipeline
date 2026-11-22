@@ -431,7 +431,7 @@ def test_stalled_render_is_nudged():
     check("lr_host: passes the batch size through",
           '"--expect"' in (ROOT / "lr_host.py").read_text())
     check("server: every render request carries the batch size",
-          src.count('body={"expect": _batch_size()}') == 3)
+          src.count('body={"expect": _batch_size()}') == 4)   # + export's AI-update retry
     each = auto[auto.find("def cmd_render_each("):auto.find("# ── Main")]
     check("lr_auto: render-each exists and is allowed through the bridge",
           bool(each) and '"render-each"' in (ROOT / "lr_host.py").read_text())
@@ -655,6 +655,15 @@ def test_sort_batch():
     ef = la[la.find("def _lr_export_folder("):la.find("def cmd_export(")]
     check("lr_auto: the export-folder check can't block on a macOS privacy prompt",
           "timeout=5" in ef and "TimeoutExpired" in ef)
+    exp2 = la[la.find("def cmd_export("):la.find("def cmd_status(")]
+    check("lr_auto: export cancels 'AI Update Required' by name, never Export",
+          "_cancel_ai_update_dialog()" in exp2 and "AI_UPDATE_MARKER" in exp2
+          and 'click button "Cancel" of window' in la
+          and 'click button "Export" of window "AI Update' not in la)
+    pe = srv[srv.find("def _pick_export_post("):srv.find('set_step("export_wait")')]
+    check("server: an AI-update cancel renders one by one, then retries once",
+          '"AI UPDATE REQUIRED" in result.get("output", "")' in pe
+          and 'call_host("render-each"' in pe and pe.count('call_host("export"') == 2)
     skill = (ROOT / ".claude/skills/sort-batch/SKILL.md").read_text()
     check("skill: never posts and never asks",
           "never post" in skill and "Never stop to ask" in skill)
