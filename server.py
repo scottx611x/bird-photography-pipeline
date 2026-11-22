@@ -797,6 +797,10 @@ def _pick_export_post(trigger: bool = True):
     if state.get("stop_requested"): return
 
     new = _exported()
+    retired = _retire_stale_backups(new)
+    if retired:
+        log(f"  (set aside {len(retired)} crop backup(s) left by older photos with the same "
+            f"name: {', '.join(retired[:8])}{'…' if len(retired) > 8 else ''})")
     _flag_corrupt_exports(new)
     _record_photo_dates(new)
     with lock:
@@ -1099,6 +1103,37 @@ def _claimed_elsewhere(owner, folder, mtime: float, export_start: float) -> bool
     return mtime < export_start
 
 
+def _has_capture_date(path) -> bool:
+    """A fresh Lightroom export carries EXIF DateTimeOriginal; a file written
+    by /api/crop never does (it saves pixels only). So a file with a capture
+    date has not been cropped by us — whatever .originals holds under its name
+    belongs to an older photo."""
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(path) as img:
+            return bool(img.getexif().get_ifd(0x8769).get(36867))
+    except Exception:
+        return False
+
+
+def _retire_stale_backups(files) -> list:
+    """Move crop backups that belong to an older photo of the same name out of
+    the way. The camera counter wraps, so a June DSC_0947 and a September
+    DSC_0947 share a name: on 2026-11-22 the June backup was still in
+    .originals, a crop reset restored it over the new export, and a starling
+    already posted in June went into a September post. Nothing is deleted."""
+    orig_dir = BIRDS_DIR / ".originals"
+    stale_dir = orig_dir / ".stale"
+    moved = []
+    for f in files:
+        b = orig_dir / f
+        if b.exists():
+            stale_dir.mkdir(parents=True, exist_ok=True)
+            b.replace(stale_dir / f"{Path(f).stem}.{int(time.time())}{Path(f).suffix}")
+            moved.append(f)
+    return moved
+
+
 def _export_stem(name: str) -> str:
     """DSC_9156-2.jpg -> dsc_9156; Lightroom suffixes repeat exports with -N."""
     return re.sub(r"-\d+$", "", Path(name).stem.lower())
@@ -1227,7 +1262,10 @@ def crop_status():
     name = (request.args.get("file") or "").strip()
     if not name or "/" in name:
         return jsonify({"error": "unknown file"}), 404
-    return jsonify({"hasOriginal": (BIRDS_DIR / ".originals" / name).is_file()})
+    backup = BIRDS_DIR / ".originals" / name
+    if backup.is_file() and _has_capture_date(bird_file(name)):
+        _retire_stale_backups([name])      # an older photo's backup, not this one's
+    return jsonify({"hasOriginal": backup.is_file()})
 
 
 @app.post("/api/crop")
@@ -1244,6 +1282,12 @@ def crop_image():
     if not name or "/" in name or not src.is_file():
         return jsonify({"error": "unknown file"}), 404
     orig_dir = BIRDS_DIR / ".originals"
+
+    # A backup only belongs to this file if this file is our crop of it. A
+    # file still carrying a capture date is a fresh export, so any backup
+    # under its name is an older photo's: never restore that over it.
+    if (orig_dir / name).exists() and _has_capture_date(src):
+        _retire_stale_backups([name])
 
     if data.get("reset"):
         backup = orig_dir / name
@@ -2103,6 +2147,7 @@ def refresh_birds():
             pass
     fresh.sort()
     if fresh:
+        _retire_stale_backups(fresh)
         _record_photo_dates(fresh)
         with lock:
             state["new_birds"].extend(fresh)

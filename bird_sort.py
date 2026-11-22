@@ -119,10 +119,26 @@ def work_dir(folder):
     return d
 
 
+def _has_capture_date(path):
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            return bool(im.getexif().get_ifd(0x8769).get(36867))
+    except Exception:
+        return False
+
+
 def source(name):
-    """The uncropped file: crop boxes are always relative to the original."""
-    o = ORIG_DIR / name
-    return o if o.exists() else BIRDS_DIR / name
+    """The uncropped file: crop boxes are always relative to the original.
+
+    Only trust .originals when the file in birbs is our crop (crops carry no
+    capture date). A file with a capture date is a fresh export, and a backup
+    under its name belongs to an older photo — the camera counter wraps. On
+    2026-11-22 that put a June starling, already posted, into a 9/26 post."""
+    o, b = ORIG_DIR / name, BIRDS_DIR / name
+    if o.exists() and not (b.exists() and _has_capture_date(b)):
+        return o
+    return b
 
 
 def norm(name):

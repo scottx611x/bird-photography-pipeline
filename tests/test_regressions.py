@@ -664,6 +664,39 @@ def test_sort_batch():
     check("server: an AI-update cancel renders one by one, then retries once",
           '"AI UPDATE REQUIRED" in result.get("output", "")' in pe
           and 'call_host("render-each"' in pe and pe.count('call_host("export"') == 2)
+    # Wrapped filenames: a stale crop backup from an older photo of the same
+    # name must never be restored over, or analysed in place of, a new export.
+    import tempfile
+    from PIL import Image as _Im
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        fresh = td / "fresh.jpg"
+        ex = _Im.Exif(); ex[0x8769] = {36867: "2026:09:26 13:08:44"}
+        _Im.new("RGB", (8, 8)).save(fresh, exif=ex)
+        cropped = td / "cropped.jpg"
+        _Im.new("RGB", (8, 8)).save(cropped)
+        check("sort: a fresh export reads as uncropped (has a capture date)",
+              bs._has_capture_date(fresh) and not bs._has_capture_date(cropped))
+        old_b, old_o = bs.BIRDS_DIR, bs.ORIG_DIR
+        try:
+            bs.BIRDS_DIR, bs.ORIG_DIR = td, td / ".originals"
+            bs.ORIG_DIR.mkdir()
+            _Im.new("RGB", (8, 8)).save(bs.ORIG_DIR / "fresh.jpg")
+            _Im.new("RGB", (8, 8)).save(bs.ORIG_DIR / "cropped.jpg")
+            check("sort: a stale backup is ignored for a fresh export",
+                  bs.source("fresh.jpg") == td / "fresh.jpg")
+            check("sort: a real backup is used for a cropped file",
+                  bs.source("cropped.jpg") == td / ".originals" / "cropped.jpg")
+        finally:
+            bs.BIRDS_DIR, bs.ORIG_DIR = old_b, old_o
+    pe2 = srv[srv.find("new = _exported()"):srv.find("def get_next_open_scheduled_at(")]
+    check("server: collecting an export sets aside same-name crop backups",
+          "_retire_stale_backups(new)" in pe2)
+    crop = srv[srv.find("def crop_image("):srv.find("@app.get(\"/api/log-stream\")")]
+    check("server: /api/crop never restores an older photo's backup over a fresh export",
+          "_has_capture_date(src)" in crop and crop.find("_has_capture_date(src)") < crop.find('if data.get("reset"):'))
+    check("server: crop-status doesn't report an older photo's backup",
+          "_has_capture_date(bird_file(name))" in srv)
     skill = (ROOT / ".claude/skills/sort-batch/SKILL.md").read_text()
     check("skill: never posts and never asks",
           "never post" in skill and "Never stop to ask" in skill)
