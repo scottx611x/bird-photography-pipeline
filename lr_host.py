@@ -25,7 +25,7 @@ ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
            "denoise-check", "denoise-probe", "denoise-spread",
            "dust-check", "dust-probe",
-           "lr-dismiss", "buffer-refresh"}
+           "lr-dismiss", "buffer-refresh", "sort-batch"}
 
 # One automation command at a time — concurrent Lightroom AppleScript runs (or
 # two fetches of the same album) would collide. Health checks skip the lock,
@@ -217,6 +217,12 @@ class Handler(BaseHTTPRequestHandler):
                     "open -g -a 'Google Chrome' 'https://publish.buffer.com/all-channels' >/dev/null 2>&1; "
                     "sleep 10; "
                     f"'{PYTHON}' '{TOOLS}/extract_buffer_cookies.py'"]
+        # Claude Code sorts the new export into posts (species, frames, crops).
+        # The script backgrounds itself and returns at once, so this never
+        # holds the Lightroom lock for the length of a sort.
+        elif cmd == "sort-batch":
+            print("→ sort_batch.sh")
+            args = [str(TOOLS / "sort_batch.sh")]
         elif cmd == "lr-dismiss":
             print("→ dismissing Lightroom dialog")
             args = [PYTHON, str(TOOLS / "lr_dismiss.py")]

@@ -293,6 +293,20 @@ def _batch_size():
         return None
 
 
+AUTO_DENOISE = os.environ.get("AUTO_DENOISE", "1") != "0"
+AUTO_DENOISE_LOG = DOWNLOADS / ".auto_denoise.jsonl"
+
+
+def _record_auto_denoise(folder: str, ok: bool):
+    """One line per attempt, so the click's real success rate is known."""
+    try:
+        with open(AUTO_DENOISE_LOG, "a") as f:
+            f.write(json.dumps({"at": datetime.now().isoformat(timespec="seconds"),
+                                "batch": folder, "ok": ok}) + "\n")
+    except OSError:
+        pass
+
+
 STALL_AFTER = 300      # seconds without the count moving before nudging
 MAX_NUDGES = 3         # in a row without progress; resets when the count moves
 DENOISE_CAP = 6 * 3600 # a 228-photo batch takes ~95 min; this is only a backstop
@@ -624,10 +638,24 @@ def _run_batch(folder_name: str, start_step: str = "import"):
         log("Auto-tone done." if result.get("ok") else "Auto-tone may have failed — check Lightroom.")
 
     if start_step in ("import", "tone", "denoise"):
-        # ── Step 3: Denoise (manual — auto-clicking LR's checkbox proved too
-        # flaky; the checkbox often isn't in the accessibility tree) ──────────
+        # ── Step 3: Denoise. Tick it by sight (lr_denoise.py), which proves
+        # the click or exits non-zero; only then fall back to the manual gate.
+        # Scott opted in 2026-11-22. Outcomes are logged so the hit rate shows.
         set_step("denoise")
-        log("Check Denoise on one photo in Lightroom, then click Continue.")
+        if AUTO_DENOISE:
+            log("⚡ Ticking Denoise in Lightroom automatically…")
+            r = call_host("denoise-check", timeout=180)
+            for line in (r.get("output", "") or "").splitlines():
+                log(f"  {line}")
+            _record_auto_denoise(folder_name, bool(r.get("ok")))
+            if r.get("ok"):
+                with lock:
+                    if state["proc_step"] == "denoise":
+                        state["proc_step"] = "copy_pasting"
+            else:
+                log("✗ Auto-Denoise couldn't confirm the click.")
+        if state.get("proc_step") == "denoise":
+            log("Check Denoise on one photo in Lightroom, then click Continue.")
         while True:
             time.sleep(0.5)
             with lock:
@@ -787,6 +815,32 @@ def _pick_export_post(trigger: bool = True):
 
     set_step("posting")
     log("Export done! Fill in the species below and click Post.")
+    _start_sort()
+
+
+def _start_sort():
+    """Hand the fresh export to Claude Code (sort_batch.sh on the Mac) to sort
+    into posts — species, frames, crops, flags. It runs in the background and
+    saves the arrangement through /api/arrangement when done; it never
+    overwrites a sorting Scott has already started."""
+    r = call_host("sort-batch", timeout=30)
+    out = (r.get("output") or "").strip()
+    if r.get("ok"):
+        log(f"🧠 Claude is sorting this batch into posts — {out or 'started'}. "
+            "Reload when it finishes (a few minutes).")
+    else:
+        log(f"(couldn't start the automatic sort: {out[:120]})")
+
+
+@app.post("/api/sort-batch")
+def sort_batch():
+    """Re-run the automatic sort for the batch on the posting step."""
+    with lock:
+        step = state["proc_step"]
+    if step != "posting":
+        return jsonify({"error": "not on the posting step"}), 400
+    _start_sort()
+    return jsonify({"ok": True})
 
 
 def get_next_open_scheduled_at() -> str:

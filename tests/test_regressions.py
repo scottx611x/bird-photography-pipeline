@@ -550,6 +550,85 @@ def test_failed_export_trigger_is_not_waited_on():
     check("lr_auto: other AppleScript errors are not retried", len(calls) == 1)
 
 
+def test_sort_batch():
+    """Claude Code sorts each export (bird_sort.py + the sort-batch skill)."""
+    sys.path.insert(0, str(ROOT))
+    import bird_sort as bs
+
+    # Real detections from the 9/25 batch. The old "biggest confident box"
+    # rule framed a clump of dead leaves (0525) and bird-plus-branch (0614).
+    leaves = [(0.61, [0.6738, 0.4995, 0.0561, 0.1059]), (0.37, [0.8211, 0.7184, 0.1193, 0.172])]
+    check("sort: the confident bird beats a bigger, weaker box",
+          bs.subject(leaves) == leaves[0][1], str(bs.subject(leaves)))
+    nested = [(0.51, [0.3117, 0.5238, 0.1844, 0.1062]), (0.51, [0.1744, 0.5218, 0.3324, 0.2257])]
+    check("sort: the tighter of two equally confident nested boxes wins",
+          bs.subject(sorted(nested, reverse=True)) == nested[0][1])
+    pair = [(0.87, [0.541, 0.5191, 0.2266, 0.1421]), (0.86, [0.2762, 0.0901, 0.2018, 0.2098])]
+    b = bs.subject(pair)
+    check("sort: two confident birds are framed together",
+          b[0] <= 0.2762 and b[0] + b[2] >= 0.541 + 0.2266 - 1e-3)
+
+    W, H = 6000, 4000
+    for name, bird, facing in [("warbler", [0.425, 0.435, 0.105, 0.105], "left"),
+                               ("perched hawk", [0.4164, 0.4113, 0.2693, 0.307], None),
+                               ("speck", [0.5, 0.5, 0.01, 0.01], "right"),
+                               ("edge bird", [0.95, 0.9, 0.05, 0.08], "right")]:
+        c = bs.crop_box(bird, W, H, facing)
+        cw, ch = c["w"] * W, c["h"] * H
+        inside = (c["x"] <= bird[0] + 1e-3 and c["y"] <= bird[1] + 1e-3
+                  and c["x"] + c["w"] >= min(1, bird[0] + bird[2]) - 1e-3
+                  and c["y"] + c["h"] >= min(1, bird[1] + bird[3]) - 1e-3)
+        check(f"sort: {name} crop is 3:2, in frame, ≥1200px, contains the bird",
+              abs(cw / ch - 1.5) < 0.02 and c["x"] >= 0 and c["y"] >= 0
+              and c["x"] + c["w"] <= 1.0001 and c["y"] + c["h"] <= 1.0001
+              and cw >= 1199 and inside, str(c))
+    # Scott approved warblers at ~31-43% of the crop's height (looser than
+    # 44% was "too tight") and the perched hawk at ~74%, not near-uncropped.
+    wb = bs.crop_box([0.425, 0.435, 0.105, 0.105], W, H, "left")
+    fill = 0.105 * H / (wb["h"] * H)
+    check("sort: a small bird is framed loosely (~30-45% of the height)",
+          0.30 <= fill <= 0.45, f"{fill:.2f}")
+    hk = bs.crop_box([0.4164, 0.4113, 0.2693, 0.307], W, H)
+    check("sort: a big bird's crop doesn't balloon toward the whole frame",
+          hk["w"] <= 0.5, str(hk))
+    r = bs.crop_box([0.45, 0.45, 0.1, 0.1], W, H, "right")
+    lft = bs.crop_box([0.45, 0.45, 0.1, 0.1], W, H, "left")
+    check("sort: facing leaves room ahead of the bird (right-facing crop sits further right)", r["x"] > lft["x"])
+
+    src = (ROOT / "bird_sort.py").read_text()
+    apply_ = src[src.find("def cmd_apply("):src.find("COMMANDS = ")]
+    check("sort: apply refuses to overwrite Scott's own sorting",
+          "touched and not ours and not force" in apply_)
+    check("sort: apply crops from the original, never a crop of a crop",
+          '"reset": True' in apply_ and 'api("/api/crop", {"file": f, "box": box})' in apply_)
+    check("sort: plan validation caps posts at Instagram's 10",
+          "MAX_PER_POST = 10" in src and "> MAX_PER_POST" in src)
+
+    srv = (ROOT / "server.py").read_text()
+    tail = srv[srv.find('set_step("posting")'):srv.find("def get_next_open_scheduled_at(")]
+    check("server: a fresh export is handed to the sorter", "_start_sort()" in tail)
+    check("lr_host: sort-batch is allowed and runs the launcher",
+          '"sort-batch"' in (ROOT / "lr_host.py").read_text()
+          and 'TOOLS / "sort_batch.sh"' in (ROOT / "lr_host.py").read_text())
+    sh = (ROOT / "sort_batch.sh").read_text()
+    check("sort_batch.sh: unattended run has narrow permissions",
+          "dangerously" not in sh and "bypassPermissions" not in sh
+          and 'Bash(~/.bird_sort_venv/bin/python bird_sort.py:*)' in sh
+          and '"Bash"' not in sh)
+    check("sort_batch.sh: one sort at a time, locked by the real pid",
+          "sh -c 'echo $PPID'" in sh and "kill -0" in sh and "BASHPID\" >" not in sh)
+    gate = srv[srv.find('set_step("denoise")'):srv.find("if not _denoise_and_export_tail():")]
+    check("server: Denoise is ticked automatically before the manual gate",
+          "if AUTO_DENOISE:" in gate and 'call_host("denoise-check"' in gate
+          and gate.find('call_host("denoise-check"') < gate.find("while True:"))
+    check("server: only a proven click skips the manual gate",
+          'if r.get("ok"):' in gate and '"copy_pasting"' in gate
+          and "_record_auto_denoise(" in gate)
+    skill = (ROOT / ".claude/skills/sort-batch/SKILL.md").read_text()
+    check("skill: never posts and never asks",
+          "never post" in skill and "Never stop to ask" in skill)
+
+
 def test_dust_section_not_ambiguous():
     """Distraction Removal grew two more collapsible sub-sections above Dust
     (Reflections, People) with an identically-labelled "Apply" checkbox each.
@@ -713,6 +792,7 @@ def main():
     test_stalled_render_is_nudged()
     test_wrapped_filenames_are_collected()
     test_failed_export_trigger_is_not_waited_on()
+    test_sort_batch()
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_container_has_server_imports()
