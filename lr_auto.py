@@ -632,10 +632,22 @@ LR_PREFS = (Path.home() / "Library/Containers/com.adobe.mas.lightroomCC/Data"
 
 
 def _lr_export_folder():
-    """Where Lightroom's Export with Previous will write, or None if unknown."""
-    r = subprocess.run(["defaults", "read", str(LR_PREFS),
-                        "AgExport_File_destinationFolder"],
-                       capture_output=True, text=True)
+    """Where Lightroom's Export with Previous will write, or None if unknown.
+
+    Lightroom's prefs live in its sandbox container, and macOS guards other
+    apps' containers: reading them can raise a "python3.12 would like to
+    access data from other apps" prompt, and `defaults` blocks until someone
+    answers it. On 2026-11-22 that held the export (and with it every bridge
+    command) until the server timed out. Never wait on it — an unanswered or
+    denied prompt just means the folder check is skipped."""
+    try:
+        r = subprocess.run(["defaults", "read", str(LR_PREFS),
+                            "AgExport_File_destinationFolder"],
+                           capture_output=True, text=True, timeout=5)
+    except subprocess.TimeoutExpired:
+        print("  (couldn't read Lightroom's export folder — macOS is asking "
+              "whether python may read other apps' data; skipping that check)")
+        return None
     return r.stdout.strip() or None
 
 

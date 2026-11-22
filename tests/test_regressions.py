@@ -651,6 +651,10 @@ def test_sort_batch():
           and "GIVE_UP_AFTER" in sh and "--output-format json" in sh)
     check("sort_batch.sh: needs no long-lived token", "oauth_token" not in sh
           and "CLAUDE_CODE_OAUTH_TOKEN" not in sh)
+    la = (ROOT / "lr_auto.py").read_text()
+    ef = la[la.find("def _lr_export_folder("):la.find("def cmd_export(")]
+    check("lr_auto: the export-folder check can't block on a macOS privacy prompt",
+          "timeout=5" in ef and "TimeoutExpired" in ef)
     skill = (ROOT / ".claude/skills/sort-batch/SKILL.md").read_text()
     check("skill: never posts and never asks",
           "never post" in skill and "Never stop to ask" in skill)
