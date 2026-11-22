@@ -49,14 +49,38 @@ def lr_is_running() -> bool:
         return False
 
 
+MENU_RETRY_WAITS = (1.0, 2.0, 4.0)
+
+
 def lr_menu_click(menu_name: str, item_name: str) -> None:
-    run_applescript(f'''
+    """Click a Lightroom menu item, riding out a menu bar that isn't there yet.
+
+    Right after a heavy action Lightroom can briefly expose no menu bar at all:
+    on 2026-11-19 Edit > Select All on 48 photos succeeded and File > Export
+    with Previous one second later died with "Can't get menu bar 1 ... Invalid
+    index (-1719)" — and the run sat a day waiting for an export that was
+    never started. -1719 means the element was not found, so nothing was
+    clicked and retrying cannot double-click anything."""
+    script = f'''
 tell application "System Events"
   tell process "Adobe Lightroom"
     click menu item "{item_name}" of menu "{menu_name}" of menu bar item "{menu_name}" of menu bar 1
   end tell
 end tell
-''')
+'''
+    for wait in MENU_RETRY_WAITS + (None,):
+        try:
+            run_applescript(script)
+            return
+        except RuntimeError as e:
+            if wait is None or "-1719" not in str(e):
+                raise
+            print(f"  (menu bar not ready for {menu_name} > {item_name}; retrying in {wait:.0f}s)")
+            time.sleep(wait)
+            try:
+                run_applescript('tell application "Adobe Lightroom" to activate')
+            except RuntimeError:
+                pass
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────

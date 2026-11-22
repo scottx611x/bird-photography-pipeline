@@ -461,6 +461,95 @@ def test_stalled_render_is_nudged():
     check("lr_auto: ...and still renders afterwards",
           body.rfind("render_ai_settings()") > body.find("Update AI Settings Later\""))
 
+def _load_funcs(path, names, env=None):
+    """Exec just the named top-level functions/assignments from a module, so
+    their real logic runs here without importing Flask or touching the Mac."""
+    import ast
+    tree = ast.parse(path.read_text())
+    keep = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name in names)
+            or (isinstance(n, ast.Assign)
+                and any(getattr(t, "id", None) in names for t in n.targets))]
+    ns = dict(env or {})
+    exec(compile(ast.Module(body=keep, type_ignores=[]), str(path), "exec"), ns)
+    return ns
+
+
+def test_wrapped_filenames_are_collected():
+    """The camera counter wrapped: an August batch still claimed DSC_0475 and
+    DSC_0617, so on 2026-11-20 a fresh 48-photo export collected only 46."""
+    src = (ROOT / "server.py").read_text()
+    ns = _load_funcs(ROOT / "server.py", {"_claimed_elsewhere"})
+    f = ns["_claimed_elsewhere"]
+    start = 1_000_000.0
+    check("claims: an old batch's claim doesn't block a file written by this export",
+          f("2026-08-01-best", "2026-09-25-best", start + 60, start) is False)
+    check("claims: an old batch keeps a file this export didn't write",
+          f("2026-08-01-best", "2026-09-25-best", start - 60, start) is True)
+    check("claims: unclaimed and self-claimed files are never blocked",
+          f(None, "b", 0, start) is False and f("b", "b", 0, start) is False)
+    exp = src[src.find("def _exported():"):src.find('set_step("export_wait")')]
+    check("server: export collection asks _claimed_elsewhere",
+          "_claimed_elsewhere(claimed.get(f), folder, mtime, export_start)" in exp)
+
+
+def test_failed_export_trigger_is_not_waited_on():
+    """On 2026-11-19 File > Export with Previous failed (-1719, no menu bar
+    for a second after Select All), yet the run logged "Export running" and
+    waited a full day for files that were never coming."""
+    src = (ROOT / "server.py").read_text()
+    body = src[src.find("def _pick_export_post("):src.find('set_step("export_wait")')]
+    check("server: a failed export trigger goes back to the gate",
+          'if not result.get("ok"):' in body and 'set_step("export_ready")' in body)
+
+    calls, sleeps = [], []
+
+    def flaky(n):
+        def run(script):
+            calls.append(script)
+            if "click menu item" in script and len(
+                    [c for c in calls if "click menu item" in c]) <= n:
+                raise RuntimeError("execution error: Can't get menu bar 1 of "
+                                   'process "Adobe Lightroom". Invalid index. (-1719)')
+            return ""
+        return run
+
+    class T:
+        @staticmethod
+        def sleep(s):
+            sleeps.append(s)
+
+    ns = _load_funcs(ROOT / "lr_auto.py", {"lr_menu_click", "MENU_RETRY_WAITS"},
+                     {"time": T})
+    ns["run_applescript"] = flaky(2)
+    ns["lr_menu_click"]("File", "Export with Previous...")
+    clicks = [c for c in calls if "click menu item" in c]
+    check("lr_auto: a missing menu bar is retried until the click lands",
+          len(clicks) == 3 and len(sleeps) == 2, f"{len(clicks)} clicks, {sleeps}")
+
+    calls.clear()
+    ns["run_applescript"] = flaky(99)
+    try:
+        ns["lr_menu_click"]("File", "Export with Previous...")
+        raised = False
+    except RuntimeError:
+        raised = True
+    check("lr_auto: a menu bar that never comes back still raises",
+          raised and len([c for c in calls if "click menu item" in c]) == 4)
+
+    calls.clear()
+
+    def other_error(script):
+        calls.append(script)
+        raise RuntimeError("execution error: some other failure (-1728)")
+    ns["run_applescript"] = other_error
+    try:
+        ns["lr_menu_click"]("Edit", "Select All")
+    except RuntimeError:
+        pass
+    check("lr_auto: other AppleScript errors are not retried", len(calls) == 1)
+
+
 def test_dust_section_not_ambiguous():
     """Distraction Removal grew two more collapsible sub-sections above Dust
     (Reflections, People) with an identically-labelled "Apply" checkbox each.
@@ -622,6 +711,8 @@ def main():
     test_every_goto_step_is_handled()
     test_denoise_is_actually_rendered()
     test_stalled_render_is_nudged()
+    test_wrapped_filenames_are_collected()
+    test_failed_export_trigger_is_not_waited_on()
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_container_has_server_imports()

@@ -649,6 +649,8 @@ def _pick_export_post(trigger: bool = True):
     trigger=False: don't command Lightroom at all — collect files the user
     exported themselves (anything landing in /birds from the last 2 hours)."""
     set_step("exporting")
+    with lock:
+        state["run_error"] = ""
     if not trigger:
         export_start = time.time() - 7200
         log("Collecting your export — no Lightroom commands sent.")
@@ -659,6 +661,17 @@ def _pick_export_post(trigger: bool = True):
         result = call_host("export", body={"all": True, "expect": _batch_size()})
     for line in result.get("output", "").splitlines():
         log(f"  {line}")
+    if not result.get("ok"):
+        # The trigger itself failed (menu never clicked, selection refused,
+        # wrong export folder). Waiting on files here waits forever — on
+        # 2026-11-19 that sat a full day logging "Export running". Go back to
+        # the gate so ▶ Export retries; /api/continue respawns the thread.
+        with lock:
+            state["run_error"] = "Export didn't start in Lightroom"
+        log("✗ Export didn't start in Lightroom — see above. Back at the export "
+            "gate: fix Lightroom if needed, then ▶ Export again.")
+        set_step("export_ready")
+        return
 
     def _exported():
         # Match exports to the batch by *name* — Lightroom names each export
@@ -677,12 +690,11 @@ def _pick_export_post(trigger: bool = True):
 
         out = []
         for f in _birds_snapshot():
-            owner = claimed.get(f)
-            if owner and owner != folder:
-                continue
             try:
                 mtime = (BIRDS_DIR / f).stat().st_mtime
             except OSError:
+                continue
+            if _claimed_elsewhere(claimed.get(f), folder, mtime, export_start):
                 continue
             if stems:
                 if _export_stem(f) in stems and mtime >= recent:
@@ -1003,6 +1015,20 @@ def _batch_raw_stems(folder: str) -> set:
                 if f.suffix.lower() in RAW_SUFFIXES}
     except OSError:
         return set()
+
+
+def _claimed_elsewhere(owner, folder, mtime: float, export_start: float) -> bool:
+    """Does another batch own this export, so this batch must not collect it?
+
+    A claim only holds for the file that batch collected. The camera's file
+    counter has wrapped, so a new shoot reuses old names, and Lightroom writes
+    the new export over the old file under the same name. On 2026-11-20 two
+    of 48 fresh exports (DSC_0475, DSC_0617) were dropped because an August
+    batch still "owned" those names. A file written since this export began
+    is this export's, whoever claimed the name before."""
+    if not owner or owner == folder:
+        return False
+    return mtime < export_start
 
 
 def _export_stem(name: str) -> str:
