@@ -112,6 +112,15 @@
     .badge-pending    { background: rgba(255,255,255,.07); color: var(--muted); }
     .badge-processing { background: rgba(91,154,255,.2); color: var(--blue); }
     .badge-done       { background: rgba(52,211,153,.15); color: var(--green); }
+    .badge-review     { background: rgba(251,191,36,.16); color: var(--yellow); }
+    .crank-bar { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; padding: 10px 12px;
+      border-radius: 12px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+      font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+    .crank-bar.on    { border-color: rgba(91,154,255,.35); }
+    .crank-bar.needs { border-color: rgba(251,191,36,.5); }
+    .crank-bar.needs .crank-status { color: var(--yellow); }
+    .crank-status { flex: 1; min-width: 160px; overflow-wrap: anywhere; line-height: 1.4; }
+    .crank-review { color: var(--yellow); font-weight: 700; cursor: pointer; white-space: nowrap; }
     .meta-row { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
     .meta-pill { font-size: 11px; color: var(--muted);
       background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
@@ -599,6 +608,7 @@
           <button class="chip"        data-f="all"        onclick="setFilter('all')">All</button>
           <button class="chip"        data-f="pending"   onclick="setFilter('pending')">Pending</button>
           <button class="chip"        data-f="processing" onclick="setFilter('processing')">Active</button>
+          <button class="chip"        data-f="review"    onclick="setFilter('review')">Review</button>
           <button class="chip"        data-f="done"      onclick="setFilter('done')">Done</button>
         </div>
         <div style="display:flex;gap:6px">
@@ -606,6 +616,7 @@
           <button class="btn-sm-action" onclick="doScan()">↺ Scan</button>
         </div>
       </div>
+      <div id="crank-bar"></div>
       <div id="batch-list"></div>
     </div>
 
@@ -865,6 +876,7 @@ function renderStepCard(step, batch, data) {
   if (s.collect) btns += `<button class="btn btn-neutral btn-sm"${lock} onclick="gotoStep('collect')" title="Skip all Lightroom automation and pick up files you exported yourself">I exported manually →</button>`;
   if (s.done)   btns += `<button class="btn btn-success btn-sm"${lock} onclick="doDone()">✓ Done</button>`;
   if (s.resume) btns += `<button class="btn btn-primary btn-sm" onclick="forceAdvance()">↗ Resume</button>`;
+  if (step === "posting") btns += `<button class="btn btn-neutral btn-sm" onclick="doShelve()" title="Set this batch aside, as it is now, and free the posting screen. It waits under Review.">⏸ Later</button>`;
   btns += `<button class="btn btn-neutral btn-sm" onclick="doFinish('${batch.folder}')" title="Mark done without posting — for a combined batch this retires its source albums too">✓ Mark done</button>`;
   btns += `<button class="btn btn-neutral btn-sm" style="margin-left:auto" onclick="doReset('${batch.folder}')">↺ Reset</button>`;
 
@@ -1062,7 +1074,7 @@ function renderBatches(data) {
 
   const all  = (data.batches || []).filter(b =>
     activeFilter === "all"  ? true
-    : activeFilter === "open" ? (b.status === "pending" || b.status === "processing")
+    : activeFilter === "open" ? (b.status === "pending" || b.status === "processing" || b.status === "review")
     : b.status === activeFilter);
 
   // Albums currently downloading get a live progress card (shown in any view)
@@ -1092,14 +1104,19 @@ function renderBatches(data) {
 
   const localItems = all.filter(b => !fetchingNames.has(b.folder)).map(b => {
     const isActive = data.active?.folder === b.folder;
-    const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done" }[b.status] || "badge-pending";
-    const badgeTxt = { pending:"Pending", processing:"Active", done:"Done" }[b.status] || b.status;
+    const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done", review:"badge-review" }[b.status] || "badge-pending";
+    const badgeTxt = { pending:"Pending", processing:"Active", done:"Done", review:"Review" }[b.status] || b.status;
+    const shelf    = b.status === "review" ? (data.review || {})[b.folder] : null;
 
     let meta = `<span class="meta-pill">📅 ${b.cap_date}</span>`;
     if (b.location) meta += `<span class="meta-pill">📍 ${b.location}</span>`;
     meta += `<span class="meta-pill">${b.raw_count} RAWs</span>`;
     const kids = multiSources[b.folder] || [];
     if (kids.length) meta += `<span class="meta-pill" title="Albums combined into this batch">📦 ${kids.join(" · ")}</span>`;
+    if (shelf) {
+      meta += `<span class="meta-pill">🗂 ${shelf.posts} post${shelf.posts === 1 ? "" : "s"} · ${shelf.photos} photos</span>`;
+      if (!shelf.sorted) meta += `<span class="meta-pill" title="${(shelf.why || "").replace(/"/g, "&quot;")}">🧠 sorts when opened</span>`;
+    }
 
     let actions = "";
     if (b.status === "pending")
@@ -1109,6 +1126,9 @@ function renderBatches(data) {
                  <button class="btn btn-neutral btn-sm" onclick="doSkip('${b.folder}')">Skip</button>`;
     else if (b.status === "done")
       actions = `<button class="btn btn-neutral btn-sm" onclick="doReset('${b.folder}')">↺ Reprocess</button>`;
+    else if (b.status === "review")
+      actions = `<button class="btn btn-primary btn-sm" onclick="doReviewOpen('${b.folder}')"
+                         title="Bring this batch back to the posting screen to check and post">👀 Review</button>`;
 
     const doneBirds = (b.status === "done" && b.birds?.length)
       ? `<div class="done-birds ${expandedDone.has(b.folder) ? '' : 'collapsed'}"
@@ -1196,6 +1216,7 @@ async function poll() {
       if (btn) { btn.disabled = false; btn.textContent = '▶ Post to Buffer'; }
     }
     renderBatches(d);
+    renderCrank(d);
     renderHost(d.host_ok);
     renderOverlay(d.proc_step);
     lastState = d;
@@ -1338,6 +1359,40 @@ async function doFinish(f) {
   poll();
 }
 async function doScan()      { await fetch("/api/scan", {method:"POST"}); refreshSyno(); }
+
+// ── Review shelf + crank ─────────────────────────────────────────────────────
+async function doReviewOpen(f) {
+  const r = await fetch(`/api/review/open/${enc(f)}`, {method: "POST"});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || "Couldn't open that batch.");
+  poll();
+}
+async function doShelve() {
+  if (!confirm("Set this batch aside for later?\n\nIt keeps its posts, crops and labels and waits under Review.")) return;
+  const r = await fetch("/api/review/shelve", {method: "POST", headers: {"Content-Type": "application/json"},
+                                              body: JSON.stringify({why: "set aside by hand"})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || "Couldn't set it aside.");
+  poll();
+}
+async function toggleCrank(on) {
+  await fetch("/api/crank", {method: "POST", headers: {"Content-Type": "application/json"},
+                             body: JSON.stringify({on})});
+  poll();
+}
+function renderCrank(d) {
+  const el = document.getElementById("crank-bar");
+  if (!el) return;
+  const c = d.crank || {};
+  const waiting = Object.keys(d.review || {}).length;
+  const status = c.status || (c.on ? "starting…" : "Runs albums one after another: fetch, Lightroom, export, sort, then sets each aside for you.");
+  const needs = /^needs you|^stopped/.test(c.status || "");
+  el.className = "crank-bar" + (c.on ? " on" : "") + (needs ? " needs" : "");
+  el.innerHTML = `
+    <button class="btn ${c.on ? "btn-neutral" : "btn-primary"} btn-sm" onclick="toggleCrank(${!c.on})">${c.on ? "⏸ Pause crank" : "▶ Keep cranking"}</button>
+    <span class="crank-status">${c.on ? "⚙ " : ""}${status.replace(/</g, "&lt;")}</span>
+    ${waiting ? `<span class="crank-review" onclick="setFilter('review')">🗂 ${waiting} waiting for review</span>` : ""}`;
+}
 
 // ── Synology import (remote album cards in the batch list) ──────────────────────
 async function loadSynoAlbums() {

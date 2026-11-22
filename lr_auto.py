@@ -34,7 +34,51 @@ RAW_SUFFIXES = {".nef", ".arw", ".cr2", ".cr3", ".dng", ".raf", ".rw2", ".orf", 
 
 # ── AppleScript helpers ────────────────────────────────────────────────────────
 
+# Keystrokes go to whichever app is in front, whatever process the script
+# names — "tell process "Adobe Lightroom" to keystroke" does not aim them. On
+# 2026-11-22 Lightroom's activate timed out and a search meant for it was
+# typed into Scott's terminal instead. So nothing is typed unless Lightroom is
+# frontmost, checked right before (ensure_lr_front) and again inside the same
+# script, which closes the gap between the check and the first key.
+KEYS_RE = re.compile(r"\bkeystroke\b|\bkey code\b")
+FRONT_GUARD = (
+    'tell application "System Events" to set _fp to name of '
+    '(first process whose frontmost is true)\n'
+    'if _fp is not "Adobe Lightroom" then error "Lightroom is not in front ("'
+    ' & _fp & " is) - no keystrokes sent"\n')
+
+
+def lr_frontmost() -> str:
+    try:
+        r = subprocess.run(["osascript", "-e", 'tell application "System Events" to return '
+                            'name of (first process whose frontmost is true)'],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return ""
+
+
+def ensure_lr_front(tries: int = 3) -> None:
+    front = ""
+    for i in range(tries):
+        front = lr_frontmost()
+        if front == "Adobe Lightroom":
+            return
+        try:
+            subprocess.run(["osascript", "-e", 'tell application "Adobe Lightroom" to activate'],
+                           capture_output=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(1.0 + i)
+    if lr_frontmost() != "Adobe Lightroom":
+        raise RuntimeError(f"Lightroom isn't the frontmost app ({front or 'unknown'} is) "
+                           "— not sending keystrokes.")
+
+
 def run_applescript(script: str) -> str:
+    if KEYS_RE.search(script):
+        ensure_lr_front()
+        script = FRONT_GUARD + script
     r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())

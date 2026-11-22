@@ -54,6 +54,9 @@ state = {
     "photo_dates":     {},      # exported file -> capture date "M-D-YY" (EXIF) for combined batches
     "claimed":         {},      # exported file -> the batch that collected it
     "multi_sources":   {},      # "<date>-multi" folder -> [source Synology album names]
+    "review":          {},      # folder -> shelved posting state, waiting for Scott (see shelve_active)
+    "crank":           {"on": False, "status": "", "batch": None},   # the queue runner (crank_loop)
+    "sort":            {},      # the headless sort: {"folder", "state", "text", "at"}
 }
 
 # In-memory cache of the Synology album list (avoid hammering the NAS each load)
@@ -88,6 +91,9 @@ def save_state():
             "multi_sources": state.get("multi_sources", {}),
             "syno_skipped": sorted(state["syno_skipped"]),
             "done_albums": sorted(state["done_albums"]),
+            "review":      state.get("review", {}),
+            "crank":       {k: state["crank"].get(k) for k in ("on", "batch")},
+            "sort":        state.get("sort", {}),
         }
         STATE_FILE.write_text(json.dumps(data))
     except Exception:
@@ -294,6 +300,7 @@ def _batch_size():
 
 
 AUTO_DENOISE = os.environ.get("AUTO_DENOISE", "1") != "0"
+AUTO_EXPORT  = os.environ.get("AUTO_EXPORT", "1") != "0"
 AUTO_DENOISE_LOG = DOWNLOADS / ".auto_denoise.jsonl"
 
 
@@ -440,8 +447,11 @@ def process_batch(folder_name: str, no_post: bool = False, start_step: str = "im
             state["thread_active"] = False
 
 
-def _export_gate():
+def _export_gate(auto: bool = False):
     """Park at the export gate and act on whichever button the user presses.
+
+    auto: the denoise checks came back clean, so export without waiting
+    (Scott, 2026-11-22: keep it cranking). Anything doubtful still parks here.
 
     Its own function so "pick" — the step the progress bar's Export stage
     sends you back to — can reach it. It was accepted by /api/goto-step and
@@ -450,6 +460,12 @@ def _export_gate():
     logged "Restarting from: pick" and did nothing at all.
     """
     set_step("export_ready")
+    if auto and AUTO_EXPORT:
+        log("Denoise done and checked — exporting automatically.")
+        with lock:
+            state["proc_step"] = "exporting"
+        _pick_export_post(trigger=True)
+        return True
     log("Denoise done. Click ▶ Export to trigger Lightroom, or export yourself and click Collect.")
     while True:
         time.sleep(0.5)
@@ -475,7 +491,8 @@ def _denoise_and_export_tail():
     result = call_host("copy-and-paste", body={"expect": _batch_size()})
     for line in result.get("output", "").splitlines():
         log(f"  {line}")
-    log("Denoise applied to all photos." if result.get("ok") else "Paste may have failed — check Lightroom.")
+    pasted = bool(result.get("ok"))
+    log("Denoise applied to all photos." if pasted else "Paste may have failed — check Lightroom.")
 
 
     # Wait for Lightroom's background AI-denoise queue to drain — exporting
@@ -580,7 +597,11 @@ def _denoise_and_export_tail():
     elif spread == "partial":
         log("⚠ Denoise reached only some sampled photos — check before export.")
 
-    return _export_gate()
+    # Export on its own only when nothing above looked wrong. "unknown" means
+    # the check couldn't see, not that it saw a problem — and a photo whose
+    # Denoise never rendered still can't slip out: the export cancels on
+    # Lightroom's "AI Update Required" and renders those first.
+    return _export_gate(auto=pasted and spread in ("all", "unknown"))
 
 
 def _run_batch(folder_name: str, start_step: str = "import"):
@@ -840,14 +861,55 @@ def _start_sort():
     """Hand the fresh export to Claude Code (sort_batch.sh on the Mac) to sort
     into posts — species, frames, crops, flags. It runs in the background and
     saves the arrangement through /api/arrangement when done; it never
-    overwrites a sorting Scott has already started."""
+    overwrites a sorting Scott has already started. Its progress comes back
+    through /api/sort-status, which is how the crank knows when to move on."""
+    with lock:
+        state["sort"] = {"folder": state["active"], "state": "starting",
+                         "text": "", "at": time.time()}
     r = call_host("sort-batch", timeout=30)
     out = (r.get("output") or "").strip()
     if r.get("ok"):
+        if "already running" in out:
+            # A sorter from an earlier batch is still waiting out a usage
+            # limit. It re-checks the posting step when it wakes, so it will
+            # get to this batch — just not on our schedule.
+            _set_sort("busy", out)
         log(f"🧠 Claude is sorting this batch into posts — {out or 'started'}. "
             "Reload when it finishes (a few minutes).")
     else:
+        _set_sort("failed", out[:200])
         log(f"(couldn't start the automatic sort: {out[:120]})")
+    save_state()
+
+
+def _set_sort(kind: str, text: str = ""):
+    with lock:
+        cur = state.get("sort") or {}
+        state["sort"] = {"folder": cur.get("folder") or state["active"], "state": kind,
+                         "text": text[:300], "at": time.time()}
+
+
+# sort_batch.sh status lines, by how they start -> what they mean for the batch
+SORT_STATES = (("done", "done"), ("idle", "idle"), ("failed", "failed"),
+               ("gave up", "failed"), ("waiting", "waiting"), ("sorting", "running"))
+
+
+@app.post("/api/sort-status")
+def sort_status():
+    """sort_batch.sh reports each status line here as well as to
+    ~/.bird_sort/status.txt. The sorter only ever works on the batch on the
+    posting step, so that is the batch a line is about."""
+    data = request.get_json(silent=True) or request.form
+    text = (data.get("text") or "").strip()
+    kind = next((k for prefix, k in SORT_STATES if text.startswith(prefix)), "running")
+    with lock:
+        cur = state.get("sort") or {}
+        folder = (state["active"] if state["proc_step"] == "posting"
+                  else cur.get("folder"))
+        state["sort"] = {"folder": folder, "state": kind, "text": text[:300],
+                         "at": time.time()}
+    save_state()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/sort-batch")
@@ -1385,6 +1447,9 @@ def get_state():
             "done_albums":    sorted(state["done_albums"]),
             "syno_fetching":  dict(state["syno_fetching"]),
             "multi_sources":  dict(state.get("multi_sources", {})),
+            "review":         {f: _review_summary(r) for f, r in state["review"].items()},
+            "crank":          dict(state["crank"]),
+            "sort":           dict(state.get("sort") or {}),
         }
     return jsonify(payload)
 
@@ -2470,6 +2535,28 @@ def syno_albums():
     return jsonify({"albums": albums})
 
 
+def _multi_name(albums: list) -> str:
+    """Folder name for several albums fetched into one batch, named after
+    every date inside so the card says what it holds: one day ->
+    2026-08-09-multi, several -> 2026-08-10-multi-8-9+8-10. "" if no album
+    name starts with a date."""
+    seen = []
+    for a in albums:
+        m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", a)
+        if m:
+            seen.append(tuple(int(x) for x in m.groups()))
+    dates = sorted(set(seen))
+    if not dates:
+        return ""
+    newest = "%04d-%02d-%02d" % dates[-1]
+    if len(dates) == 1:
+        return f"{newest}-multi"
+    md = lambda t: f"{t[1]}-{t[2]}"
+    tags = ("+".join(md(t) for t in dates) if len(dates) <= 4
+            else f"{md(dates[0])}_thru_{md(dates[-1])}")
+    return f"{newest}-multi-{tags}"
+
+
 @app.post("/api/syno/fetch")
 def syno_fetch():
     """Download a Synology album's originals into ~/Downloads/<album> (background)."""
@@ -2479,24 +2566,9 @@ def syno_fetch():
     if albums:
         # Combined batch: several (small) albums fetched into one dated folder.
         # Per-photo capture dates keep captions correct at posting time.
-        # Name it after every date inside so the card says what it holds:
-        # one day -> 2026-08-09-multi, several -> 2026-08-10-multi-8-9+8-10.
-        seen = []
-        for a in albums:
-            m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", a)
-            if m:
-                seen.append(tuple(int(x) for x in m.groups()))
-        dates = sorted(set(seen))
-        if not dates:
+        album = _multi_name(albums)
+        if not album:
             return jsonify({"error": "combined albums need date-prefixed names"}), 400
-        newest = "%04d-%02d-%02d" % dates[-1]
-        if len(dates) == 1:
-            album = f"{newest}-multi"
-        else:
-            md = lambda t: f"{t[1]}-{t[2]}"
-            tags = ("+".join(md(t) for t in dates) if len(dates) <= 4
-                    else f"{md(dates[0])}_thru_{md(dates[-1])}")
-            album = f"{newest}-multi-{tags}"
         with lock:
             state["multi_sources"][album] = albums
         save_state()
@@ -2505,6 +2577,36 @@ def syno_fetch():
 
     then_process = bool(data.get("then_process"))
     total = int(data.get("total") or 0)
+
+    def _fetch():
+        if not _fetch_album(album, albums, bool(data.get("raw_only")), total):
+            return
+        if not then_process:
+            log("Batch will appear shortly.")
+            return
+        # Register the new folder, then kick off the pipeline automatically
+        scan_batches()
+        with lock:
+            exists = album in state["batches"]
+            busy   = state["active"]
+        if not exists:
+            log(f"Fetched, but no batch matched '{album}' (check the date-prefixed name).")
+        elif busy:
+            log(f"Another batch is active ({busy}) — start '{album}' manually when free.")
+        else:
+            log(f"▶ Starting pipeline for {album} …")
+            threading.Thread(target=process_batch, args=(album,), daemon=True).start()
+
+    threading.Thread(target=_fetch, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+def _fetch_album(album: str, albums: list = None, raw_only: bool = False,
+                 total: int = 0) -> bool:
+    """Download one Synology album — or, with `albums`, several into one
+    combined folder named `album` — into /downloads/<album>. Blocks until
+    done; True on success. Shared by the Fetch button and the crank."""
+    albums = albums or []
 
     def _watch_progress(stop):
         """Report download progress by counting files landing in the dest folder."""
@@ -2526,64 +2628,46 @@ def syno_fetch():
                 last = got
             time.sleep(1.5)
 
-    def _fetch():
-        log(f"📥 Fetching from Synology: '{album}' ({total or '?'} photos) …")
-        with lock:
-            state["syno_fetching"][album] = {"got": 0, "total": total}
-        stop = {"done": False}
-        threading.Thread(target=_watch_progress, args=(stop,), daemon=True).start()
-        try:
-            if albums:
-                r = {"ok": True, "output": ""}
-                for a in albums:
-                    log(f"  ⤷ '{a}' → {album}/")
-                    r = call_host("syno-fetch",
-                                  body={"album": a, "raw_only": bool(data.get("raw_only")),
-                                        "dest": batch_host_path(album)}, timeout=3600)
-                    if not r.get("ok"):
-                        break
-            else:
-                r = call_host("syno-fetch", body={"album": album, "raw_only": bool(data.get("raw_only"))},
-                              timeout=3600)
-        finally:
-            stop["done"] = True
-            with lock:
-                state["syno_fetching"].pop(album, None)
-        for line in (r.get("output", "") or "").splitlines():
-            log(line)
-        if not r.get("ok"):
-            log("Synology fetch failed — check log.")
-            # A failed fetch leaves an empty folder behind, which then shows up
-            # as a batch card offering "Process" with nothing in it. Clear it.
-            try:
-                dest = DOWNLOADS / album
-                if dest.is_dir() and not any(dest.iterdir()):
-                    dest.rmdir()
-                    with lock:
-                        state["batches"].pop(album, None)
-                    log(f"  (removed the empty {album} folder)")
-            except OSError:
-                pass
-            return
-        log("✓ Synology fetch complete.")
-        if not then_process:
-            log("Batch will appear shortly.")
-            return
-        # Register the new folder, then kick off the pipeline automatically
-        scan_batches()
-        with lock:
-            exists = album in state["batches"]
-            busy   = state["active"]
-        if not exists:
-            log(f"Fetched, but no batch matched '{album}' (check the date-prefixed name).")
-        elif busy:
-            log(f"Another batch is active ({busy}) — start '{album}' manually when free.")
+    log(f"📥 Fetching from Synology: '{album}' ({total or '?'} photos) …")
+    with lock:
+        state["syno_fetching"][album] = {"got": 0, "total": total}
+    stop = {"done": False}
+    threading.Thread(target=_watch_progress, args=(stop,), daemon=True).start()
+    try:
+        if albums:
+            r = {"ok": True, "output": ""}
+            for a in albums:
+                log(f"  ⤷ '{a}' → {album}/")
+                r = call_host("syno-fetch",
+                              body={"album": a, "raw_only": raw_only,
+                                    "dest": batch_host_path(album)}, timeout=3600)
+                if not r.get("ok"):
+                    break
         else:
-            log(f"▶ Starting pipeline for {album} …")
-            threading.Thread(target=process_batch, args=(album,), daemon=True).start()
-
-    threading.Thread(target=_fetch, daemon=True).start()
-    return jsonify({"ok": True})
+            r = call_host("syno-fetch", body={"album": album, "raw_only": raw_only},
+                          timeout=3600)
+    finally:
+        stop["done"] = True
+        with lock:
+            state["syno_fetching"].pop(album, None)
+    for line in (r.get("output", "") or "").splitlines():
+        log(line)
+    if not r.get("ok"):
+        log("Synology fetch failed — check log.")
+        # A failed fetch leaves an empty folder behind, which then shows up
+        # as a batch card offering "Process" with nothing in it. Clear it.
+        try:
+            dest = DOWNLOADS / album
+            if dest.is_dir() and not any(dest.iterdir()):
+                dest.rmdir()
+                with lock:
+                    state["batches"].pop(album, None)
+                log(f"  (removed the empty {album} folder)")
+        except OSError:
+            pass
+        return False
+    log("✓ Synology fetch complete.")
+    return True
 
 
 @app.post("/api/syno/skip")
@@ -2606,6 +2690,447 @@ def syno_unskip():
         state["syno_skipped"].discard(album)
     save_state()
     return jsonify({"ok": True})
+
+
+# ── Review shelf ──────────────────────────────────────────────────────────────
+#
+# Scott approves posts one by one, often many batches later (2026-11-22). The
+# posting screen holds one batch at a time, so a sorted batch waiting on him
+# would hold up everything behind it. Instead it goes on a shelf: its photos
+# move into ~/Desktop/birbs/.review/<folder>/, its arrangement into state, the
+# posting step clears, and the next batch can run. Review brings it back.
+#
+# Moving the files, not just the state, is what keeps batches apart. The
+# camera counter wraps, so two batches can each hold a DSC_0947.jpg; with one
+# shelved, the other takes the bare name and neither overwrites the other —
+# the kind of mix-up that put a June starling into a September post.
+
+REVIEW_DIR    = BIRDS_DIR / ".review"
+ORIGINALS_DIR = BIRDS_DIR / ".originals"
+SHELF_PARTS   = (("live", BIRDS_DIR), ("excluded", EXCLUDED_DIR), ("originals", ORIGINALS_DIR))
+
+
+def _review_summary(rec: dict) -> dict:
+    lanes = [l for l in ((rec.get("arrangement") or {}).get("lanes") or []) if l]
+    return {"shelved_at": rec.get("shelved_at"), "sorted": bool(rec.get("sorted")),
+            "posts": len(lanes), "photos": sum(len(l) for l in lanes),
+            "staged": len(rec.get("new_birds") or []), "why": rec.get("why", "")}
+
+
+def _shelf_files(arr, new_birds) -> list:
+    """Every photo the batch owns: in a post, excluded, or still staged."""
+    arr = arr or {}
+    out = []
+    for f in ([f for lane in (arr.get("lanes") or []) for f in lane]
+              + list(arr.get("excluded") or []) + list(new_birds or [])):
+        if f and "/" not in f and not f.startswith(".") and f not in out:
+            out.append(f)
+    return out
+
+
+def _drop_caches(names):
+    """Thumbnails and previews are cached by name and refreshed by mtime, and
+    a file moved back keeps its old mtime — so a cached copy of a different
+    photo with the same name would win. Drop them; they rebuild on demand."""
+    for n in names:
+        for d in (BIRDS_DIR / ".thumbs", PREVIEW_DIR):
+            try:
+                (d / n).unlink()
+            except OSError:
+                pass
+
+
+def shelve_active(why: str = "") -> tuple:
+    """Set the batch on the posting step aside for review. (ok, message)"""
+    with lock:
+        folder, step = state["active"], state["proc_step"]
+        if not folder or step != "posting":
+            return False, "No batch is on the posting step."
+        if state.get("posting"):
+            return False, "A post is going out — wait for it to finish."
+        arr   = state.get("arrangement")
+        new   = list(state["new_birds"])
+        sort  = dict(state.get("sort") or {})
+        dates = dict(state.get("photo_dates", {}))
+    files = _shelf_files(arr, new)
+    shelf = REVIEW_DIR / folder
+    for part, src_dir in SHELF_PARTS:
+        for f in files:
+            src = src_dir / f
+            if src.is_file():
+                (shelf / part).mkdir(parents=True, exist_ok=True)
+                src.replace(shelf / part / f)
+    _drop_caches(files)
+    rec = {"folder": folder, "arrangement": arr, "new_birds": new, "files": files,
+           "photo_dates": {f: dates[f] for f in files if f in dates},
+           "sorted": sort.get("folder") == folder and sort.get("state") in ("done", "idle"),
+           "shelved_at": datetime.now().isoformat(timespec="minutes"), "why": why}
+    try:
+        # A copy beside the photos, so the shelf can be rebuilt if state is lost.
+        shelf.mkdir(parents=True, exist_ok=True)
+        (shelf / "shelf.json").write_text(json.dumps(rec))
+    except OSError:
+        pass
+    with lock:
+        state["review"][folder] = rec
+        b = state["batches"].get(folder)
+        if b:
+            b["status"] = "review"
+        state["active"]      = None
+        state["proc_step"]   = None
+        state["arrangement"] = None
+        state["new_birds"]   = []
+        state["run_error"]   = ""
+    save_state()
+    n = _review_summary(rec)["posts"]
+    log(f"⏸ {folder} set aside for your review ({n} post{'s' if n != 1 else ''})"
+        f"{' — ' + why if why else ''}.")
+    return True, folder
+
+
+def open_review(folder: str) -> tuple:
+    """Put a shelved batch back on the posting screen. (ok, message)"""
+    with lock:
+        if state["active"]:
+            return False, (f"{state['active']} is using the posting screen "
+                           f"({state['proc_step']}) — Review opens when it's done or set aside.")
+        rec = state["review"].get(folder)
+    if not rec:
+        return False, "That batch isn't waiting for review."
+    shelf = REVIEW_DIR / folder
+    displaced = REVIEW_DIR / ".displaced" / datetime.now().strftime("%Y%m%d-%H%M%S")
+    names, bumped = [], []
+    for part, dest_dir in SHELF_PARTS:
+        src_dir = shelf / part
+        if not src_dir.is_dir():
+            continue
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for p in sorted(src_dir.iterdir()):
+            if not p.is_file():
+                continue
+            target = dest_dir / p.name
+            if target.exists():
+                # A photo of the same name came and went while this batch was
+                # shelved (posted, and left in birbs). Keep it, out of the way.
+                (displaced / part).mkdir(parents=True, exist_ok=True)
+                target.replace(displaced / part / p.name)
+                bumped.append(p.name)
+            p.replace(target)
+            names.append(p.name)
+        try:
+            src_dir.rmdir()
+        except OSError:
+            pass
+    _drop_caches(names)
+    try:
+        (shelf / "shelf.json").unlink()
+        shelf.rmdir()
+    except OSError:
+        pass
+    files = rec.get("files") or names
+    with lock:
+        state["review"].pop(folder, None)
+        b = state["batches"].get(folder)
+        if b:
+            b["status"] = "processing"
+        state["active"]         = folder
+        state["proc_step"]      = "posting"
+        state["no_post"]        = False
+        state["arrangement"]    = rec.get("arrangement")
+        state["new_birds"]      = list(rec.get("new_birds") or [])
+        state["run_error"]      = ""
+        state["stop_requested"] = False
+        state.setdefault("photo_dates", {}).update(rec.get("photo_dates") or {})
+        state.setdefault("claimed", {}).update({f: folder for f in files})
+    save_state()
+    log(f"▶ {folder} is back on the posting screen for review.")
+    if bumped:
+        log(f"  (moved {len(bumped)} older same-name photo(s) out of the way into "
+            f".review/.displaced/: {', '.join(bumped[:6])}{'…' if len(bumped) > 6 else ''})")
+    if not rec.get("sorted"):
+        _start_sort()
+    return True, folder
+
+
+@app.post("/api/review/shelve")
+def api_review_shelve():
+    ok, msg = shelve_active((request.get_json(silent=True) or {}).get("why", "set aside by hand"))
+    return (jsonify({"ok": True, "folder": msg}) if ok
+            else (jsonify({"error": msg}), 409))
+
+
+@app.post("/api/review/open/<folder_name>")
+def api_review_open(folder_name: str):
+    ok, msg = open_review(folder_name)
+    return (jsonify({"ok": True, "folder": msg}) if ok
+            else (jsonify({"error": msg}), 409))
+
+
+# ── The crank: one batch after another, unattended ───────────────────────────
+#
+# Scott curates albums on Synology; the crank does the rest, oldest first:
+# fetch → Lightroom (import, tone, denoise, export) → Claude sorts it → shelf.
+# Then the next. He approves the shelved posts whenever he gets to them.
+# It stops and says why whenever a step needs a person — it never guesses
+# past a gate it can't verify.
+
+CRANK_TARGET      = 25     # photos per batch: small albums combine up to about this
+CRANK_SMALL       = 12     # a batch this size or more isn't padded …
+CRANK_CAP         = 40     # … past this
+CRANK_HOLD_DAYS   = 7      # a short newest batch waits this long for more albums to join it
+CRANK_MIN_FREE_GB = 25
+SORT_START_GRACE  = 15 * 60    # a sorter that hasn't reported by now isn't coming
+CRANK_GATES = {               # steps where a live run is waiting on a person
+    "denoise":      "tick Denoise on one photo in Lightroom, then Continue",
+    "export_ready": "check Lightroom, then ▶ Export",
+}
+SORT_RUN_CAP      = 2 * 3600   # nor is one still "sorting" after this
+
+
+def _crank_groups(albums, taken, today=None) -> list:
+    """The Synology albums still to run, oldest first, grouped into batches.
+    Only -best albums: -wildlife and -sadie take the website's manual path and
+    -family stays on the NAS (Scott, 2026-11-22). Small days combine until a
+    batch holds about CRANK_TARGET photos."""
+    cands = []
+    for a in albums or []:
+        name = a.get("name") or ""
+        m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})-(.+)$", name)
+        if not m or name in taken or not a.get("item_count"):
+            continue
+        kind = m.group(4).lower()
+        if not kind.startswith("best") or "vid" in kind:
+            continue
+        try:
+            day = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        cands.append((day, name, a))
+    cands.sort(key=lambda t: (t[0], t[1]))
+
+    groups, cur, n = [], [], 0
+    for day, _, a in cands:
+        c = int(a["item_count"])
+        if cur and (n >= CRANK_TARGET or (n >= CRANK_SMALL and n + c > CRANK_CAP)):
+            groups.append(cur)
+            cur, n = [], 0
+        cur.append((day, a))
+        n += c
+    if cur:
+        # The newest batch may still be short only because the next days
+        # haven't been curated yet. Give it a week before running it short.
+        newest = cur[-1][0]
+        today = today or datetime.now()
+        if n >= CRANK_TARGET or (today - newest).days >= CRANK_HOLD_DAYS:
+            groups.append(cur)
+    return [[a for _, a in g] for g in groups]
+
+
+def _crank_status(text: str):
+    with lock:
+        changed = state["crank"].get("status") != text
+        state["crank"]["status"] = text
+        state["crank"]["at"] = time.time()
+    if changed:
+        log(f"⚙ Crank: {text}")
+
+
+def _crank_taken() -> set:
+    with lock:
+        return (set(state["done_albums"]) | set(state["syno_skipped"])
+                | set(state["batches"]) | set(state["review"])
+                | {a for srcs in state.get("multi_sources", {}).values() for a in srcs})
+
+
+def _crank_albums():
+    """The Synology album list, or None if the NAS can't be reached."""
+    r = call_host("syno-albums", timeout=60)
+    if not r.get("ok"):
+        return None
+    out = r.get("output", "")
+    line = next((l for l in out.splitlines() if l.lstrip().startswith("[")), None)
+    try:
+        albums = json.loads(line) if line else None
+    except ValueError:
+        return None
+    if albums is not None:
+        _syno_cache["albums"], _syno_cache["at"] = albums, time.time()
+    return albums
+
+
+def _crank_tick() -> float:
+    """Take the next step. Returns seconds until the next look."""
+    with lock:
+        active, step  = state["active"], state["proc_step"]
+        alive, mine   = state["thread_active"], state["crank"].get("batch")
+        sort, posting = dict(state.get("sort") or {}), state.get("posting")
+        err           = state.get("run_error", "")
+        mine_status   = (state["batches"].get(mine) or {}).get("status") if mine else None
+
+    if active and active != mine:
+        _crank_status(f"waiting — {active} is open on the posting screen" if step == "posting"
+                      else f"waiting — {active} is running by hand ({step})")
+        return 60
+
+    if active:
+        if step == "posting":
+            if posting:
+                return 30
+            st  = sort.get("state") if sort.get("folder") == active else None
+            age = time.time() - (sort.get("at") or 0)
+            if st is None:
+                _start_sort()
+                return 30
+            if (st == "starting" and age < SORT_START_GRACE) or (st == "running" and age < SORT_RUN_CAP):
+                _crank_status(f"Claude is sorting {active} into posts")
+                return 30
+            why = ("sorted" if st in ("done", "idle")
+                   else f"not sorted yet ({sort.get('text') or st}) — it sorts when you open it")
+            ok, msg = shelve_active(why)
+            if not ok:
+                _crank_status(f"couldn't set {active} aside: {msg}")
+                return 60
+            with lock:
+                state["crank"]["batch"] = None
+            save_state()
+            return 5
+        if alive:
+            gate = CRANK_GATES.get(step)
+            _crank_status(f"needs you — {active}: {gate}" if gate else f"{active}: {step}")
+            return 30
+        _crank_status(f"needs you — {active} stopped at '{step}'"
+                      f"{': ' + err if err else ''}. Fix it in the app, and the crank carries on.")
+        return 120
+
+    # Nothing on the posting screen.
+    with lock:
+        phase = state["crank"].get("phase")
+    if mine and mine_status == "pending" and phase in ("fetching", "fetched"):
+        # A restart cut the fetch short, or the batch was fetched while the
+        # posting screen was busy: finish what was started.
+        if phase == "fetching":
+            with lock:
+                names = state.get("multi_sources", {}).get(mine) or [mine]
+            if not _fetch_album(mine, names if len(names) > 1 else None):
+                return 600
+        return _crank_process(mine)
+    if mine:
+        # Reset or skipped by hand after the crank started it — that batch is
+        # Scott's now. Move on to the next one.
+        with lock:
+            state["crank"]["batch"] = None
+        save_state()
+        if mine_status == "pending":
+            _crank_status(f"left {mine} for you (it was reset) — moving on")
+
+    if not check_host():
+        _crank_status("waiting — the Mac bridge (lr_host) is offline")
+        return 300
+    free_gb = shutil.disk_usage(DOWNLOADS).free / 1e9
+    if free_gb < CRANK_MIN_FREE_GB:
+        _crank_status(f"paused — only {free_gb:.0f} GB free on the Mac")
+        return 900
+    albums = _crank_albums()
+    if albums is None:
+        _crank_status("waiting — can't reach Synology")
+        return 300
+    groups = _crank_groups(albums, _crank_taken())
+    if not groups:
+        _crank_status("all caught up — checking for new albums every 30 min")
+        return 1800
+
+    group = groups[0]
+    names = [a["name"] for a in group]
+    total = sum(int(a.get("item_count") or 0) for a in group)
+    folder = names[0] if len(names) == 1 else _multi_name(names)
+    with lock:
+        if len(names) > 1:
+            state["multi_sources"][folder] = names
+        state["crank"]["batch"] = folder
+        state["crank"]["phase"] = "fetching"
+    save_state()
+    _crank_status(f"fetching {folder} ({total} photos, {len(groups)} batch"
+                  f"{'es' if len(groups) != 1 else ''} to go)")
+    if not _fetch_album(folder, names if len(names) > 1 else None, False, total):
+        with lock:
+            state["crank"]["fails"] = state["crank"].get("fails", 0) + 1
+            fails = state["crank"]["fails"]
+        if fails >= 3:
+            with lock:
+                state["crank"]["on"] = False
+            save_state()
+            _crank_status(f"stopped — fetching {folder} failed 3 times. Check the log.")
+        return 600
+    with lock:
+        state["crank"]["fails"] = 0
+        state["crank"]["phase"] = "fetched"
+    save_state()
+    return _crank_process(folder)
+
+
+def _crank_process(folder: str) -> float:
+    """Run a fetched batch through Lightroom to the posting step."""
+    scan_batches()
+    with lock:
+        known = folder in state["batches"]
+        busy  = state["active"]
+    if not known:
+        with lock:
+            state["crank"]["on"] = False
+        save_state()
+        _crank_status(f"stopped — fetched {folder} but no batch appeared for it")
+        return 60
+    if busy:
+        # Scott opened something on the posting screen while this downloaded.
+        _crank_status(f"{folder} is fetched — waiting for {busy} to finish first")
+        return 60
+    with lock:
+        state["crank"]["phase"] = "processing"
+    save_state()
+    _crank_status(f"processing {folder}")
+    process_batch(folder)          # blocks through Lightroom, export and the sort hand-off
+    return 5
+
+
+def crank_loop():
+    time.sleep(10)
+    while True:
+        with lock:
+            on = state["crank"].get("on")
+        if not on:
+            time.sleep(10)
+            continue
+        try:
+            wait = _crank_tick()
+        except Exception as e:
+            log(f"✗ Crank step failed: {type(e).__name__}: {e}")
+            wait = 120
+        # Sleep in short slices so Pause and Start take effect promptly.
+        end = time.time() + wait
+        while time.time() < end:
+            time.sleep(min(5, max(0.1, end - time.time())))
+            with lock:
+                if state["crank"].get("on") != on or state["crank"].get("kick"):
+                    state["crank"]["kick"] = False
+                    break
+
+
+@app.post("/api/crank")
+def api_crank():
+    """{"on": true|false} — start or pause the crank. Pausing lets the batch
+    in hand finish its current Lightroom step; it just doesn't start another."""
+    on = bool((request.get_json(silent=True) or {}).get("on"))
+    with lock:
+        state["crank"]["on"] = on
+        state["crank"]["kick"] = True
+        if on:
+            state["crank"]["fails"] = 0
+    save_state()
+    log("⚙ Crank started — batches will run one after another." if on
+        else "⚙ Crank paused — it won't start another batch.")
+    if not on:
+        _crank_status("paused")
+    return jsonify({"ok": True, "on": on})
 
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
@@ -2687,7 +3212,11 @@ if __name__ == "__main__":
     state["claimed"] = _saved.get("claimed", {})
     state["done_albums"]  = set(_saved.get("done_albums", [])) | {
         n for n, s in _saved.get("statuses", {}).items() if s == "done"}
+    state["review"] = _saved.get("review", {})
+    state["crank"].update(_saved.get("crank") or {})
+    state["sort"] = _saved.get("sort", {})
     # Defer scanning to background so Flask starts immediately
     threading.Thread(target=scanner_loop, daemon=True).start()
+    threading.Thread(target=crank_loop, daemon=True).start()
     log("Bird workflow server ready — scanning for batches…")
     app.run(host="0.0.0.0", port=8765, debug=False)

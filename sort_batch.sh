@@ -40,7 +40,14 @@ Run the sorter exactly as ~/.bird_sort_venv/bin/python bird_sort.py <command> fr
 the current directory (no cd, no shell variables), and keep plan.json in the work
 directory that prepare prints."
 
-status() { echo "$(date '+%a %H:%M') $*" > "$STATUS"; echo "== $*"; }
+# Each status line also goes to the app, which is how the crank knows when a
+# batch is sorted (or won't be soon) and can set it aside and start the next.
+APP_URL="${BIRD_APP:-http://localhost:8765}"
+status() {
+  echo "$(date '+%a %H:%M') $*" > "$STATUS"; echo "== $*"
+  [ -n "${BIRD_SORT_TEST:-}" ] && return 0      # a rehearsal: leave the app alone
+  curl -s -m 5 -o /dev/null --data-urlencode "text=$*" "$APP_URL/api/sort-status" || true
+}
 
 # Sleep until an epoch time in short naps, so a Mac that slept through the
 # wake-up time (or a clock change) doesn't strand the wait.

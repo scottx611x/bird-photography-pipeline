@@ -104,6 +104,17 @@ def main():
             print(f"{hit} — dialog closed.")
             return
 
+    # Escape and the coordinate clicks below land on whatever app is in
+    # front. Never send them anywhere but Lightroom.
+    osa(f'tell application "{APP}" to activate', timeout=15)
+    time.sleep(1.0)
+    front = osa('tell application "System Events" to return name of '
+                '(first process whose frontmost is true)')
+    if front != APP:
+        print(f"Lightroom isn't the frontmost app ({front or 'unknown'} is) — "
+              "not pressing keys or clicking.")
+        sys.exit(1)
+
     # 2. Escape
     osa(f'tell application "System Events" to tell process "{APP}" to key code 53')
     time.sleep(1.5)

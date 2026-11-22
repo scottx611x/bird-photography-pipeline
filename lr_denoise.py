@@ -269,7 +269,22 @@ def is_checked(im: Image.Image, centre) -> bool:
     return im_mean > bg_mean + 45 or im_mean / bg_mean > 2.2
 
 
+def lr_in_front(tries: int = 3) -> bool:
+    """A screen click or a key lands on whatever app is in front — never send
+    one unless that is Lightroom (see lr_auto.ensure_lr_front)."""
+    for i in range(tries):
+        if _osa('tell application "System Events" to return name of '
+                '(first process whose frontmost is true)') == APP:
+            return True
+        activate()
+        time.sleep(i)
+    return False
+
+
 def click(pt):
+    if not lr_in_front():
+        print("Lightroom isn't the frontmost app — not clicking.")
+        sys.exit(1)
     subprocess.run([CLICLICK, f"c:{pt[0]},{pt[1]}"], capture_output=True, timeout=20)
 
 
@@ -499,6 +514,9 @@ def cmd_spread(count: int):
     activate()
 
     def arrow(code):
+        if not lr_in_front():
+            print("spread: unknown (Lightroom isn't the frontmost app)")
+            sys.exit(0)
         _osa(f'tell application "System Events" to tell process "{APP}" '
              f'to key code {code}')
         time.sleep(1.4)

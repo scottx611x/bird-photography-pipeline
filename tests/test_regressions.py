@@ -154,7 +154,7 @@ def test_denoise_spread_verified():
     tail = tail[:tail.find("\ndef ", 1)]
     i_paste  = tail.find("Denoise applied to all photos")
     i_verify = tail.find("spread = _verify_spread(")
-    i_gate   = tail.rfind("_export_gate()")   # the early one is the still-rendering bail-out
+    i_gate   = tail.rfind("_export_gate(")    # the early one is the still-rendering bail-out
     check("server: verification sits between the denoise wait and export",
           0 < i_paste < i_verify < i_gate)
 
@@ -702,6 +702,239 @@ def test_sort_batch():
           "never post" in skill and "Never stop to ask" in skill)
 
 
+def test_crank_and_review():
+    """Scott approves posts one by one, many batches later (2026-11-22), so a
+    sorted batch goes on a shelf and the crank starts the next one. Shelving
+    moves the photos out of birbs: with the camera counter wrapped, two open
+    batches can both own a DSC_0947.jpg, and a shared name is how a June
+    starling ended up in a September post."""
+    import tempfile, threading, time as _time
+    from datetime import datetime
+    srv = ROOT / "server.py"
+    src = srv.read_text()
+
+    # ── which albums run next, and how they combine ──
+    ns = _load_funcs(srv, {"_crank_groups", "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP",
+                           "CRANK_HOLD_DAYS"}, {"re": re, "datetime": datetime})
+    alb = lambda n, c: {"name": n, "item_count": c}
+    albums = [alb("2026-09-26-best", 85), alb("2026-09-27-best", 24), alb("2026-09-27-wildlife", 9),
+              alb("2026-09-28-best", 31), alb("2026-09-25-family", 33), alb("2026-09-29-best", 17),
+              alb("2026-09-30-best", 16), alb("2026-10-03-best", 13), alb("2026-10-05-best", 7),
+              alb("2026-10-06-best", 11), alb("2026-10-07-best", 29), alb("2026-10-12-best", 1),
+              alb("2026-10-13-best", 14), alb("2026-10-14-best", 53), alb("2026-01-24-25-best-vids", 9),
+              alb("2026-10-14-sadie", 5), alb("2026-mems-day-birds", 122), alb("2026-10-20-best", 0)]
+    groups = ns["_crank_groups"](albums, {"2026-09-26-best"}, today=datetime(2026, 11, 22))
+    names = [[a["name"][5:10] for a in g] for g in groups]
+    check("crank: -best only, oldest first, small days combined to ~25",
+          names == [["09-27"], ["09-28"], ["09-29", "09-30"], ["10-03", "10-05", "10-06"],
+                    ["10-07"], ["10-12", "10-13"], ["10-14"]], str(names))
+    recent = ns["_crank_groups"]([alb("2026-11-20-best", 6)], set(), today=datetime(2026, 11, 22))
+    check("crank: a short newest batch waits a week for more albums", recent == [])
+    old = ns["_crank_groups"]([alb("2026-11-01-best", 6)], set(), today=datetime(2026, 11, 22))
+    check("crank: …and runs short once the week is up", len(old) == 1)
+
+    # ── sort_batch.sh status lines → what they mean ──
+    ns = _load_funcs(srv, {"SORT_STATES"})
+    kind = lambda t: next((k for p, k in ns["SORT_STATES"] if t.startswith(p)), "running")
+    check("sort status: lines map to states",
+          [kind(t) for t in ("done — sorted 10:49", "waiting until Sun 09:38 — usage limit",
+                             "gave up waiting (auth) — run ./sort_batch.sh", "idle — nothing to sort",
+                             "failed — exit 1 (log: x)", "sorting (cwd /x)")]
+          == ["done", "waiting", "failed", "idle", "failed", "running"])
+    sh = (ROOT / "sort_batch.sh").read_text()
+    check("sort_batch.sh reports each status to the app", "/api/sort-status" in sh
+          and 'BIRD_SORT_TEST:-}" ] && return' in sh)
+
+    # ── shelf round trip, with a same-name photo from another batch ──
+    with tempfile.TemporaryDirectory() as td:
+        birds = Path(td)
+        excl, orig = birds / ".excluded", birds / ".originals"
+        for d in (excl, orig, birds / ".thumbs", birds / ".previews"):
+            d.mkdir()
+        (birds / "DSC_0947.jpg").write_text("A-0947")
+        (birds / "DSC_0001.jpg").write_text("A-0001 cropped")
+        (orig / "DSC_0001.jpg").write_text("A-0001 original")
+        (excl / "DSC_0002.jpg").write_text("A-0002")
+        (birds / ".thumbs" / "DSC_0947.jpg").write_text("thumb")
+        (birds / "other.jpg").write_text("not this batch's")
+        arr = {"lanes": [["DSC_0947.jpg", "DSC_0001.jpg"]], "excluded": ["DSC_0002.jpg"], "meta": {}}
+        st = {"active": "A", "proc_step": "posting", "arrangement": arr, "posting": False,
+              "new_birds": ["DSC_0947.jpg", "DSC_0001.jpg"], "run_error": "",
+              "sort": {"folder": "A", "state": "done"}, "photo_dates": {"DSC_0947.jpg": "9-26-26"},
+              "batches": {"A": {"status": "processing"}}, "review": {}, "claimed": {},
+              "stop_requested": False, "no_post": False}
+        sorts = []
+        env = {"state": st, "lock": threading.Lock(), "json": json, "datetime": datetime,
+               "time": _time, "BIRDS_DIR": birds, "EXCLUDED_DIR": excl,
+               "PREVIEW_DIR": birds / ".previews", "save_state": lambda: None,
+               "log": lambda m: None, "_start_sort": lambda: sorts.append(st["active"])}
+        ns = _load_funcs(srv, {"REVIEW_DIR", "ORIGINALS_DIR", "SHELF_PARTS", "_review_summary",
+                               "_shelf_files", "_drop_caches", "shelve_active", "open_review"}, env)
+        ok, _ = ns["shelve_active"]("sorted")
+        shelf = birds / ".review" / "A"
+        check("shelf: the batch's photos, exclusions and crop backups move out of birbs",
+              ok and not (birds / "DSC_0947.jpg").exists() and not (orig / "DSC_0001.jpg").exists()
+              and (shelf / "live" / "DSC_0947.jpg").read_text() == "A-0947"
+              and (shelf / "excluded" / "DSC_0002.jpg").exists()
+              and (shelf / "originals" / "DSC_0001.jpg").read_text() == "A-0001 original")
+        check("shelf: other photos in birbs are left alone", (birds / "other.jpg").exists())
+        check("shelf: the posting screen is freed and the batch waits for review",
+              st["active"] is None and st["proc_step"] is None and st["arrangement"] is None
+              and st["batches"]["A"]["status"] == "review" and st["review"]["A"]["sorted"] is True)
+        check("shelf: cached thumbnails go with it", not (birds / ".thumbs" / "DSC_0947.jpg").exists())
+
+        # Batch B exports its own DSC_0947 while A is away, posts it, leaves it in birbs.
+        (birds / "DSC_0947.jpg").write_text("B-0947")
+        st["active"], st["proc_step"] = "B", "denoising"
+        ok, msg = ns["open_review"]("A")
+        check("review: won't open while another batch is using the posting screen",
+              not ok and "B" in msg and (shelf / "live" / "DSC_0947.jpg").exists())
+        st["active"], st["proc_step"] = None, None
+        ok, _ = ns["open_review"]("A")
+        disp = list((birds / ".review" / ".displaced").glob("*/live/DSC_0947.jpg"))
+        check("review: A gets its own DSC_0947 back, not B's",
+              ok and (birds / "DSC_0947.jpg").read_text() == "A-0947")
+        check("review: B's same-name photo is kept, out of the way",
+              len(disp) == 1 and disp[0].read_text() == "B-0947")
+        check("review: arrangement, crops and exclusions come back",
+              st["active"] == "A" and st["proc_step"] == "posting" and st["arrangement"] == arr
+              and (orig / "DSC_0001.jpg").read_text() == "A-0001 original"
+              and (excl / "DSC_0002.jpg").exists() and st["photo_dates"]["DSC_0947.jpg"] == "9-26-26"
+              and st["claimed"].get("DSC_0947.jpg") == "A" and not shelf.exists())
+        check("review: a sorted batch isn't re-sorted", sorts == [])
+        st["sort"] = {"folder": "A", "state": "waiting"}
+        ns["shelve_active"]("not sorted yet")
+        ns["open_review"]("A")
+        check("review: a batch shelved unsorted gets sorted when opened", sorts == ["A"])
+
+    # ── the crank's decisions ──
+    st = {"active": None, "proc_step": None, "thread_active": False, "posting": False,
+          "run_error": "", "sort": {}, "batches": {}, "review": {}, "done_albums": set(),
+          "syno_skipped": set(), "multi_sources": {},
+          "crank": {"on": True, "status": "", "batch": None}}
+    calls = []
+    env = {"state": st, "lock": threading.Lock(), "time": _time, "re": re, "datetime": datetime,
+           "json": json, "log": lambda m: None, "save_state": lambda: None,
+           "shelve_active": lambda why: (calls.append(("shelve", why)), (True, st["active"]))[1],
+           "_start_sort": lambda: calls.append(("sort",)),
+           "check_host": lambda: True, "scan_batches": lambda: None,
+           "shutil": type("S", (), {"disk_usage": staticmethod(lambda p: type("U", (), {"free": 90e9})())}),
+           "DOWNLOADS": Path("/tmp"), "_syno_cache": {},
+           "_crank_albums": lambda: [alb("2026-09-27-best", 24), alb("2026-09-28-best", 31)],
+           "_fetch_album": lambda *a, **k: calls.append(("fetch", a[0])) or True,
+           "process_batch": lambda f: calls.append(("process", f)),
+           "_multi_name": lambda n: "multi"}
+    ns = _load_funcs(srv, {"_crank_tick", "_crank_process", "_crank_status", "_crank_taken",
+                           "_crank_groups", "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP",
+                           "CRANK_HOLD_DAYS", "CRANK_MIN_FREE_GB", "SORT_START_GRACE",
+                           "SORT_RUN_CAP", "CRANK_GATES"}, env)
+    tick = ns["_crank_tick"]
+
+    def fetched(f):
+        st["batches"][f] = {"status": "pending"}
+    env["scan_batches"] = lambda: [fetched(c[1]) for c in calls if c[0] == "fetch"]
+    ns["_crank_process"].__globals__["scan_batches"] = env["scan_batches"]
+    tick()
+    check("crank: fetches the oldest album and runs it",
+          calls == [("fetch", "2026-09-27-best"), ("process", "2026-09-27-best")]
+          and st["crank"]["batch"] == "2026-09-27-best", str(calls))
+
+    calls.clear()
+    st.update(active="2026-09-27-best", proc_step="posting",
+              sort={"folder": "2026-09-27-best", "state": "starting", "at": _time.time()})
+    tick()
+    check("crank: waits while Claude sorts", calls == [] and "sorting" in st["crank"]["status"])
+    st["sort"]["state"] = "done"
+    tick()
+    check("crank: a sorted batch is set aside and the crank lets go of it",
+          calls == [("shelve", "sorted")] and st["crank"]["batch"] is None)
+
+    calls.clear()
+    st.update(active="2026-09-28-best", proc_step="posting")
+    st["crank"]["batch"] = "2026-09-28-best"
+    st["sort"] = {"folder": "2026-09-28-best", "state": "waiting", "text": "waiting until 15:00",
+                  "at": _time.time()}
+    tick()
+    check("crank: a sort stuck behind a usage limit doesn't hold up Lightroom",
+          calls and calls[0][0] == "shelve" and "not sorted" in calls[0][1])
+
+    calls.clear()
+    st.update(active="2026-09-26-best", proc_step="posting")
+    st["crank"]["batch"] = None
+    tick()
+    check("crank: never touches a batch Scott has open", calls == []
+          and "open on the posting screen" in st["crank"]["status"])
+
+    st.update(active="X", proc_step="denoise", thread_active=True)
+    st["crank"]["batch"] = "X"
+    tick()
+    check("crank: says when a gate needs a person", st["crank"]["status"].startswith("needs you"))
+
+    # ── wiring ──
+    tail = src[src.find("def _denoise_and_export_tail"):src.find("def _run_batch")]
+    gate = src[src.find("def _export_gate"):src.find("def _denoise_and_export_tail")]
+    check("auto-export: only after a clean paste and spread check",
+          '_export_gate(auto=pasted and spread in ("all", "unknown"))' in tail
+          and "if auto and AUTO_EXPORT:" in gate)
+    check("auto-export: still rendering parks at the gate",
+          "Don't export until its progress dialog is gone.\")\n        return _export_gate()" in tail)
+    check("boot starts the crank thread", "threading.Thread(target=crank_loop, daemon=True).start()" in src)
+    check("crank/shelf state is persisted",
+          all(f'"{k}":' in src[src.find("def save_state"):src.find("def load_saved_statuses")]
+              for k in ("review", "crank", "sort")))
+    html = INDEX.read_text()
+    check("ui: Review, Later and the crank toggle are wired",
+          all(x in html for x in ("doReviewOpen(", "doShelve()", "renderCrank(d)", "/api/crank",
+                                  "/api/review/open/", "/api/review/shelve", 'data-f="review"')))
+
+
+def test_keys_only_reach_lightroom():
+    """2026-11-22: Lightroom's activate timed out and a filename meant for its
+    search box was typed into Scott's terminal. Keystrokes go to whatever app
+    is in front, whatever process the script names."""
+    lra = ROOT / "lr_auto.py"
+    ran = []
+
+    class R:
+        def __init__(self, out=""):
+            self.returncode, self.stdout, self.stderr = 0, out, ""
+
+    def fake_run(args, **kw):
+        script = args[-1]
+        ran.append(script)
+        if "frontmost is true" in script and "keystroke" not in script:
+            return R(front[0])
+        return R()
+
+    front = ["Adobe Lightroom"]
+    fake_sp = type("SP", (), {"run": staticmethod(fake_run), "TimeoutExpired": TimeoutError})
+    fake_time = type("T", (), {"sleep": staticmethod(lambda s: None)})
+    ns = _load_funcs(lra, {"KEYS_RE", "FRONT_GUARD", "lr_frontmost", "ensure_lr_front",
+                           "run_applescript"}, {"re": re, "subprocess": fake_sp, "time": fake_time})
+    ns["run_applescript"]('tell application "System Events" to keystroke "g"')
+    check("keys: a keystroke script carries the in-script frontmost check",
+          ran[-1].startswith(ns["FRONT_GUARD"]))
+    ran.clear()
+    ns["run_applescript"]('tell application "System Events" to click menu item "X"')
+    check("keys: menu clicks aren't held up by the check", len(ran) == 1)
+    ran.clear()
+    front[0] = "iTerm2"
+    try:
+        ns["run_applescript"]('tell application "System Events" to keystroke "v" using command down')
+        raised = False
+    except RuntimeError as e:
+        raised = "iTerm2" in str(e)
+    check("keys: nothing is typed while another app is in front",
+          raised and not any("keystroke" in r for r in ran))
+    den = (ROOT / "lr_denoise.py").read_text()
+    check("keys: lr_denoise checks before a screen click and before arrow keys",
+          "if not lr_in_front():" in den[den.find("def click("):den.find("def lr_window_names")]
+          and "if not lr_in_front():" in den[den.find("def arrow(code):"):])
+    dis = (ROOT / "lr_dismiss.py").read_text()
+    check("keys: lr_dismiss checks before Escape and its clicks",
+          dis.find("first process whose frontmost is true") < dis.find("key code 53"))
+
+
 def test_dust_section_not_ambiguous():
     """Distraction Removal grew two more collapsible sub-sections above Dust
     (Reflections, People) with an identically-labelled "Apply" checkbox each.
@@ -866,6 +1099,8 @@ def main():
     test_wrapped_filenames_are_collected()
     test_failed_export_trigger_is_not_waited_on()
     test_sort_batch()
+    test_crank_and_review()
+    test_keys_only_reach_lightroom()
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_container_has_server_imports()
