@@ -21,6 +21,7 @@ Typical workflow (driven by the web UI at localhost:8765):
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -157,7 +158,7 @@ end tell
     return name
 
 
-def _menu_item_count(menu_name: str, prefix: str):
+def _menu_item_count(menu_name: str, prefix: str, pattern: str = r"in ([\d,]+)"):
     """The number in a menu item like "Update AI Settings in 5,762 Items",
     read without clicking. None when the item is absent or carries no count."""
     name = run_applescript(f'''
@@ -173,7 +174,7 @@ tell application "System Events"
   end tell
 end tell
 ''').strip()
-    m = re.search(r"in ([\d,]+)", name)
+    m = re.search(pattern, name)
     return int(m.group(1).replace(",", "")) if m else None
 
 
@@ -747,7 +748,10 @@ def cmd_export(args):
     # 2026-10-19 that had become ~/Documents/birbs: the sandboxed (App Store)
     # Lightroom holds no folder grant there, so all 228 failed with "The file
     # could not be created" — and the pipeline watches ~/Desktop/birbs anyway.
-    dest = _lr_export_folder()
+    # Reading it pops macOS's "access data from other apps" prompt on every
+    # export (2026-11-22, twice), so it's opt-in. The app catches a wrong
+    # folder anyway: an export that lands nothing in birbs times out.
+    dest = _lr_export_folder() if os.environ.get("LR_CHECK_EXPORT_FOLDER") == "1" else None
     if dest and Path(dest) != BIRDS_DIR:
         print(f"Refusing to export: Lightroom's Export with Previous goes to "
               f"{dest}, not {BIRDS_DIR}. Export once by hand to {BIRDS_DIR} "
@@ -774,6 +778,11 @@ end tell
         # Same trap as the render: Select All grabs whatever view is open.
         if args.expect is not None:
             got = _menu_item_count("Photo", "Update AI Settings")
+            if got is None:
+                # That item loses its count once every render is done — the
+                # normal state before an export. "Create Album with N Photos"
+                # always counts the selection.
+                got = _menu_item_count("Photo", "Create Album with", r"with ([\d,]+) Photo")
             if got != args.expect:
                 print(f"Refusing to export: selection is {got} photos, the "
                       f"batch is {args.expect}. Is Lightroom showing the batch?")

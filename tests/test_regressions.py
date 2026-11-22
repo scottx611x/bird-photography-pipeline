@@ -933,6 +933,24 @@ def test_denoise_survives_a_slow_first_photo():
           und.find('wait_window("denoise"') < und.find("click(box)"))
 
 
+def test_export_runs_unattended():
+    """2026-11-22, first crank batch: the export refused to start ("selection
+    is None photos") because its count came from a menu item that loses its
+    number once every render is done; and reading Lightroom's export folder
+    raised macOS's "access data from other apps" prompt yet again."""
+    lra = (ROOT / "lr_auto.py").read_text()
+    exp = lra[lra.find("def cmd_export("):lra.find("def _cancel_ai_update_dialog")]
+    check("export: counts the selection even after every render is done",
+          '"Create Album with"' in exp and "if got is None:" in exp)
+    check("export: doesn't read Lightroom's container unless asked",
+          'os.environ.get("LR_CHECK_EXPORT_FOLDER") == "1"' in exp)
+    src = (ROOT / "server.py").read_text()
+    wait = src[src.find('set_step("export_wait")'):src.find("new = _exported()\n")]
+    check("export: an export that lands nothing gives up and says so",
+          "EXPORT_NOTHING_AFTER" in wait and 'set_step("export_ready")' in wait
+          and "quiet_since = time.time()" in wait)
+
+
 def test_keys_only_reach_lightroom():
     """2026-11-22: Lightroom's activate timed out and a filename meant for its
     search box was typed into Scott's terminal. Keystrokes go to whatever app
@@ -1148,6 +1166,7 @@ def main():
     test_keys_only_reach_lightroom()
     test_import_needs_no_keystrokes()
     test_denoise_survives_a_slow_first_photo()
+    test_export_runs_unattended()
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_container_has_server_imports()

@@ -301,6 +301,7 @@ def _batch_size():
 
 AUTO_DENOISE = os.environ.get("AUTO_DENOISE", "1") != "0"
 AUTO_EXPORT  = os.environ.get("AUTO_EXPORT", "1") != "0"
+EXPORT_NOTHING_AFTER = 15 * 60   # an export that lands nothing in birbs for this long went elsewhere
 AUTO_DENOISE_LOG = DOWNLOADS / ".auto_denoise.jsonl"
 
 
@@ -769,6 +770,7 @@ def _pick_export_post(trigger: bool = True):
     set_step("export_wait")
     log("Export running in Lightroom — auto-continues when files land in ~/Desktop/birbs/ (or click Done).")
     last_sig, stable, last_note, ticks = None, 0, "", 0
+    quiet_since = time.time()      # last moment Lightroom showed export progress
     while True:
         time.sleep(1)
         with lock:
@@ -795,6 +797,7 @@ def _pick_export_post(trigger: bool = True):
                 prog = {"active": False}
             if prog.get("active"):
                 stable = 0
+                quiet_since = time.time()
                 note = _prog_line(prog)
                 if note != last_note:
                     log(f"  {note}")
@@ -803,6 +806,17 @@ def _pick_export_post(trigger: bool = True):
 
         new_files = _exported()
         if not new_files:
+            if trigger and time.time() - quiet_since > EXPORT_NOTHING_AFTER:
+                # Lightroom finished (or never started) and nothing came. The
+                # export went somewhere else — Export with Previous follows the
+                # last manual export's folder. Don't wait a day on it.
+                with lock:
+                    state["run_error"] = "Export finished but nothing landed in ~/Desktop/birbs"
+                log(f"✗ Nothing reached ~/Desktop/birbs in {EXPORT_NOTHING_AFTER // 60} min. "
+                    "Lightroom's Export with Previous may point at another folder — export "
+                    "once by hand to ~/Desktop/birbs, then ▶ Export again.")
+                set_step("export_ready")
+                return
             continue
         try:
             sig = tuple((f, (BIRDS_DIR / f).stat().st_size) for f in new_files)
