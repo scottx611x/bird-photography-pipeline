@@ -129,6 +129,21 @@ def show_detail_section() -> bool:
     return True
 
 
+def show_detail_view() -> bool:
+    """Put Lightroom in Detail (single-photo) view. In a grid the Edit panel
+    shows only "The Edit controls are only available in Detail and Compare
+    views", so the hunt for the checkbox can never succeed — on 2026-11-22 the
+    batch sat in Square Grid after import and auto-Denoise reported "couldn't
+    find the Denoise checkbox". View > Detail is a radio item, so clicking it
+    when it is already ticked is harmless, but check first anyway."""
+    if _view_flag("Detail"):
+        return False
+    _osa('tell application "System Events" to tell process "%s" to click '
+         'menu item "Detail" of menu 1 of menu bar item "View" of menu bar 1' % APP)
+    time.sleep(2.0)
+    return True
+
+
 def set_remove_tool(on: bool) -> bool:
     """Pin the Remove (eraser) tool on or off so we know which panel shows."""
     if menu_flag("Remove") != on:
@@ -302,6 +317,8 @@ def run(kind: str, enable: bool):
         sys.exit(1)
 
     activate()
+    if show_detail_view():
+        print("Switched to Detail view (the Edit controls don't show in a grid)")
     want_remove = (kind == "dust")
     if set_remove_tool(want_remove) != want_remove:
         panel = "Remove" if want_remove else "Edit"

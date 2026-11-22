@@ -624,6 +624,11 @@ def test_sort_batch():
     check("server: only a proven click skips the manual gate",
           'if r.get("ok"):' in gate and '"copy_pasting"' in gate
           and "_record_auto_denoise(" in gate)
+    den = (ROOT / "lr_denoise.py").read_text()
+    body = den[den.find("def run(kind"):den.find("def locate_denoise(")]
+    check("lr_denoise: switches to Detail view before hunting the checkbox",
+          "show_detail_view()" in body
+          and body.find("show_detail_view()") < body.find("find_label("))
     skill = (ROOT / ".claude/skills/sort-batch/SKILL.md").read_text()
     check("skill: never posts and never asks",
           "never post" in skill and "Never stop to ask" in skill)
