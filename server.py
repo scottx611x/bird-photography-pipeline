@@ -3088,8 +3088,17 @@ def _crank_process(folder: str) -> float:
         state["crank"]["phase"] = "processing"
     save_state()
     _crank_status(f"processing {folder}")
-    process_batch(folder)          # blocks through Lightroom, export and the sort hand-off
-    return 5
+    # Its own thread, so the crank keeps looking while it runs: a run parked
+    # at a gate then shows as "needs you" instead of a frozen "processing".
+    t = threading.Thread(target=process_batch, args=(folder,), daemon=True)
+    t.start()
+    end = time.time() + 10
+    while time.time() < end and t.is_alive():
+        with lock:
+            if state["active"] == folder:
+                break
+        time.sleep(0.2)
+    return 10
 
 
 def crank_loop():

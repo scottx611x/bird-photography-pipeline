@@ -823,7 +823,8 @@ def test_crank_and_review():
            "_crank_albums": lambda: [alb("2026-09-27-best", 24), alb("2026-09-28-best", 31)],
            "_fetch_album": lambda *a, **k: calls.append(("fetch", a[0])) or True,
            "process_batch": lambda f: calls.append(("process", f)),
-           "_multi_name": lambda n: "multi"}
+           "_multi_name": lambda n: "multi",
+           "threading": type("Th", (), {"Lock": threading.Lock, "Thread": _SyncThread})}
     ns = _load_funcs(srv, {"_crank_tick", "_crank_process", "_crank_status", "_crank_taken",
                            "_crank_groups", "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP",
                            "CRANK_HOLD_DAYS", "CRANK_MIN_FREE_GB", "SORT_START_GRACE",
@@ -886,6 +887,34 @@ def test_crank_and_review():
     check("ui: Review, Later and the crank toggle are wired",
           all(x in html for x in ("doReviewOpen(", "doShelve()", "renderCrank(d)", "/api/crank",
                                   "/api/review/open/", "/api/review/shelve", 'data-f="review"')))
+
+
+class _SyncThread:
+    """threading.Thread stand-in that runs its target on start()."""
+    def __init__(self, target=None, args=(), daemon=None):
+        self.target, self.args = target, args
+
+    def start(self):
+        self.target(*self.args)
+
+    def is_alive(self):
+        return False
+
+
+def test_import_needs_no_keystrokes():
+    """2026-11-22: the Add Photos panel ignored Cmd-Shift-G, the import's keys
+    went nowhere useful, and the run said "Imported" anyway, then auto-toned
+    whatever Lightroom was showing."""
+    src = (ROOT / "lr_auto.py").read_text()
+    imp = src[src.find("def cmd_import("):src.find("\ndef ", src.find("def cmd_import(") + 5)]
+    check("import: hands the folder to Lightroom with open -a",
+          '["open", "-a", "Adobe Lightroom", str(folder)]' in imp)
+    check("import: presses Add through accessibility, not the keyboard",
+          "_add_button(click=True)" in imp and not re.search(r'keystroke "|key code \d', imp))
+    check("import: only says Imported once the review has closed",
+          imp.find('print(f"Imported: {folder}")') > imp.find("_wait(lambda: not _add_button()"))
+    check("import: fails loudly (exit 1) when the review never appears",
+          "never showed" in imp and "sys.exit(1)" in imp)
 
 
 def test_keys_only_reach_lightroom():
@@ -1101,6 +1130,7 @@ def main():
     test_sort_batch()
     test_crank_and_review()
     test_keys_only_reach_lightroom()
+    test_import_needs_no_keystrokes()
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_container_has_server_imports()

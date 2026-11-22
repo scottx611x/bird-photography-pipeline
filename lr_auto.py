@@ -364,48 +364,90 @@ end tell
     render_ai_settings(expect=args.expect)
 
 
+ADD_BUTTON_SCRIPT = '''
+tell application "System Events" to tell process "Adobe Lightroom"
+  repeat with w in every window
+    repeat with b in (every button of w)
+      try
+        set t to (value of attribute "AXTitle" of b) as text
+        if t starts with "Add " and t contains "Photo" then
+          %s
+        end if
+      end try
+    end repeat
+  end repeat
+  return ""
+end tell'''
+
+
+def _add_button(click: bool = False) -> str:
+    """The title of Lightroom's "Add N Photos" button, clicking it if asked.
+    A real accessibility button — pressing it needs no keystroke and no
+    particular app in front."""
+    action = "click b\n          return t" if click else "return t"
+    try:
+        return run_applescript(ADD_BUTTON_SCRIPT % action)
+    except RuntimeError:
+        return ""
+
+
+def _wait(pred, timeout: float, step: float = 0.5):
+    end = time.time() + timeout
+    while time.time() < end:
+        got = pred()
+        if got:
+            return got
+        time.sleep(step)
+    return pred()
+
+
 def cmd_import(args):
-    """Open a batch folder in Lightroom's Add Photos dialog."""
+    """Add a batch folder to Lightroom, with no keystrokes.
+
+    Handing the folder to Lightroom with `open -a` (what dropping it on the
+    Dock icon does) opens its import review with an "Add N Photos" button,
+    which accessibility can press. The old route drove the Add Photos file
+    panel with Cmd-Shift-G, Cmd-V and three Returns. On 2026-11-22 the panel
+    ignored Cmd-Shift-G, the keys went nowhere useful, the panel sat open, and
+    the run still printed "Imported" and went on to auto-tone whatever
+    Lightroom happened to be showing. Every step here is checked instead."""
     folder = Path(args.folder) if args.folder else _latest_batch()
     if not folder or not folder.exists():
         print(f"Folder not found: {folder}")
         sys.exit(1)
+    raws = [f for f in folder.iterdir() if f.suffix.lower() in RAW_SUFFIXES]
 
     print(f"Importing {folder.name} into Lightroom…")
 
     if not lr_is_running():
         print("Opening Lightroom…")
         subprocess.Popen(["open", "-a", "Adobe Lightroom"])
-        time.sleep(4)
+        time.sleep(8)
 
-    # Bring Lightroom to front
-    run_applescript('tell application "Adobe Lightroom" to activate')
-    time.sleep(0.5)
+    if _add_button():
+        print("  An import review is already open — not stacking another on it. "
+              "Cancel it in Lightroom, then Retry.")
+        sys.exit(1)
 
-    # File > Add Photos...
-    lr_menu_click("File", "Add Photos...")
-    time.sleep(1.5)
+    subprocess.run(["open", "-a", "Adobe Lightroom", str(folder)], check=False)
+    title = _wait(_add_button, 60)
+    if not title:
+        print("✗ Lightroom never showed its \"Add Photos\" review for this folder.")
+        sys.exit(1)
+    m = re.search(r"(\d+)", title)
+    offered = int(m.group(1)) if m else None
+    print(f"  Lightroom offers: {title} ({len(raws)} RAWs in the folder)")
+    if offered is not None and raws and offered < len(raws):
+        print(f"  ⚠ {len(raws) - offered} RAW(s) not offered — likely already in the catalogue.")
 
-    # Cmd+Shift+G → paste path → Return (navigate) → Return (click default button)
-    # Default button label varies: "Review for Import" or "Add N Photos"
-    subprocess.run(["pbcopy"], input=str(folder), text=True)
-    run_applescript('''
-tell application "System Events"
-  tell process "Adobe Lightroom"
-    keystroke "g" using {command down, shift down}
-    delay 1.0
-    keystroke "v" using command down
-    delay 0.5
-    key code 36
-    delay 2.5
-    key code 36
-    delay 2.5
-    key code 36
-    delay 1.0
-  end tell
-end tell
-''')
-    print(f"Imported: {folder}")
+    if _add_button(click=True) != title:
+        print("✗ Couldn't press the Add button.")
+        sys.exit(1)
+    if _wait(lambda: not _add_button(), 30):
+        print(f"Imported: {folder}")
+    else:
+        print("✗ The import review is still open after pressing Add.")
+        sys.exit(1)
     print("Lightroom is loading the photos — wait a moment, then run Auto-tone.")
 
 
