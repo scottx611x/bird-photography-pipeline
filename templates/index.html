@@ -121,6 +121,15 @@
     .crank-bar.needs .crank-status { color: var(--yellow); }
     .crank-status { flex: 1; min-width: 160px; overflow-wrap: anywhere; line-height: 1.4; }
     .crank-review { color: var(--yellow); font-weight: 700; cursor: pointer; white-space: nowrap; }
+    /* One line per job, each naming its batch — Lightroom and the sorter run
+       on their own now, so "Spreading denoise…" alone says nothing. */
+    .jobs { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
+    .job { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+    .job b { color: var(--text); white-space: nowrap; }
+    .job .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .job.lr b { color: var(--blue); }
+    .job.sort b { color: var(--purple, #b48cff); }
+    .job.post b { color: var(--green); }
     .meta-row { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
     .meta-pill { font-size: 11px; color: var(--muted);
       background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
@@ -1261,9 +1270,11 @@ async function poll() {
     renderPostLive(d);
     renderCrank(d);
     renderHost(d.host_ok);
-    // The overlay covers the page during quick Lightroom steps — never while
-    // Scott has a batch open to review.
-    renderOverlay(d.proc_step === 'posting' ? null : d.run_step);
+    // No full-page overlay for Lightroom's steps any more: Lightroom runs on its
+    // own while the page stays Scott's (2026-11-22 — a run restored mid-export
+    // after a restart blanked his phone with "Triggering export…" and no way
+    // past it). Its progress shows on the batch card and in the crank bar.
+    renderOverlay(null);
     lastState = d;
   } catch (_) {}
   setTimeout(poll, d?.proc_step === 'posting' ? 3000 : 1200);
@@ -1436,7 +1447,33 @@ function renderCrank(d) {
   el.innerHTML = `
     <button class="btn ${c.on ? "btn-neutral" : "btn-primary"} btn-sm" onclick="toggleCrank(${!c.on})">${c.on ? "⏸ Pause crank" : "▶ Keep cranking"}</button>
     <span class="crank-status">${c.on ? "⚙ " : ""}${status.replace(/</g, "&lt;")}</span>
-    ${waiting ? `<span class="crank-review" onclick="setFilter('review')">🗂 ${waiting} waiting for review</span>` : ""}`;
+    ${waiting ? `<span class="crank-review" onclick="setFilter('review')">🗂 ${waiting} waiting for review</span>` : ""}
+    ${jobsHtml(d)}`;
+}
+
+// What is running right now, and on which batch.
+function jobsHtml(d) {
+  const rows = [];
+  if (d.run) {
+    const info = STEP_INFO[d.run_step] || {};
+    const prog = lrProg.active && lrProg.done != null && lrProg.total != null
+      ? ` · ${lrProg.label || 'working'} ${lrProg.done} of ${lrProg.total}` : '';
+    const hold = d.run_hold ? ` · ${d.run_hold}` : '';
+    rows.push(`<div class="job lr"><b>🎞 Lightroom</b><span class="what">${escHtml(d.run.folder)} — ${escHtml(info.label || d.run_step || '')}${escHtml(prog + hold)}</span></div>`);
+  }
+  const so = d.sort || {};
+  const queued = (d.sort_queue || []).filter(f => f !== so.folder);
+  if (so.folder && ["starting", "running", "waiting", "busy"].includes(so.state)) {
+    const what = so.state === "waiting" ? "waiting on the usage limit" : "sorting into posts";
+    rows.push(`<div class="job sort"><b>🧠 Claude</b><span class="what">${escHtml(so.folder)} — ${what}${queued.length ? ` · ${queued.length} queued` : ''}</span></div>`);
+  } else if (queued.length) {
+    rows.push(`<div class="job sort"><b>🧠 Claude</b><span class="what">${queued.length} batch${queued.length > 1 ? 'es' : ''} queued to sort</span></div>`);
+  }
+  const ps = d.post_status || {};
+  if (d.posting && ps.folder) {
+    rows.push(`<div class="job post"><b>📤 Buffer</b><span class="what">${escHtml(ps.folder)} — posting${ps.total > 1 ? ` ${Math.min((ps.done || 0) + 1, ps.total)} of ${ps.total}` : ''}</span></div>`);
+  }
+  return rows.length ? `<div class="jobs">${rows.join("")}</div>` : "";
 }
 
 // ── Synology import (remote album cards in the batch list) ──────────────────────
@@ -2046,7 +2083,7 @@ function renderPostLive(d) {
     btn.classList.add('is-posting');
     btn.textContent = total > 1 ? `⏳ Posting ${at} of ${total}…` : '⏳ Posting…';
     cls = "busy";
-    html = `<div class="head"><span class="beta-spin"></span> Posting to Buffer${total > 1 ? ` — ${ps.done || 0} of ${total} done` : ''}</div>`
+    html = `<div class="head"><span class="beta-spin"></span> Posting ${escHtml(ps.folder || 'this batch')} to Buffer${total > 1 ? ` — ${ps.done || 0} of ${total} done` : ''}</div>`
       + postItemsHtml(ps)
       + `<span class="sub">${escHtml(ps.step || 'Starting…')}<br>Runs on the Mac — fine to leave this page. The button stays locked until it's done, so nothing posts twice.</span>`;
   } else if (postLocalNote) {
@@ -2056,7 +2093,7 @@ function renderPostLive(d) {
     btn.classList.remove('is-posting');
     btn.disabled = false; btn.textContent = '↻ Try again';
     cls = "bad";
-    html = `<div class="head">✕ Not all posted</div>` + postItemsHtml(ps)
+    html = `<div class="head">✕ ${escHtml(ps.folder || 'This batch')}: not all posted</div>` + postItemsHtml(ps)
       + `<span class="sub" style="color:inherit">${escHtml(ps.msg || 'The post failed — see the log.')}</span>`;
   } else if (mine && ps.state === "done" && ps.msg) {
     btn.classList.remove('is-posting');

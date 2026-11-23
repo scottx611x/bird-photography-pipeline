@@ -992,12 +992,16 @@ def test_crank_and_review():
           "function postItemsHtml(ps)" in html and "post-seg" in html and "is-posting" in html)
     check("ui: Post and Resize wrap instead of running off the card on a phone",
           'class="post-btn-row"' in html and ".post-btn-row { display: flex; flex-wrap: wrap;" in html)
+    check("ui: every running job names its batch — Lightroom, the sorter, Buffer",
+          "function jobsHtml(d)" in html and "${jobsHtml(d)}" in html
+          and "escHtml(d.run.folder)" in html and "escHtml(so.folder)" in html
+          and "escHtml(ps.folder)" in html)
     check("ui: a failed post no longer silently resets the button",
           "btn.textContent = '▶ Post to Buffer'; }" not in html)
     check("ui: Lightroom's batch and the posting screen are drawn separately",
           "renderStepCard(data.run_step, b, data)" in html
           and "renderStepCard('posting', b, data)" in html
-          and "renderOverlay(d.proc_step === 'posting' ? null : d.run_step)" in html)
+          and "renderOverlay(null);" in html and "renderOverlay(d.run_step)" not in html)
 
 
 class _SyncThread:
