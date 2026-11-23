@@ -217,6 +217,17 @@ end tell
     return int(m.group(1).replace(",", "")) if m else None
 
 
+def _toolbar_task() -> bool:
+    """Is Lightroom's toolbar background task (a paste that renders Denoise as
+    it goes) running? lr_host reads it off a capture of Lightroom's window."""
+    import json as _json, urllib.request as _ur
+    try:
+        with _ur.urlopen("http://127.0.0.1:8766/progress", timeout=25) as r:
+            return bool(_json.loads(r.read()).get("toolbar"))
+    except Exception:
+        return False
+
+
 def render_ai_settings(expect: int = None):
     """Actually render the pasted Denoise.
 
@@ -231,6 +242,12 @@ def render_ai_settings(expect: int = None):
     """
     if _render_dialog_count():
         print("  A render is already running — not starting another.")
+        return None
+    # A paste running in the toolbar renders as it goes. Asking for a render
+    # on top of it put two Denoise jobs in a fight, and the paste hung at
+    # photo 10 of 36 for good (2026-11-22, 10/24).
+    if _toolbar_task():
+        print("  Lightroom's paste is rendering in the toolbar — not starting another render.")
         return None
     # Select All selects whatever view Lightroom is on. After a relaunch that
     # was All Photos, and a render began on 5,762 library photos (2026-10-18).

@@ -980,6 +980,10 @@ def test_crank_and_review():
     check("progress: Lightroom's toolbar paste counts as work, read off its own window",
           "def _toolbar_activity():" in host and "_toolbar_activity() or out" in host
           and '"-l", wid' in host)
+    la2 = (ROOT / "lr_auto.py").read_text()
+    rend = la2[la2.find("def render_ai_settings("):la2.find("def render_ai_settings(") + 1500]
+    check("render: never asks for a render while the toolbar paste is rendering",
+          "if _toolbar_task():" in rend and "8766/progress" in la2)
     check("progress: a percentage that moves is progress, not a stall",
           'done = (prog.get("done"), prog.get("percent"))' in src
           and 'mark = (prog.get("done"), prog.get("percent"))' in src
