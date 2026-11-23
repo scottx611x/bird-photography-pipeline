@@ -429,8 +429,9 @@ def _wait_render_done(cap: float = 3 * 3600) -> bool:
         if note != last_note:
             log(f"  {note}")
             last_note = note
-        frozen = frozen + 10 if prog.get("done") == last_done else 0
-        last_done = prog.get("done")
+        mark = (prog.get("done"), prog.get("percent"))
+        frozen = frozen + 10 if mark == last_done else 0
+        last_done = mark
         if frozen >= STALL_AFTER:
             log(f"  ⚠ The render hasn't moved in {STALL_AFTER // 60} min.")
             return False
@@ -583,12 +584,20 @@ def _denoise_and_export_tail():
                 last_note = note
 
             # Only a count frozen for STALL_AFTER is a wedge — see STALL_AFTER.
-            done = prog.get("done")
+            # Lightroom's toolbar task (a paste that renders as it goes) gives
+            # a percentage, not a count — progress is either one moving.
+            done = (prog.get("done"), prog.get("percent"))
             if done == last_done:
                 stalled_for += 10
             else:
                 stalled_for, nudges = 0, 0
             last_done = done
+            if stalled_for >= STALL_AFTER and prog.get("toolbar"):
+                if stalled_for % 300 == 0:
+                    log(f"  ⚠ Lightroom's paste has sat at {prog.get('percent')}% for "
+                        f"{stalled_for // 60} min — it renders Denoise photo by photo, and one "
+                        "photo can stall it. Needs a look in Lightroom if it doesn't move.")
+                continue
             if stalled_for >= STALL_AFTER:
                 if nudges < MAX_NUDGES:
                     nudges += 1

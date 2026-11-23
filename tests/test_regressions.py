@@ -976,6 +976,14 @@ def test_crank_and_review():
           and 'items[i]["state"] = "running"' in post and 'items[i]["state"] = "failed"' in post
           and 'state="failed"' in post and 'state="done"' in post)
     gs = src[src.find("def goto_step("):src.find("def force_advance(")]
+    host = (ROOT / "lr_host.py").read_text()
+    check("progress: Lightroom's toolbar paste counts as work, read off its own window",
+          "def _toolbar_activity():" in host and "_toolbar_activity() or out" in host
+          and '"-l", wid' in host)
+    check("progress: a percentage that moves is progress, not a stall",
+          'done = (prog.get("done"), prog.get("percent"))' in src
+          and 'mark = (prog.get("done"), prog.get("percent"))' in src
+          and 'prog.get("toolbar")' in src)
     check("restart: waits for the old run to finish before starting the new one",
           'if not state["thread_active"]:' in gs and "time.sleep(0.8)" not in gs)
     check("birdqueue: off unless BIRDQUEUE=1, and the Post screen hides it",

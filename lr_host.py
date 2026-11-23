@@ -34,6 +34,65 @@ ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
 _run_lock = threading.Lock()
 
 
+LR_WINDOW_JXA = """
+ObjC.import("CoreGraphics");
+const list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, $.kCGNullWindowID));
+let best = [0, 0];
+for (let i = 0; i < list.count; i++) {
+  const w = list.objectAtIndex(i);
+  if (ObjC.unwrap(w.objectForKey("kCGWindowOwnerName")) !== "Adobe Lightroom") continue;
+  const b = w.objectForKey("kCGWindowBounds");
+  const area = ObjC.unwrap(b.objectForKey("Width")) * ObjC.unwrap(b.objectForKey("Height"));
+  if (area > best[1]) best = [ObjC.unwrap(w.objectForKey("kCGWindowNumber")), area];
+}
+String(best[0]);
+"""
+
+
+def _toolbar_activity():
+    """Lightroom's background-task bar in the toolbar ("Paste Settings" and a
+    blue fill). Some pastes run there instead of in a dialog — rendering
+    Denoise photo by photo for ten minutes and more — and nothing in the
+    accessibility tree shows it. Read off a capture of Lightroom's own window
+    (works even when another app covers it). On 2026-11-22 the pipeline took
+    that silence for "finished", checked photos the paste hadn't reached yet,
+    and nearly exported a noisy batch. None when there is no bar."""
+    import tempfile
+    try:
+        wid = subprocess.run(["osascript", "-l", "JavaScript", "-e", LR_WINDOW_JXA],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        if not wid or wid == "0":
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            path = tf.name
+        subprocess.run(["/usr/sbin/screencapture", "-x", "-o", "-l", wid, "-t", "png", path],
+                       capture_output=True, timeout=10)
+        from PIL import Image
+        with Image.open(path) as im:
+            im = im.convert("RGB")
+            W, _ = im.size
+            sx = W / 1512.0
+            best = None
+            for y in range(int(26 * sx), int(40 * sx)):
+                xs = range(int(195 * sx), int(420 * sx))
+                row = [im.getpixel((x, y)) for x in xs]
+                blue = [i for i, (r, g, b) in enumerate(row) if b > 180 and r < 120 and b - r > 90]
+                track = [i for i, (r, g, b) in enumerate(row)
+                         if 25 < r < 70 and abs(r - g) < 8 and abs(g - b) < 8]
+                if len(blue) > 5 and (best is None or len(blue) > best[0]):
+                    span = (max(blue + track) - min(blue + track)) if track else 0
+                    best = (len(blue), max(blue) - min(blue), span)
+        Path(path).unlink(missing_ok=True)
+        if not best:
+            return None
+        _, filled, span = best
+        pct = int(100 * filled / span) if span > filled else None
+        return {"active": True, "title": "toolbar", "label": "Lightroom background task (Paste Settings)",
+                "percent": pct, "done": None, "total": None, "eta": None, "toolbar": True}
+    except Exception:
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass  # silence default request logs
 
@@ -97,7 +156,7 @@ class Handler(BaseHTTPRequestHandler):
             # forever while Lightroom sat idle.
             looks_like_progress = bool(pct or of or "progress" in title.lower())
             if not looks_like_progress:
-                self._json(out)
+                self._json(_toolbar_activity() or out)
                 return
             out = {
                 "active": True,
@@ -109,6 +168,8 @@ class Handler(BaseHTTPRequestHandler):
                 "total": int(of.group(2)) if of else None,
                 "eta": eta.group(1).strip() if eta else None,
             }
+        else:
+            out = _toolbar_activity() or out
         self._json(out)
 
     def _screen(self):
