@@ -1037,6 +1037,9 @@ def test_keys_only_reach_lightroom():
           'keystroke "g"' not in src and 'lr_menu_click("View", "Photo Grid")' in src)
     srv = (ROOT / "server.py").read_text()
     tail = srv[srv.find("def _pick_export_post("):]
+    cont = srv[srv.find("def continue_step("):srv.find("def done_picking(")]
+    check("crank: Continue wakes the crank, so 'needs you' clears with the click",
+          'state["crank"]["kick"] = True' in cont)
     check("export: an unrendered batch is re-rendered by menu before going one by one",
           0 < tail.find('"ai-resume"') < tail.find('"render-each"'))
     den = (ROOT / "lr_denoise.py").read_text()

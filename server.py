@@ -1566,6 +1566,9 @@ def continue_step():
             state["_export_mode"] = mode or "trigger"
             state["proc_step"] = "exporting"
             resume = "export" if not alive else None
+        # Let the crank look again now, so its "needs you" clears with the
+        # click instead of up to two minutes later.
+        state["crank"]["kick"] = True
     if resume:
         def _resume():
             with lock:
