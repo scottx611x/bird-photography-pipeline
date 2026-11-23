@@ -28,13 +28,22 @@ PY="$HOME/.bird_sort_venv/bin/python"
 STATUS="$WORK/status.txt"           # one line: what the sorter is doing now
 GIVE_UP_AFTER=$((36 * 3600))        # stop waiting on a batch after a day and a half
 
+# --folder <batch>: sort that batch where it waits for review (the app passes
+# it). Without it, the batch on the posting screen, as before.
+FOLDER=""
+if [ "${1:-}" = "--folder" ]; then FOLDER="${2:-}"; shift 2; fi
+case "$FOLDER" in *[!A-Za-z0-9._+-]*) echo "bad folder: $FOLDER"; exit 1 ;; esac
+export BIRD_SORT_FOLDER="$FOLDER"
+
 if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null; then
   echo "sort-batch is already running (pid $(cat "$LOCK"))."
   exit 0
 fi
 LOG="$LOGDIR/$(date +%Y%m%d-%H%M%S).log"
 
-PROMPT="Use the sort-batch skill to sort the batch that is on the posting step.
+WHICH="the batch that is on the posting step"
+[ -n "$FOLDER" ] && WHICH="the batch $FOLDER (bird_sort.py already knows which one — just run its commands)"
+PROMPT="Use the sort-batch skill to sort $WHICH.
 You are running unattended: never ask questions — flag anything uncertain.
 Run the sorter exactly as ~/.bird_sort_venv/bin/python bird_sort.py <command> from
 the current directory (no cd, no shell variables), and keep plan.json in the work
@@ -46,7 +55,8 @@ APP_URL="${BIRD_APP:-http://localhost:8765}"
 status() {
   echo "$(date '+%a %H:%M') $*" > "$STATUS"; echo "== $*"
   [ -n "${BIRD_SORT_TEST:-}" ] && return 0      # a rehearsal: leave the app alone
-  curl -s -m 5 -o /dev/null --data-urlencode "text=$*" "$APP_URL/api/sort-status" || true
+  curl -s -m 5 -o /dev/null --data-urlencode "text=$*" --data-urlencode "folder=$FOLDER" \
+    "$APP_URL/api/sort-status" || true
 }
 
 # Sleep until an epoch time in short naps, so a Mac that slept through the
@@ -62,7 +72,8 @@ run() {
   # This subshell's own pid. Not $$ (the parent, gone in a moment) and not
   # $BASHPID — macOS ships bash 3.2, which doesn't have it.
   sh -c 'echo $PPID' > "$LOCK"
-  trap 'rm -f "$LOCK"' EXIT
+  echo "$FOLDER" > "$WORK/target"     # for bird_sort.py, should the env not reach it
+  trap 'rm -f "$LOCK" "$WORK/target"' EXIT
   cd "$DIR" || exit 1
   started=$(date +%s)
   # Runs on Scott's own Claude plan. If it hits the plan's usage limit, or

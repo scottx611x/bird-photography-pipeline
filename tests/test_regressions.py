@@ -600,13 +600,15 @@ def test_sort_batch():
     check("sort: apply refuses to overwrite Scott's own sorting",
           "touched and not ours and not force" in apply_)
     check("sort: apply crops from the original, never a crop of a crop",
-          '"reset": True' in apply_ and 'api("/api/crop", {"file": f, "box": box})' in apply_)
+          '"reset": True' in apply_ and 'api("/api/crop", {"file": f, "box": box, "folder": folder})' in apply_)
     check("sort: plan validation caps posts at Instagram's 10",
           "MAX_PER_POST = 10" in src and "> MAX_PER_POST" in src)
 
     srv = (ROOT / "server.py").read_text()
-    tail = srv[srv.find('set_step("posting")'):srv.find("def get_next_open_scheduled_at(")]
-    check("server: a fresh export is handed to the sorter", "_start_sort()" in tail)
+    tail = srv[srv.find("def _pick_export_post("):srv.find("def _export_clash(")]
+    check("server: a fresh export is set aside and handed to the sorter",
+          "_shelve(folder, None, new, dates, False" in tail and "_queue_sort(folder)" in tail
+          and 'set_step("posting")' not in tail)
     check("lr_host: sort-batch is allowed and runs the launcher",
           '"sort-batch"' in (ROOT / "lr_host.py").read_text()
           and 'TOOLS / "sort_batch.sh"' in (ROOT / "lr_host.py").read_text())
@@ -696,8 +698,9 @@ def test_sort_batch():
     crop = srv[srv.find("def crop_image("):srv.find("@app.get(\"/api/log-stream\")")]
     check("server: /api/crop never restores an older photo's backup over a fresh export",
           "_has_capture_date(src)" in crop and crop.find("_has_capture_date(src)") < crop.find('if data.get("reset"):'))
+    cs = srv[srv.find("def crop_status("):srv.find("def crop_image(")]
     check("server: crop-status doesn't report an older photo's backup",
-          "_has_capture_date(bird_file(name))" in srv)
+          "_has_capture_date(src)" in cs and "_retire_stale_backups([name], orig)" in cs)
     skill = (ROOT / ".claude/skills/sort-batch/SKILL.md").read_text()
     check("skill: never posts and never asks",
           "never post" in skill and "Never stop to ask" in skill)
@@ -769,13 +772,16 @@ def test_crank_and_review():
               "sort": {"folder": "A", "state": "done"}, "photo_dates": {"DSC_0947.jpg": "9-26-26"},
               "batches": {"A": {"status": "processing"}}, "review": {}, "claimed": {},
               "stop_requested": False, "no_post": False}
+        st.update(run=None, run_step=None, open_sorted=False)
         sorts = []
         env = {"state": st, "lock": threading.Lock(), "json": json, "datetime": datetime,
                "time": _time, "BIRDS_DIR": birds, "EXCLUDED_DIR": excl,
                "PREVIEW_DIR": birds / ".previews", "save_state": lambda: None,
-               "log": lambda m: None, "_start_sort": lambda: sorts.append(st["active"])}
+               "log": lambda m: None, "_queue_sort": lambda f: sorts.append(f),
+               "SORT_START_GRACE": 900}
         ns = _load_funcs(srv, {"REVIEW_DIR", "ORIGINALS_DIR", "SHELF_PARTS", "_review_summary",
-                               "_shelf_files", "_drop_caches", "shelve_active", "open_review"}, env)
+                               "_shelf_files", "_drop_caches", "_write_shelf", "_shelve",
+                               "shelve_active", "open_review", "_dirs"}, env)
         ok, _ = ns["shelve_active"]("sorted")
         shelf = birds / ".review" / "A"
         check("shelf: the batch's photos, exclusions and crop backups move out of birbs",
@@ -789,14 +795,30 @@ def test_crank_and_review():
               and st["batches"]["A"]["status"] == "review" and st["review"]["A"]["sorted"] is True)
         check("shelf: cached thumbnails go with it", not (birds / ".thumbs" / "DSC_0947.jpg").exists())
 
+        check("shelf: a shelved batch's photos are found in its own folder",
+              ns["_dirs"]("A") == (shelf / "live", shelf / "excluded", shelf / "originals")
+              and ns["_dirs"]() == (birds, excl, orig))
+
         # Batch B exports its own DSC_0947 while A is away, posts it, leaves it in birbs.
         (birds / "DSC_0947.jpg").write_text("B-0947")
-        st["active"], st["proc_step"] = "B", "denoising"
+        st["active"], st["proc_step"] = "B", "posting"
         ok, msg = ns["open_review"]("A")
-        check("review: won't open while another batch is using the posting screen",
+        check("review: won't open while another batch is on the posting screen",
               not ok and "B" in msg and (shelf / "live" / "DSC_0947.jpg").exists())
         st["active"], st["proc_step"] = None, None
+        st["run"], st["run_step"] = "C", "export_wait"
+        ok, msg = ns["open_review"]("A")
+        check("review: waits out the minute Lightroom is writing an export into birbs",
+              not ok and "exporting" in msg)
+        st["run_step"] = "denoising"
+        st["sort"] = {"folder": "A", "state": "running", "at": _time.time()}
+        ok, msg = ns["open_review"]("A")
+        check("review: not while Claude is part-way through sorting that batch",
+              not ok and "sorting" in msg)
+        st["sort"] = {"folder": "A", "state": "done", "at": _time.time()}
         ok, _ = ns["open_review"]("A")
+        check("review: opens while Lightroom works on another batch",
+              ok and st["run"] == "C" and st["run_step"] == "denoising")
         disp = list((birds / ".review" / ".displaced").glob("*/live/DSC_0947.jpg"))
         check("review: A gets its own DSC_0947 back, not B's",
               ok and (birds / "DSC_0947.jpg").read_text() == "A-0947")
@@ -809,20 +831,34 @@ def test_crank_and_review():
               and st["claimed"].get("DSC_0947.jpg") == "A" and not shelf.exists())
         check("review: a sorted batch isn't re-sorted", sorts == [])
         st["sort"] = {"folder": "A", "state": "waiting"}
+        st["open_sorted"] = False
         ns["shelve_active"]("not sorted yet")
         ns["open_review"]("A")
         check("review: a batch shelved unsorted gets sorted when opened", sorts == ["A"])
 
+        # The end of an export: the run's photos go straight to their own shelf.
+        ns["shelve_active"]("later")
+        (birds / "DSC_5000.jpg").write_text("D-5000")
+        (birds / "DSC_0947.jpg").write_text("A's again, open")
+        st["active"], st["proc_step"] = "OPEN", "posting"
+        st["batches"]["D"] = {"status": "processing"}
+        rec = ns["_shelve"]("D", None, ["DSC_5000.jpg"], {}, False, "exported")
+        check("export: lands in its own folder, never on the posting screen",
+              (birds / ".review" / "D" / "live" / "DSC_5000.jpg").read_text() == "D-5000"
+              and not (birds / "DSC_5000.jpg").exists() and st["active"] == "OPEN"
+              and (birds / "DSC_0947.jpg").read_text() == "A's again, open"
+              and st["batches"]["D"]["status"] == "review" and rec["sorted"] is False)
+
     # ── the crank's decisions ──
-    st = {"active": None, "proc_step": None, "thread_active": False, "posting": False,
-          "run_error": "", "sort": {}, "batches": {}, "review": {}, "done_albums": set(),
-          "syno_skipped": set(), "multi_sources": {},
+    st = {"active": None, "proc_step": None, "run": None, "run_step": None, "run_hold": "",
+          "thread_active": False, "posting": False, "run_error": "", "sort": {},
+          "batches": {}, "review": {}, "done_albums": set(), "syno_skipped": set(),
+          "multi_sources": {}, "sort_queue": [],
           "crank": {"on": True, "status": "", "batch": None}}
     calls = []
     env = {"state": st, "lock": threading.Lock(), "time": _time, "re": re, "datetime": datetime,
            "json": json, "log": lambda m: None, "save_state": lambda: None,
-           "shelve_active": lambda why: (calls.append(("shelve", why)), (True, st["active"]))[1],
-           "_start_sort": lambda: calls.append(("sort",)),
+           "_sort_next": lambda: calls.append(("sort_next", list(st["sort_queue"]))),
            "check_host": lambda: True, "scan_batches": lambda: None,
            "shutil": type("S", (), {"disk_usage": staticmethod(lambda p: type("U", (), {"free": 90e9})())}),
            "DOWNLOADS": Path("/tmp"), "_syno_cache": {},
@@ -833,10 +869,11 @@ def test_crank_and_review():
            "threading": type("Th", (), {"Lock": threading.Lock, "Thread": _SyncThread})}
     ns = _load_funcs(srv, {"_crank_tick", "_crank_process", "_crank_status", "_crank_taken",
                            "_crank_groups", "_best_album_day", "_crank_left_out",
-                           "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP",
+                           "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP", "SORT_TRIES",
                            "CRANK_HOLD_DAYS", "CRANK_MIN_FREE_GB", "SORT_START_GRACE",
                            "SORT_RUN_CAP", "CRANK_GATES"}, env)
     tick = ns["_crank_tick"]
+    fetches = lambda: [c for c in calls if c[0] in ("fetch", "process")]
 
     def fetched(f):
         st["batches"][f] = {"status": "pending"}
@@ -844,39 +881,57 @@ def test_crank_and_review():
     ns["_crank_process"].__globals__["scan_batches"] = env["scan_batches"]
     tick()
     check("crank: fetches the oldest album and runs it",
-          calls == [("fetch", "2026-09-27-best"), ("process", "2026-09-27-best")]
+          fetches() == [("fetch", "2026-09-27-best"), ("process", "2026-09-27-best")]
           and st["crank"]["batch"] == "2026-09-27-best", str(calls))
 
+    # Its export landed and was set aside: Lightroom is free again at once.
     calls.clear()
-    st.update(active="2026-09-27-best", proc_step="posting",
-              sort={"folder": "2026-09-27-best", "state": "starting", "at": _time.time()})
+    st["batches"]["2026-09-27-best"]["status"] = "review"
+    st["review"]["2026-09-27-best"] = {"sorted": False, "shelved_at": "2026-11-22T20:00"}
+    st["crank"]["phase"] = "processing"
     tick()
-    check("crank: waits while Claude sorts", calls == [] and "sorting" in st["crank"]["status"])
-    st["sort"]["state"] = "done"
-    tick()
-    check("crank: a sorted batch is set aside and the crank lets go of it",
-          calls == [("shelve", "sorted")] and st["crank"]["batch"] is None)
+    check("crank: a batch set aside unsorted is queued for the sorter",
+          ("sort_next", ["2026-09-27-best"]) in calls)
+    check("crank: and Lightroom moves straight on, without waiting for the sort",
+          ("fetch", "2026-09-28-best") in calls and st["crank"]["batch"] == "2026-09-28-best")
 
     calls.clear()
-    st.update(active="2026-09-28-best", proc_step="posting")
-    st["crank"]["batch"] = "2026-09-28-best"
-    st["sort"] = {"folder": "2026-09-28-best", "state": "waiting", "text": "waiting until 15:00",
-                  "at": _time.time()}
+    st.update(active="2026-09-26-best", proc_step="posting",
+              run="2026-09-28-best", run_step="denoising", thread_active=True)
     tick()
-    check("crank: a sort stuck behind a usage limit doesn't hold up Lightroom",
-          calls and calls[0][0] == "shelve" and "not sorted" in calls[0][1])
-
-    calls.clear()
-    st.update(active="2026-09-26-best", proc_step="posting")
-    st["crank"]["batch"] = None
+    check("crank: a batch open on the posting screen doesn't hold up Lightroom",
+          fetches() == [] and st["crank"]["status"] == "2026-09-28-best: denoising")
+    st["run_hold"] = "holding the export — 2026-09-26-best has the same names"
     tick()
-    check("crank: never touches a batch Scott has open", calls == []
-          and "open on the posting screen" in st["crank"]["status"])
+    check("crank: says why an export is held", "holding the export" in st["crank"]["status"])
+    st["run_hold"] = ""
 
-    st.update(active="X", proc_step="denoise", thread_active=True)
-    st["crank"]["batch"] = "X"
+    st.update(run_step="denoise")
     tick()
     check("crank: says when a gate needs a person", st["crank"]["status"].startswith("needs you"))
+    st.update(thread_active=False, run_step="export_ready", run_error="Export didn't start")
+    tick()
+    check("crank: says when a run stopped", "stopped at 'export_ready'" in st["crank"]["status"])
+    st.update(run="X-by-hand", run_step="toning", thread_active=True)
+    tick()
+    check("crank: leaves a batch run by hand alone", "by hand" in st["crank"]["status"])
+
+    # ── the sort queue ──
+    st2 = {"active": None, "proc_step": None, "review": {"A": {"sorted": False}, "B": {"sorted": True}},
+           "sort": {}, "sort_queue": ["B", "A"]}
+    started = []
+    env2 = {"state": st2, "lock": threading.Lock(), "time": _time, "threading": threading,
+            "save_state": lambda: None, "_start_sort": lambda f: started.append(f)}
+    ns2 = _load_funcs(srv, {"_sort_busy", "_sortable", "_sort_next", "_sort_lock", "_queue_sort",
+                            "SORT_START_GRACE", "SORT_RUN_CAP", "SORT_TRIES"}, env2)
+    ns2["_sort_next"]()
+    check("sort queue: skips a batch that's already sorted and starts the next",
+          started == ["A"] and st2["sort_queue"] == ["A"])
+    started.clear()
+    st2["sort"] = {"folder": "A", "state": "running", "at": _time.time()}
+    ns2["_queue_sort"]("C")
+    check("sort queue: one sorter at a time — the rest wait their turn",
+          started == [] and st2["sort_queue"] == ["A", "C"])
 
     # ── wiring ──
     tail = src[src.find("def _denoise_and_export_tail"):src.find("def _run_batch")]
@@ -889,11 +944,28 @@ def test_crank_and_review():
     check("boot starts the crank thread", "threading.Thread(target=crank_loop, daemon=True).start()" in src)
     check("crank/shelf state is persisted",
           all(f'"{k}":' in src[src.find("def save_state"):src.find("def load_saved_statuses")]
-              for k in ("review", "crank", "sort")))
+              for k in ("review", "crank", "sort", "run", "run_step", "sort_queue")))
+    check("boot: a save from before the split moves its run into the run slot",
+          'if "run" not in saved and saved.get("proc_step") not in (None, "posting"):' in src)
+    sv = src[src.find("def _sort_view("):src.find("def get_state(")]
+    check("sorter: sees a shelved batch where it is, shaped like the posting step",
+          '"subdir": subdir' in sv and 'f".review/{folder}/live"' in sv)
+    bs = (ROOT / "bird_sort.py").read_text()
+    check("sorter: told which batch, and every app call names it",
+          'api("/api/state" + _q())' in bs and '"folder": folder' in bs and "_use_dirs(st)" in bs)
+    sh2 = (ROOT / "sort_batch.sh").read_text()
+    check("sort_batch.sh: takes --folder and reports it with each status",
+          'export BIRD_SORT_FOLDER="$FOLDER"' in sh2 and '"folder=$FOLDER"' in sh2)
+    check("lr_host: passes the batch to the sorter",
+          '["--folder", folder]' in (ROOT / "lr_host.py").read_text())
     html = INDEX.read_text()
     check("ui: Review, Later and the crank toggle are wired",
           all(x in html for x in ("doReviewOpen(", "doShelve()", "renderCrank(d)", "/api/crank",
                                   "/api/review/open/", "/api/review/shelve", 'data-f="review"')))
+    check("ui: Lightroom's batch and the posting screen are drawn separately",
+          "renderStepCard(data.run_step, b, data)" in html
+          and "renderStepCard('posting', b, data)" in html
+          and "renderOverlay(d.proc_step === 'posting' ? null : d.run_step)" in html)
 
 
 class _SyncThread:
@@ -1165,8 +1237,15 @@ def test_live():
         check("live: /api/state responds", False, str(e))
         return
     check("live: /api/state responds", True)
-    for key in ("batches", "proc_step", "photo_versions", "buffer_ready"):
+    for key in ("batches", "proc_step", "photo_versions", "buffer_ready",
+                "run", "run_step", "sort_queue"):
         check(f"live: state exposes {key}", key in state)
+    shelved = sorted((state.get("review") or {}))
+    if shelved:
+        v = httpx.get(f"{BASE}/api/state", params={"folder": shelved[0]}, timeout=20).json()
+        check("live: the sorter sees a shelved batch where it waits",
+              v.get("proc_step") == "posting" and v.get("subdir") == f".review/{shelved[0]}/live"
+              and bool(v.get("new_birds")), str(v)[:200])
 
     check("live: index serves", httpx.get(BASE, timeout=20).status_code == 200)
     check("live: curate serves", httpx.get(f"{BASE}/curate", timeout=20).status_code == 200)

@@ -793,7 +793,7 @@ let postState = { busy: false, msg: "", ok: true, lane: null };
 let lrProg = { active: false };
 let _progFails = 0;
 async function pollLrProgress() {
-  if (!lastState || !lastState.active) { 
+  if (!lastState || !lastState.run) { 
     if (lrProg.active) { lrProg = { active: false }; betaRerender(); }
     return;
   }
@@ -1103,7 +1103,10 @@ function renderBatches(data) {
   }
 
   const localItems = all.filter(b => !fetchingNames.has(b.folder)).map(b => {
-    const isActive = data.active?.folder === b.folder;
+    // Two slots: the batch Lightroom is on (run) and the one on the posting
+    // screen (active). They are never the same batch.
+    const isRun    = data.run?.folder === b.folder;
+    const isActive = isRun || (data.active?.folder === b.folder && data.proc_step === 'posting');
     const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done", review:"badge-review" }[b.status] || "badge-pending";
     const badgeTxt = { pending:"Pending", processing:"Active", done:"Done", review:"Review" }[b.status] || b.status;
     const shelf    = b.status === "review" ? (data.review || {})[b.folder] : null;
@@ -1115,7 +1118,15 @@ function renderBatches(data) {
     if (kids.length) meta += `<span class="meta-pill" title="Albums combined into this batch">📦 ${kids.join(" · ")}</span>`;
     if (shelf) {
       meta += `<span class="meta-pill">🗂 ${shelf.posts} post${shelf.posts === 1 ? "" : "s"} · ${shelf.photos} photos</span>`;
-      if (!shelf.sorted) meta += `<span class="meta-pill" title="${(shelf.why || "").replace(/"/g, "&quot;")}">🧠 sorts when opened</span>`;
+      if (!shelf.sorted) {
+        const so = data.sort || {};
+        const mine = so.folder === b.folder;
+        const txt = mine && (so.state === "starting" || so.state === "running") ? "🧠 Claude is sorting…"
+                  : mine && so.state === "waiting" ? "🧠 sort waiting (usage limit)"
+                  : (data.sort_queue || []).includes(b.folder) ? "🧠 queued to sort"
+                  : "🧠 sorts when opened";
+        meta += `<span class="meta-pill" title="${(shelf.why || "").replace(/"/g, "&quot;")}">${txt}</span>`;
+      }
     }
 
     let actions = "";
@@ -1144,7 +1155,8 @@ function renderBatches(data) {
       ? `<div class="posted-line">📅 ${formatDue(b.posted_due)} &nbsp;·&nbsp; <a href="https://publish.buffer.com" target="_blank" rel="noopener">View in Buffer →</a></div>`
       : "";
 
-    const stepCard = isActive && data.proc_step ? renderStepCard(data.proc_step, b, data) : "";
+    const stepCard = isRun && data.run_step ? renderStepCard(data.run_step, b, data)
+                   : isActive ? renderStepCard('posting', b, data) : "";
 
     return { date: _normDate(b.date), html: `<div class="batch-card ${b.status === 'done' ? 'done' : isActive ? 'active' : ''}">
       <div class="batch-top">
@@ -1218,7 +1230,9 @@ async function poll() {
     renderBatches(d);
     renderCrank(d);
     renderHost(d.host_ok);
-    renderOverlay(d.proc_step);
+    // The overlay covers the page during quick Lightroom steps — never while
+    // Scott has a batch open to review.
+    renderOverlay(d.proc_step === 'posting' ? null : d.run_step);
     lastState = d;
   } catch (_) {}
   setTimeout(poll, d?.proc_step === 'posting' ? 3000 : 1200);

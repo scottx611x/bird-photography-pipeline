@@ -12,6 +12,7 @@ Keep this running in a Terminal tab while you work.
 """
 
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -221,8 +222,11 @@ class Handler(BaseHTTPRequestHandler):
         # The script backgrounds itself and returns at once, so this never
         # holds the Lightroom lock for the length of a sort.
         elif cmd == "sort-batch":
-            print("→ sort_batch.sh")
+            folder = str(body.get("folder") or "")
+            print(f"→ sort_batch.sh {folder}")
             args = [str(TOOLS / "sort_batch.sh")]
+            if re.fullmatch(r"[\w.+-]+", folder):
+                args += ["--folder", folder]
         elif cmd == "lr-dismiss":
             print("→ dismissing Lightroom dialog")
             args = [PYTHON, str(TOOLS / "lr_dismiss.py")]

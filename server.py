@@ -37,8 +37,13 @@ STATE_FILE   = DOWNLOADS / ".bird_state.json"
 
 state = {
     "batches":       {},
-    "active":        None,
-    "proc_step":     None,
+    "active":        None,   # the batch on the posting screen (Scott's)…
+    "proc_step":     None,   # …"posting" while it is open, else None
+    "run":           None,   # the batch Lightroom is working on — its own slot,
+    "run_step":      None,   # so Review works while Lightroom is busy (2026-11-22)
+    "run_hold":      "",     # why the run is waiting, if it is (shown by the crank)
+    "sort_queue":    [],     # folders waiting for the headless sorter, oldest first
+    "open_sorted":   False,  # the batch on the posting screen came back from review sorted
     "new_birds":     [],
     "arrangement":   None,   # posting screen layout: {"lanes": [[file,…],…], "excluded": [file,…], "meta": {file: {…}}}
     "log":           deque(maxlen=300),
@@ -83,6 +88,9 @@ def save_state():
             "posted_due":{name: b.get("posted_due","") for name, b in state["batches"].items()},
             "active":    state["active"],
             "proc_step": state["proc_step"],
+            "run":       state["run"],
+            "run_step":  state["run_step"],
+            "sort_queue": list(state.get("sort_queue") or []),
             "no_post":   state.get("no_post", False),
             "new_birds": list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
@@ -192,15 +200,27 @@ def scan_batches():
                     batch["birds"]      = saved.get("birds", {}).get(name, [])
                     batch["posted_due"] = saved.get("posted_due", {}).get(name, "")
                     state["batches"][name] = batch
-            # Restore active run — log() call moved outside lock to avoid deadlock
-            if not state["active"] and saved.get("active") and saved["active"] in state["batches"]:
+            # Restore the Lightroom run and the posting screen — two slots.
+            # Saves from before the split kept a run in active/proc_step.
+            run, run_step = saved.get("run"), saved.get("run_step")
+            if "run" not in saved and saved.get("proc_step") not in (None, "posting"):
+                run, run_step = saved.get("active"), saved.get("proc_step")
+            if not state["run"] and run and run in state["batches"]:
+                state["run"], state["run_step"] = run, run_step
+                state["no_post"] = saved.get("no_post", False)
+                restored_msg = f"Restored Lightroom run: {run} at step {run_step}"
+            if (not state["active"] and saved.get("proc_step") == "posting"
+                    and saved.get("active") in state["batches"]):
                 state["active"]    = saved["active"]
-                state["proc_step"] = saved.get("proc_step")
-                state["no_post"]   = saved.get("no_post", False)
+                state["proc_step"] = "posting"
                 state["new_birds"] = saved.get("new_birds", [])
                 state["arrangement"] = saved.get("arrangement")
+                restored_msg = (restored_msg or "") + f" Restored posting screen: {saved['active']}."
+            if not state.get("_booted"):
+                # Once, at startup — later scans must not roll these back.
                 state["photo_dates"] = saved.get("photo_dates", {})
-                restored_msg = f"Restored active run: {state['active']} at step {state['proc_step']}"
+                state["sort_queue"]  = list(saved.get("sort_queue") or [])
+                state["_booted"] = True
         if restored_msg:
             log(restored_msg)
         for name, batch in new_batches.items():
@@ -263,7 +283,7 @@ def _await_import(before, seconds: int = 30):
     for _ in range(seconds):
         time.sleep(1)
         with lock:
-            if state["stop_requested"] or state["proc_step"] == "continue_toning":
+            if state["stop_requested"] or state["run_step"] == "continue_toning":
                 return True          # user moved it on; don't second-guess
         verdict = lr_verify.changed(before, lr_verify.fingerprint(_lr_screen_bytes()))
         if verdict:
@@ -292,7 +312,7 @@ def _batch_size():
     """RAWs in the active batch — what a Select All in its album must show.
     Lets lr_auto refuse to render when Lightroom is on some other view."""
     try:
-        a = state["active"]
+        a = state["run"]
         d = DOWNLOADS / (a["folder"] if isinstance(a, dict) else a)
         return sum(1 for f in d.iterdir() if f.suffix.lower() in RAW_SUFFIXES) or None
     except Exception:
@@ -437,7 +457,7 @@ def check_host():
 
 def set_step(step: str):
     with lock:
-        state["proc_step"] = step
+        state["run_step"] = step
     save_state()
 
 
@@ -452,10 +472,9 @@ def process_batch(folder_name: str, no_post: bool = False, start_step: str = "im
         if not batch:
             return
         batch["status"] = "processing"
-        state["active"] = folder_name
+        state["run"] = folder_name
+        state["run_hold"] = ""
         state["no_post"] = no_post
-        state["new_birds"] = []
-        state["arrangement"] = None
         state["stop_requested"] = False
         state["thread_active"] = True
         state["run_error"] = ""
@@ -468,7 +487,7 @@ def process_batch(folder_name: str, no_post: bool = False, start_step: str = "im
         import traceback
         with lock:
             state["run_error"] = f"{type(e).__name__}: {e}"
-        log(f"✗ Run failed at step '{state.get('proc_step')}': {e}")
+        log(f"✗ Run failed at step '{state.get('run_step')}': {e}")
         for line in traceback.format_exc().splitlines()[-4:]:
             log(f"    {line}")
     finally:
@@ -492,14 +511,14 @@ def _export_gate(auto: bool = False):
     if auto and AUTO_EXPORT:
         log("Denoise done and checked — exporting automatically.")
         with lock:
-            state["proc_step"] = "exporting"
+            state["run_step"] = "exporting"
         _pick_export_post(trigger=True)
         return True
     log("Denoise done. Click ▶ Export to trigger Lightroom, or export yourself and click Collect.")
     while True:
         time.sleep(0.5)
         with lock:
-            step_changed = state["proc_step"] != "export_ready"
+            step_changed = state["run_step"] != "export_ready"
             stopped      = state["stop_requested"]
         if step_changed or stopped:
             break
@@ -537,7 +556,7 @@ def _denoise_and_export_tail():
     while waited < DENOISE_CAP:
         time.sleep(10); waited += 10
         with lock:
-            step_changed = state["proc_step"] != "denoising"
+            step_changed = state["run_step"] != "denoising"
             stopped      = state["stop_requested"]
         if step_changed or stopped:
             break
@@ -675,8 +694,8 @@ def _run_batch(folder_name: str, start_step: str = "import"):
             log("  (couldn't screenshot Lightroom to confirm the import — continuing)")
         if state.get("stop_requested"): return
         with lock:
-            if state["proc_step"] == "importing":
-                state["proc_step"] = "continue_toning"
+            if state["run_step"] == "importing":
+                state["run_step"] = "continue_toning"
 
     if start_step in ("import", "tone"):
         # ── Step 2: Auto-tone ─────────────────────────────────────────────────
@@ -717,8 +736,8 @@ def _run_batch(folder_name: str, start_step: str = "import"):
             _record_auto_denoise(folder_name, bool(r.get("ok")))
             if r.get("ok"):
                 with lock:
-                    if state["proc_step"] == "denoise":
-                        state["proc_step"] = "copy_pasting"
+                    if state["run_step"] == "denoise":
+                        state["run_step"] = "copy_pasting"
             else:
                 log("✗ Auto-Denoise couldn't confirm the click.")
         if state.get("proc_step") == "denoise":
@@ -726,7 +745,7 @@ def _run_batch(folder_name: str, start_step: str = "import"):
         while True:
             time.sleep(0.5)
             with lock:
-                step_changed = state["proc_step"] != "denoise"
+                step_changed = state["run_step"] != "denoise"
                 stopped = state["stop_requested"]
             if step_changed or stopped:
                 break
@@ -751,6 +770,8 @@ def _pick_export_post(trigger: bool = True):
         log("Collecting your export — no Lightroom commands sent.")
         result = {"ok": True, "output": ""}
     else:
+        if not _wait_export_clear():
+            return
         export_start = time.time() - 2  # small slack for filesystem/clock skew
         log("Exporting all photos…")
         result = call_host("export", body={"all": True, "expect": _batch_size()},
@@ -804,7 +825,7 @@ def _pick_export_post(trigger: bool = True):
         # accumulates every shoot, so an old file could share a DSC number),
         # and anything another batch already collected stays with that batch.
         with lock:
-            folder = state["active"]
+            folder = state["run"]
             claimed = dict(state.get("claimed", {}))
         stems = _batch_raw_stems(folder) if folder else set()
         recent = time.time() - 86400          # generous when matching by name
@@ -831,7 +852,7 @@ def _pick_export_post(trigger: bool = True):
     while True:
         time.sleep(1)
         with lock:
-            done    = state["proc_step"] != "export_wait"
+            done    = state["run_step"] != "export_wait"
             stopped = state["stop_requested"]
         if done or stopped:
             break
@@ -896,60 +917,177 @@ def _pick_export_post(trigger: bool = True):
     _flag_corrupt_exports(new)
     _record_photo_dates(new)
     with lock:
-        folder = state["active"]
-        state["new_birds"] = new
+        folder = state["run"]
         if folder:
             state.setdefault("claimed", {}).update({f: folder for f in new})
     save_state()
     for n in new:
         log(f"  ✓ {n}")
     if not new:
-        log("No new files detected — check ~/Desktop/birbs/")
+        with lock:
+            state["run_error"] = "Export finished but none of this batch's photos were found"
+        log("✗ No exported photos found for this batch in ~/Desktop/birbs/ — "
+            "check Lightroom, then ▶ Export or Collect exports.")
+        set_step("export_ready")
+        return
 
     with lock:
         no_post = state.get("no_post", False)
     if no_post:
         with lock:
-            batch = state["batches"].get(state["active"])
+            batch = state["batches"].get(state["run"])
             if batch:
                 batch["status"] = "done"
                 batch["birds"]  = new
-            state["active"]      = None
-            state["proc_step"]   = None
-            state["no_post"]     = False
-            state["new_birds"]   = []
-            state["arrangement"] = None
+            state["run"]      = None
+            state["run_step"] = None
+            state["no_post"]  = False
         save_state()
         log(f"✓ Done — exported {len(new)} photo(s) to ~/Desktop/birbs. No posting (Lightroom-only run).")
         return
 
-    set_step("posting")
-    log("Export done! Fill in the species below and click Post.")
-    _start_sort()
+    # The batch is exported: its photos go to their own folder under .review
+    # straight away, so Lightroom can start the next batch and the posting
+    # screen stays Scott's. Claude sorts it there; 👀 Review opens it.
+    with lock:
+        dates = {f: state["photo_dates"][f] for f in new if f in state.get("photo_dates", {})}
+    _shelve(folder, None, new, dates, False, "exported — waiting to be sorted")
+    with lock:
+        state["run"], state["run_step"] = None, None
+        by_hand = state["crank"].get("batch") != folder
+        free = not state["active"]
+    save_state()
+    if by_hand and free:
+        # Started by hand with the posting screen free: open it there, as a
+        # manual run always has. (It is sorted there, too.)
+        ok, _ = open_review(folder)
+        if ok:
+            log(f"✓ {folder} exported ({len(new)} photos) — it's on the posting screen.")
+            return
+    log(f"✓ {folder} exported ({len(new)} photos) — set aside for review; Claude sorts it next.")
+    _queue_sort(folder)
 
 
-def _start_sort():
+def _export_clash(folder) -> list:
+    """Photos of the batch open on the posting screen that share a name with
+    this run's RAWs. Both live in ~/Desktop/birbs while it is open, and the
+    camera counter wraps — two photos with one name is how a June starling
+    ended up in a September post. Exporting then would put them side by side."""
+    with lock:
+        open_ = state["active"] if state["proc_step"] == "posting" else None
+        files = _shelf_files(state.get("arrangement"), state["new_birds"]) if open_ else []
+    if not files:
+        return []
+    stems = _batch_raw_stems(folder)
+    return [f for f in files if _export_stem(f) in stems]
+
+
+def _wait_export_clear() -> bool:
+    """Hold the export while it would clash with the batch Scott has open.
+    False if the run was stopped meanwhile."""
+    with lock:
+        folder = state["run"]
+    said = False
+    while folder and (clash := _export_clash(folder)):
+        if not said:
+            with lock:
+                other = state["active"]
+                state["run_hold"] = (f"holding the export — {other} on the posting screen "
+                                     f"has photos with the same names ({', '.join(clash[:3])})")
+            log(f"⏸ Holding {folder}'s export: {other}, open on the posting screen, has "
+                f"{len(clash)} photo(s) with the same name ({', '.join(clash[:5])}). "
+                "It exports as soon as that batch is posted or set aside.")
+            said = True
+        time.sleep(15)
+        if state.get("stop_requested"):
+            return False
+    with lock:
+        state["run_hold"] = ""
+    return True
+
+
+def _queue_sort(folder: str):
+    """Ask for a batch to be sorted. One sorter runs at a time; _sort_next
+    starts the next as soon as it's free."""
+    with lock:
+        q = state.setdefault("sort_queue", [])
+        if folder and folder not in q:
+            q.append(folder)
+    save_state()
+    _sort_next()
+
+
+def _sort_busy() -> bool:
+    with lock:
+        sort = dict(state.get("sort") or {})
+    st, age = sort.get("state"), time.time() - (sort.get("at") or 0)
+    return ((st == "starting" and age < SORT_START_GRACE)
+            or (st == "running" and age < SORT_RUN_CAP)
+            or (st in ("waiting", "busy") and age < SORT_RUN_CAP * 12))
+
+
+def _sortable(folder: str) -> bool:
+    """Still wants sorting: shelved and not yet sorted, or open on the posting
+    screen (the sorter itself checks whether Scott has started on it)."""
+    with lock:
+        rec = state["review"].get(folder)
+        if rec is not None:
+            return not rec.get("sorted") and rec.get("sort_fails", 0) < SORT_TRIES
+        return state["active"] == folder and state["proc_step"] == "posting"
+
+
+_sort_lock = threading.Lock()
+
+
+def _sort_next():
+    """Start the sorter on the next queued batch, if it is free."""
+    if not _sort_lock.acquire(blocking=False):
+        return
+    try:
+        if _sort_busy():
+            return
+        while True:
+            with lock:
+                q = state.setdefault("sort_queue", [])
+                folder = q[0] if q else None
+            if not folder:
+                return
+            if _sortable(folder):
+                break
+            with lock:
+                if q and q[0] == folder:
+                    q.pop(0)
+        _start_sort(folder)
+    finally:
+        _sort_lock.release()
+
+
+def _start_sort(folder: str = None):
     """Hand the fresh export to Claude Code (sort_batch.sh on the Mac) to sort
     into posts — species, frames, crops, flags. It runs in the background and
     saves the arrangement through /api/arrangement when done; it never
     overwrites a sorting Scott has already started. Its progress comes back
     through /api/sort-status, which is how the crank knows when to move on."""
     with lock:
-        state["sort"] = {"folder": state["active"], "state": "starting",
+        folder = folder or state["active"]
+        state["sort"] = {"folder": folder, "state": "starting",
                          "text": "", "at": time.time()}
-    r = call_host("sort-batch", timeout=30)
+    r = call_host("sort-batch", body={"folder": folder}, timeout=30)
     out = (r.get("output") or "").strip()
     if r.get("ok"):
         if "already running" in out:
             # A sorter from an earlier batch is still waiting out a usage
-            # limit. It re-checks the posting step when it wakes, so it will
-            # get to this batch — just not on our schedule.
+            # limit. This batch stays queued and goes when that one is done.
             _set_sort("busy", out)
-        log(f"🧠 Claude is sorting this batch into posts — {out or 'started'}. "
-            "Reload when it finishes (a few minutes).")
+        else:
+            with lock:
+                q = state.setdefault("sort_queue", [])
+                if folder in q:
+                    q.remove(folder)
+        log(f"🧠 Claude is sorting {folder} into posts — {out or 'started'}.")
     else:
         _set_sort("failed", out[:200])
-        log(f"(couldn't start the automatic sort: {out[:120]})")
+        log(f"(couldn't start the automatic sort for {folder}: {out[:120]})")
     save_state()
 
 
@@ -965,21 +1103,33 @@ SORT_STATES = (("done", "done"), ("idle", "idle"), ("failed", "failed"),
                ("gave up", "failed"), ("waiting", "waiting"), ("sorting", "running"))
 
 
+SORT_TRIES = 2      # a batch whose sort fails this often waits to be sorted when opened
+
+
 @app.post("/api/sort-status")
 def sort_status():
     """sort_batch.sh reports each status line here as well as to
-    ~/.bird_sort/status.txt. The sorter only ever works on the batch on the
-    posting step, so that is the batch a line is about."""
+    ~/.bird_sort/status.txt, naming the batch it is sorting."""
     data = request.get_json(silent=True) or request.form
     text = (data.get("text") or "").strip()
     kind = next((k for prefix, k in SORT_STATES if text.startswith(prefix)), "running")
+    finished = kind in ("done", "idle", "failed")
     with lock:
         cur = state.get("sort") or {}
-        folder = (state["active"] if state["proc_step"] == "posting"
-                  else cur.get("folder"))
+        folder = (data.get("folder") or "").strip() or cur.get("folder")
         state["sort"] = {"folder": folder, "state": kind, "text": text[:300],
                          "at": time.time()}
+        rec = state["review"].get(folder)
+        if rec is not None and finished:
+            if kind == "failed":
+                rec["sort_fails"] = rec.get("sort_fails", 0) + 1
+            else:
+                rec["sorted"] = True
+                rec["why"] = "sorted" if kind == "done" else rec.get("why", "")
+            _write_shelf(folder, rec)
     save_state()
+    if finished:
+        threading.Thread(target=_sort_next, daemon=True).start()
     return jsonify({"ok": True})
 
 
@@ -987,10 +1137,10 @@ def sort_status():
 def sort_batch():
     """Re-run the automatic sort for the batch on the posting step."""
     with lock:
-        step = state["proc_step"]
+        step, folder = state["proc_step"], state["active"]
     if step != "posting":
         return jsonify({"error": "not on the posting step"}), 400
-    _start_sort()
+    _queue_sort(folder)
     return jsonify({"ok": True})
 
 
@@ -1249,13 +1399,13 @@ def _has_capture_date(path) -> bool:
         return False
 
 
-def _retire_stale_backups(files) -> list:
+def _retire_stale_backups(files, orig_dir: Path = None) -> list:
     """Move crop backups that belong to an older photo of the same name out of
     the way. The camera counter wraps, so a June DSC_0947 and a September
     DSC_0947 share a name: on 2026-11-22 the June backup was still in
     .originals, a crop reset restored it over the new export, and a starling
     already posted in June went into a September post. Nothing is deleted."""
-    orig_dir = BIRDS_DIR / ".originals"
+    orig_dir = orig_dir or BIRDS_DIR / ".originals"
     stale_dir = orig_dir / ".stale"
     moved = []
     for f in files:
@@ -1395,9 +1545,11 @@ def crop_status():
     name = (request.args.get("file") or "").strip()
     if not name or "/" in name:
         return jsonify({"error": "unknown file"}), 404
-    backup = BIRDS_DIR / ".originals" / name
-    if backup.is_file() and _has_capture_date(bird_file(name)):
-        _retire_stale_backups([name])      # an older photo's backup, not this one's
+    live, excl, orig = _dirs(request.args.get("folder"))
+    backup = orig / name
+    src = live / name if (live / name).exists() else excl / name
+    if backup.is_file() and _has_capture_date(src):
+        _retire_stale_backups([name], orig)  # an older photo's backup, not this one's
     return jsonify({"hasOriginal": backup.is_file()})
 
 
@@ -1411,16 +1563,16 @@ def crop_image():
     import shutil
     data = request.json or {}
     name = (data.get("file") or "").strip()
-    src  = bird_file(name)
+    live, excl, orig_dir = _dirs(data.get("folder"))
+    src  = live / name if (live / name).exists() else excl / name
     if not name or "/" in name or not src.is_file():
         return jsonify({"error": "unknown file"}), 404
-    orig_dir = BIRDS_DIR / ".originals"
 
     # A backup only belongs to this file if this file is our crop of it. A
     # file still carrying a capture date is a fresh export, so any backup
     # under its name is an older photo's: never restore that over it.
     if (orig_dir / name).exists() and _has_capture_date(src):
-        _retire_stale_backups([name])
+        _retire_stale_backups([name], orig_dir)
 
     if data.get("reset"):
         backup = orig_dir / name
@@ -1448,7 +1600,7 @@ def crop_image():
     if right - left < 100 or bottom - top < 100:
         return jsonify({"error": "crop too small (min 100px per side)"}), 400
 
-    orig_dir.mkdir(exist_ok=True)
+    orig_dir.mkdir(parents=True, exist_ok=True)
     backup = orig_dir / name
     if not backup.exists():
         shutil.copy2(src, backup)
@@ -1492,14 +1644,39 @@ def favicon():
     return app.send_static_file("favicon.svg")
 
 
+def _sort_view(folder: str):
+    """What the sorter needs about one batch, shaped like /api/state on the
+    posting step so bird_sort.py reads it the same way. `subdir` is where its
+    photos are, relative to ~/Desktop/birbs."""
+    with lock:
+        if folder == state["active"] and state["proc_step"] == "posting":
+            rec, subdir = {"arrangement": state.get("arrangement"),
+                           "new_birds": list(state["new_birds"]),
+                           "photo_dates": dict(state.get("photo_dates", {}))}, ""
+        elif folder in state["review"]:
+            rec, subdir = state["review"][folder], f".review/{folder}/live"
+        else:
+            return {"proc_step": None, "active": None, "new_birds": [], "arrangement": None}
+        return {"proc_step": "posting", "active": state["batches"].get(folder) or {"folder": folder},
+                "new_birds": list(rec.get("new_birds") or []),
+                "arrangement": rec.get("arrangement"),
+                "photo_dates": dict(rec.get("photo_dates") or {}), "subdir": subdir}
+
+
 @app.get("/api/state")
 def get_state():
+    if request.args.get("folder"):
+        return jsonify(_sort_view(request.args["folder"]))
     with lock:
         active_batch = state["batches"].get(state["active"]) if state["active"] else None
         payload = {
             "batches":   sorted(state["batches"].values(), key=lambda b: b["date"], reverse=True),
             "active":    active_batch,
             "proc_step": state["proc_step"],
+            "run":       state["batches"].get(state["run"]) if state["run"] else None,
+            "run_step":  state["run_step"],
+            "run_hold":  state.get("run_hold", ""),
+            "sort_queue": list(state.get("sort_queue") or []),
             "no_post":   state.get("no_post", False),
             "new_birds":  list(state["new_birds"]),
             "arrangement": state.get("arrangement"),
@@ -1528,8 +1705,8 @@ def get_state():
 @app.post("/api/process/<folder_name>")
 def start_process(folder_name: str):
     with lock:
-        if state["active"]:
-            return jsonify({"error": "Already processing another batch"}), 400
+        if state["run"]:
+            return jsonify({"error": f"Lightroom is already working on {state['run']}"}), 400
         if folder_name not in state["batches"]:
             return jsonify({"error": "Unknown batch"}), 404
 
@@ -1553,18 +1730,18 @@ def continue_step():
     mode = (request.json or {}).get("mode") if request.is_json else None
     resume = None
     with lock:
-        step, alive = state["proc_step"], state["thread_active"]
+        step, alive = state["run_step"], state["thread_active"]
         if step == "importing":
-            state["proc_step"] = "continue_toning"
+            state["run_step"] = "continue_toning"
         elif step == "denoise":
-            state["proc_step"] = "copy_pasting"
+            state["run_step"] = "copy_pasting"
             resume = "denoise" if not alive else None
         elif step == "denoising":
             # skip the denoise-queue wait; lands on the export_ready gate
-            state["proc_step"] = "export_ready_skip" if alive else "export_ready"
+            state["run_step"] = "export_ready_skip" if alive else "export_ready"
         elif step in ("export_ready", "export_ready_skip"):
             state["_export_mode"] = mode or "trigger"
-            state["proc_step"] = "exporting"
+            state["run_step"] = "exporting"
             resume = "export" if not alive else None
         # Let the crank look again now, so its "needs you" clears with the
         # click instead of up to two minutes later.
@@ -1598,11 +1775,11 @@ def done_picking():
     stalls on a Resume button. Finish it here in that case."""
     resume = False
     with lock:
-        step, alive = state["proc_step"], state["thread_active"]
+        step, alive = state["run_step"], state["thread_active"]
         if step == "picking":
-            state["proc_step"] = "exporting"
-        elif step == "export_wait":
-            state["proc_step"] = "export_done"
+            state["run_step"] = "exporting"
+        elif step in ("export_wait", "export_done"):
+            state["run_step"] = "export_done"
             resume = not alive
     if resume:
         def _finish():
@@ -2197,8 +2374,8 @@ def export_progress():
     knows how many RAWs it holds and each export is named after its RAW — so
     count the ones that have landed."""
     with lock:
-        folder = state["active"]
-        step   = state["proc_step"]
+        folder = state["run"]
+        step   = state["run_step"]
     if not folder or step not in ("exporting", "export_wait", "export_done"):
         return jsonify({"active": False})
     stems = _batch_raw_stems(folder)
@@ -2274,10 +2451,15 @@ def refresh_birds():
         if state["proc_step"] != "posting":
             return jsonify({"error": "not on the posting step"}), 400
         current = set(state["new_birds"])
+        run = state["run"]
+        claimed = dict(state.get("claimed", {}))
+        folder = state["active"]
     cutoff = time.time() - 7200
+    run_stems = _batch_raw_stems(run) if run else set()
     fresh = []
     for f in _birds_snapshot():
-        if f in current:
+        if f in current or _export_stem(f) in run_stems \
+                or claimed.get(f) not in (None, folder):
             continue
         try:
             if (BIRDS_DIR / f).stat().st_mtime >= cutoff:
@@ -2304,12 +2486,15 @@ def skip_batch(folder_name: str):
     with lock:
         if folder_name in state["batches"]:
             state["batches"][folder_name]["status"] = "done"
-        if state["active"] == folder_name:
+        if state["run"] == folder_name:
             stood_down = True
             state["stop_requested"] = True
+            state["run"], state["run_step"], state["run_hold"] = None, None, ""
+            state["no_post"] = False
+        if state["active"] == folder_name:
+            stood_down = True
             state["active"]      = None
             state["proc_step"]   = None
-            state["no_post"]     = False
             state["new_birds"]   = []
             state["arrangement"] = None
     save_state()
@@ -2363,7 +2548,7 @@ ARRANGE_LOG = DOWNLOADS / ".arrangement_log.jsonl"
 ARRANGE_LOG_KEEP = 400
 
 
-def _log_arrangement(arr, note=""):
+def _log_arrangement(arr, note="", batch=None):
     """Append every arrangement to an audit trail. A bad keystroke once
     excluded 31 photos with no way to tell which were deliberate — with this,
     any previous state can be read back and restored."""
@@ -2375,7 +2560,7 @@ def _log_arrangement(arr, note=""):
             "lanes": arr.get("lanes") or [],
             "excluded": arr.get("excluded") or [],
             "meta": arr.get("meta") or {},
-            "batch": state.get("active"),
+            "batch": batch or state.get("active"),
         }
         with ARRANGE_LOG.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -2426,24 +2611,25 @@ def arrangement_restore():
     return jsonify({"ok": True, "at": e.get("at")})
 
 
-def _sync_parked(lanes, excluded):
+def _sync_parked(lanes, excluded, live_dir: Path = None, excl_dir: Path = None):
     """Keep ~/Desktop/birbs in step with the arrangement: photos in a post live
     there, excluded ones sit in .excluded. Without this a photo restored to a
     post stayed parked — uncroppable, and missing when the post ran."""
+    live_dir, excl_dir = live_dir or BIRDS_DIR, excl_dir or EXCLUDED_DIR
     in_posts = {f for lane in lanes for f in lane}
-    EXCLUDED_DIR.mkdir(exist_ok=True)
+    excl_dir.mkdir(parents=True, exist_ok=True)
     for f in in_posts:
-        parked = EXCLUDED_DIR / f
-        if parked.is_file() and not (BIRDS_DIR / f).exists():
+        parked = excl_dir / f
+        if parked.is_file() and not (live_dir / f).exists():
             try:
-                parked.replace(BIRDS_DIR / f)
+                parked.replace(live_dir / f)
             except OSError:
                 pass
     for f in excluded or []:
-        live = BIRDS_DIR / f
+        live = live_dir / f
         if live.is_file():
             try:
-                live.replace(EXCLUDED_DIR / f)
+                live.replace(excl_dir / f)
             except OSError:
                 pass
 
@@ -2461,11 +2647,22 @@ def save_arrangement():
         "excluded": [str(f) for f in (data.get("excluded") or [])],
         "meta":     data.get("meta") if isinstance(data.get("meta"), dict) else {},
     }
+    folder = (data.get("folder") or "").strip() or None
+    live, excl, _ = _dirs(folder)
     with lock:
-        state["arrangement"] = arrangement
+        rec = (state["review"].get(folder)
+               if folder and folder != state["active"] else None)
+        if rec is not None:
+            rec["arrangement"] = arrangement     # a shelved batch, sorted in place
+        elif folder and folder != state["active"]:
+            return jsonify({"error": f"{folder} is neither open nor waiting for review"}), 404
+        else:
+            state["arrangement"] = arrangement
+    if rec is not None:
+        _write_shelf(folder, rec)
     save_state()
-    _log_arrangement(arrangement, note=data.get("note", ""))
-    _sync_parked(arrangement["lanes"], arrangement["excluded"])
+    _log_arrangement(arrangement, note=data.get("note", ""), batch=folder)
+    _sync_parked(arrangement["lanes"], arrangement["excluded"], live, excl)
     return jsonify({"ok": True})
 
 
@@ -2501,7 +2698,7 @@ def goto_step():
     if step not in VALID:
         return jsonify({"error": "invalid step"}), 400
     with lock:
-        folder = state["active"]
+        folder = state["run"]
     if not folder:
         return jsonify({"error": "no active batch"}), 400
 
@@ -2529,7 +2726,7 @@ def goto_step():
 def force_advance():
     """Emergency escape from a stuck automation step."""
     with lock:
-        step = state["proc_step"]
+        step = state["run_step"]
         next_step = {
             "importing":       "continue_toning",
             "continue_toning": "toning",
@@ -2538,21 +2735,12 @@ def force_advance():
             "denoising":       "export_ready_skip",
             "export_ready":    "exporting",
             "exporting":       "export_wait",
-            "export_done":     "posting",
         }.get(step)
         if next_step:
-            state["proc_step"] = next_step
-            if step == "export_done":
-                import time as _time
-                cutoff = _time.time() - 7200  # files exported in the last 2 hours
-                recent = [f for f in _birds_snapshot()
-                          if (BIRDS_DIR / f).stat().st_mtime >= cutoff]
-                # Never fall back to the whole folder — an empty result means
-                # nothing recent landed; Rescan exports can widen from the UI.
-                state["new_birds"] = recent
-                state["arrangement"] = None
-    if next_step == "posting":
-        _record_photo_dates(state["new_birds"])
+            state["run_step"] = next_step
+    if step == "export_done":
+        # Collect what was exported and set the batch aside, as ✓ Done does.
+        return done_picking()
     if next_step:
         log(f"Force-advanced: {step} → {next_step}")
     save_state()
@@ -2565,14 +2753,16 @@ def reset_batch(folder_name: str):
     with lock:
         if folder_name in state["batches"]:
             state["batches"][folder_name]["status"] = "pending"
-        if state["active"] == folder_name:
+        if state["run"] == folder_name:
             was_active = True
             # Tell the running thread to actually bail — otherwise clearing
-            # proc_step just trips its wait loop and it marches on to the next step.
+            # run_step just trips its wait loop and it marches on to the next step.
             state["stop_requested"] = True
+            state["run"], state["run_step"], state["run_hold"] = None, None, ""
+            state["no_post"] = False
+        if state["active"] == folder_name:
             state["active"]    = None
             state["proc_step"] = None
-            state["no_post"]   = False
             state["new_birds"] = []
             state["arrangement"] = None
     save_state()
@@ -2662,7 +2852,7 @@ def syno_fetch():
         scan_batches()
         with lock:
             exists = album in state["batches"]
-            busy   = state["active"]
+            busy   = state["run"]
         if not exists:
             log(f"Fetched, but no batch matched '{album}' (check the date-prefixed name).")
         elif busy:
@@ -2784,6 +2974,18 @@ ORIGINALS_DIR = BIRDS_DIR / ".originals"
 SHELF_PARTS   = (("live", BIRDS_DIR), ("excluded", EXCLUDED_DIR), ("originals", ORIGINALS_DIR))
 
 
+def _dirs(folder: str = None) -> tuple:
+    """(live, excluded, originals) for a batch's photos. The batch open on the
+    posting screen lives in ~/Desktop/birbs; a shelved one in .review/<folder>/
+    — which is where Claude sorts it, so sorting never needs the posting screen."""
+    with lock:
+        shelved = bool(folder) and folder != state["active"] and folder in state["review"]
+    if shelved:
+        s = REVIEW_DIR / folder
+        return s / "live", s / "excluded", s / "originals"
+    return BIRDS_DIR, EXCLUDED_DIR, ORIGINALS_DIR
+
+
 def _review_summary(rec: dict) -> dict:
     lanes = [l for l in ((rec.get("arrangement") or {}).get("lanes") or []) if l]
     return {"shelved_at": rec.get("shelved_at"), "sorted": bool(rec.get("sorted")),
@@ -2814,6 +3016,42 @@ def _drop_caches(names):
                 pass
 
 
+def _write_shelf(folder: str, rec: dict):
+    """A copy beside the photos, so the shelf can be rebuilt if state is lost."""
+    try:
+        shelf = REVIEW_DIR / folder
+        shelf.mkdir(parents=True, exist_ok=True)
+        (shelf / "shelf.json").write_text(json.dumps(rec))
+    except OSError:
+        pass
+
+
+def _shelve(folder: str, arr, new: list, dates: dict, sorted_: bool, why: str) -> dict:
+    """Move a batch's photos out of ~/Desktop/birbs into .review/<folder>/ and
+    record it as waiting for review. Returns the record."""
+    files = _shelf_files(arr, new)
+    shelf = REVIEW_DIR / folder
+    for part, src_dir in SHELF_PARTS:
+        for f in files:
+            src = src_dir / f
+            if src.is_file():
+                (shelf / part).mkdir(parents=True, exist_ok=True)
+                src.replace(shelf / part / f)
+    _drop_caches(files)
+    rec = {"folder": folder, "arrangement": arr, "new_birds": list(new), "files": files,
+           "photo_dates": {f: dates[f] for f in files if f in dates},
+           "sorted": sorted_,
+           "shelved_at": datetime.now().isoformat(timespec="minutes"), "why": why}
+    _write_shelf(folder, rec)
+    with lock:
+        state["review"][folder] = rec
+        b = state["batches"].get(folder)
+        if b:
+            b["status"] = "review"
+    save_state()
+    return rec
+
+
 def shelve_active(why: str = "") -> tuple:
     """Set the batch on the posting step aside for review. (ok, message)"""
     with lock:
@@ -2826,35 +3064,15 @@ def shelve_active(why: str = "") -> tuple:
         new   = list(state["new_birds"])
         sort  = dict(state.get("sort") or {})
         dates = dict(state.get("photo_dates", {}))
-    files = _shelf_files(arr, new)
-    shelf = REVIEW_DIR / folder
-    for part, src_dir in SHELF_PARTS:
-        for f in files:
-            src = src_dir / f
-            if src.is_file():
-                (shelf / part).mkdir(parents=True, exist_ok=True)
-                src.replace(shelf / part / f)
-    _drop_caches(files)
-    rec = {"folder": folder, "arrangement": arr, "new_birds": new, "files": files,
-           "photo_dates": {f: dates[f] for f in files if f in dates},
-           "sorted": sort.get("folder") == folder and sort.get("state") in ("done", "idle"),
-           "shelved_at": datetime.now().isoformat(timespec="minutes"), "why": why}
-    try:
-        # A copy beside the photos, so the shelf can be rebuilt if state is lost.
-        shelf.mkdir(parents=True, exist_ok=True)
-        (shelf / "shelf.json").write_text(json.dumps(rec))
-    except OSError:
-        pass
+        was_sorted = state.get("open_sorted") or (
+            sort.get("folder") == folder and sort.get("state") in ("done", "idle"))
+    rec = _shelve(folder, arr, new, dates, bool(was_sorted), why)
     with lock:
-        state["review"][folder] = rec
-        b = state["batches"].get(folder)
-        if b:
-            b["status"] = "review"
         state["active"]      = None
         state["proc_step"]   = None
         state["arrangement"] = None
         state["new_birds"]   = []
-        state["run_error"]   = ""
+        state["open_sorted"] = False
     save_state()
     n = _review_summary(rec)["posts"]
     log(f"⏸ {folder} set aside for your review ({n} post{'s' if n != 1 else ''})"
@@ -2863,14 +3081,26 @@ def shelve_active(why: str = "") -> tuple:
 
 
 def open_review(folder: str) -> tuple:
-    """Put a shelved batch back on the posting screen. (ok, message)"""
+    """Put a shelved batch back on the posting screen. (ok, message)
+
+    Lightroom keeps working on other batches meanwhile — the run has its own
+    slot. Only two short moments wait: Lightroom writing an export into
+    ~/Desktop/birbs, and Claude part-way through sorting this very batch."""
     with lock:
         if state["active"]:
-            return False, (f"{state['active']} is using the posting screen "
-                           f"({state['proc_step']}) — Review opens when it's done or set aside.")
+            return False, (f"{state['active']} is open on the posting screen — post it "
+                           "or set it aside (⏸ Later) first.")
+        if state["run_step"] in ("exporting", "export_wait", "export_done"):
+            return False, (f"Lightroom is exporting {state['run']} into ~/Desktop/birbs — "
+                           "try again in a minute or two.")
+        sort = dict(state.get("sort") or {})
         rec = state["review"].get(folder)
     if not rec:
         return False, "That batch isn't waiting for review."
+    if sort.get("folder") == folder and sort.get("state") in ("starting", "running") \
+            and time.time() - (sort.get("at") or 0) < SORT_START_GRACE:
+        return False, (f"Claude is sorting {folder} right now — it'll be ready in a "
+                       "few minutes.")
     shelf = REVIEW_DIR / folder
     displaced = REVIEW_DIR / ".displaced" / datetime.now().strftime("%Y%m%d-%H%M%S")
     names, bumped = [], []
@@ -2909,11 +3139,9 @@ def open_review(folder: str) -> tuple:
             b["status"] = "processing"
         state["active"]         = folder
         state["proc_step"]      = "posting"
-        state["no_post"]        = False
+        state["open_sorted"]    = bool(rec.get("sorted"))
         state["arrangement"]    = rec.get("arrangement")
         state["new_birds"]      = list(rec.get("new_birds") or [])
-        state["run_error"]      = ""
-        state["stop_requested"] = False
         state.setdefault("photo_dates", {}).update(rec.get("photo_dates") or {})
         state.setdefault("claimed", {}).update({f: folder for f in files})
     save_state()
@@ -2922,7 +3150,7 @@ def open_review(folder: str) -> tuple:
         log(f"  (moved {len(bumped)} older same-name photo(s) out of the way into "
             f".review/.displaced/: {', '.join(bumped[:6])}{'…' if len(bumped) > 6 else ''})")
     if not rec.get("sorted"):
-        _start_sort()
+        _queue_sort(folder)
     return True, folder
 
 
@@ -3053,52 +3281,46 @@ def _crank_albums():
 
 
 def _crank_tick() -> float:
-    """Take the next step. Returns seconds until the next look."""
+    """Take the next step. Returns seconds until the next look.
+
+    Three things run side by side and the crank only drives the first two:
+    Lightroom (one batch at a time, in the run slot), the sorter (one batch at
+    a time, on batches already set aside), and the posting screen — Scott's
+    alone. A batch leaves Lightroom by being set aside the moment its export
+    lands, so Lightroom never waits on a sort or on Scott."""
     with lock:
-        active, step  = state["active"], state["proc_step"]
+        run, step     = state["run"], state["run_step"]
         alive, mine   = state["thread_active"], state["crank"].get("batch")
-        sort, posting = dict(state.get("sort") or {}), state.get("posting")
         err           = state.get("run_error", "")
+        hold          = state.get("run_hold", "")
         mine_status   = (state["batches"].get(mine) or {}).get("status") if mine else None
+        unsorted      = [f for f, r in sorted(state["review"].items(),
+                                              key=lambda kv: kv[1].get("shelved_at") or "")
+                         if not r.get("sorted") and r.get("sort_fails", 0) < SORT_TRIES
+                         and f not in state.get("sort_queue", [])]
 
-    if active and active != mine:
-        _crank_status(f"waiting — {active} is open on the posting screen" if step == "posting"
-                      else f"waiting — {active} is running by hand ({step})")
+    # Anything set aside unsorted (a restart, a failed start) gets queued.
+    for f in unsorted:
+        with lock:
+            state.setdefault("sort_queue", []).append(f)
+    _sort_next()
+
+    if run and run != mine:
+        _crank_status(f"waiting — {run} is running in Lightroom by hand ({step})")
         return 60
-
-    if active:
-        if step == "posting":
-            if posting:
-                return 30
-            st  = sort.get("state") if sort.get("folder") == active else None
-            age = time.time() - (sort.get("at") or 0)
-            if st is None:
-                _start_sort()
-                return 30
-            if (st == "starting" and age < SORT_START_GRACE) or (st == "running" and age < SORT_RUN_CAP):
-                _crank_status(f"Claude is sorting {active} into posts")
-                return 30
-            why = ("sorted" if st in ("done", "idle")
-                   else f"not sorted yet ({sort.get('text') or st}) — it sorts when you open it")
-            ok, msg = shelve_active(why)
-            if not ok:
-                _crank_status(f"couldn't set {active} aside: {msg}")
-                return 60
-            with lock:
-                state["crank"]["batch"] = None
-            save_state()
-            return 5
+    if run:
         if alive:
             with lock:
                 trying = state.get("auto_denoising")
             gate = None if trying else CRANK_GATES.get(step)
-            _crank_status(f"needs you — {active}: {gate}" if gate else f"{active}: {step}")
+            _crank_status(f"needs you — {run}: {gate}" if gate
+                          else f"{run}: {hold}" if hold else f"{run}: {step}")
             return 30
-        _crank_status(f"needs you — {active} stopped at '{step}'"
+        _crank_status(f"needs you — {run} stopped at '{step}'"
                       f"{': ' + err if err else ''}. Fix it in the app, and the crank carries on.")
         return 120
 
-    # Nothing on the posting screen.
+    # Lightroom is free.
     with lock:
         phase = state["crank"].get("phase")
     if mine and mine_status == "pending" and phase in ("fetching", "fetched"):
@@ -3175,7 +3397,7 @@ def _crank_process(folder: str) -> float:
     scan_batches()
     with lock:
         known = folder in state["batches"]
-        busy  = state["active"]
+        busy  = state["run"]
     if not known:
         with lock:
             state["crank"]["on"] = False
@@ -3183,8 +3405,8 @@ def _crank_process(folder: str) -> float:
         _crank_status(f"stopped — fetched {folder} but no batch appeared for it")
         return 60
     if busy:
-        # Scott opened something on the posting screen while this downloaded.
-        _crank_status(f"{folder} is fetched — waiting for {busy} to finish first")
+        # Scott started a batch in Lightroom by hand while this downloaded.
+        _crank_status(f"{folder} is fetched — waiting for Lightroom to finish {busy}")
         return 60
     with lock:
         state["crank"]["phase"] = "processing"
@@ -3197,7 +3419,7 @@ def _crank_process(folder: str) -> float:
     end = time.time() + 10
     while time.time() < end and t.is_alive():
         with lock:
-            if state["active"] == folder:
+            if state["run"] == folder:
                 break
         time.sleep(0.2)
     return 10

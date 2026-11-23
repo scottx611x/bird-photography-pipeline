@@ -45,6 +45,7 @@ Every exported photo not named in a post is excluded (never deleted).
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -53,9 +54,31 @@ from datetime import datetime
 from pathlib import Path
 
 BASE = os.environ.get("BIRD_APP", "http://localhost:8765")
-BIRDS_DIR = Path.home() / "Desktop" / "birbs"
+BIRBS = Path.home() / "Desktop" / "birbs"
+BIRDS_DIR = BIRBS                            # where this batch's photos are (see batch_state)
 ORIG_DIR = BIRDS_DIR / ".originals"          # /api/crop keeps pristine copies here
 WORK_ROOT = Path.home() / ".bird_sort"
+
+
+def _target():
+    """The batch to sort. sort_batch.sh names it (env, and a file in case the
+    headless session's shell doesn't pass the env on); with neither, the batch
+    on the posting screen, as before. Batches are sorted where they wait for
+    review, so Lightroom and the posting screen never wait on a sort."""
+    f = os.environ.get("BIRD_SORT_FOLDER", "").strip()
+    if not f:
+        try:
+            f = (WORK_ROOT / "target").read_text().strip()
+        except OSError:
+            f = ""
+    return f if re.fullmatch(r"[\w.+-]+", f or "") else ""
+
+
+FOLDER = _target()
+
+
+def _q(sep="?"):
+    return f"{sep}folder={urllib.request.quote(FOLDER)}" if FOLDER else ""
 
 MODEL_URL = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5m.onnx"
 MODEL = Path.home() / ".cache" / "birds" / "yolov5m.onnx"
@@ -102,15 +125,28 @@ def batch_state():
                  "location": t.get("location", "")}, "new_birds": t["files"],
                  "photo_dates": {}, "arrangement": None},
                 t["folder"], list(t["files"]))
-    st = api("/api/state")
+    st = api("/api/state" + _q())
     if st.get("proc_step") != "posting":
-        sys.exit(f"The app isn't on the posting step (step: {st.get('proc_step')}). "
-                 "Nothing to sort yet.")
+        sys.exit(f"{FOLDER or 'The batch'} isn't waiting to be sorted "
+                 f"(step: {st.get('proc_step')}). Nothing to sort.")
     folder = (st.get("active") or {}).get("folder")
     files = list(st.get("new_birds") or [])
     if not folder or not files:
-        sys.exit("No active batch with exported photos.")
+        sys.exit("No batch with exported photos.")
+    _use_dirs(st)
     return st, folder, files
+
+
+def _use_dirs(st):
+    """Point the file helpers at where this batch's photos are: birbs for the
+    batch on the posting screen, .review/<folder>/live for a shelved one."""
+    global BIRDS_DIR, ORIG_DIR
+    sub = st.get("subdir") or ""
+    if sub and ".." not in sub:
+        BIRDS_DIR = BIRBS / sub
+        ORIG_DIR = BIRDS_DIR.parent / "originals"
+    else:
+        BIRDS_DIR, ORIG_DIR = BIRBS, BIRBS / ".originals"
 
 
 def work_dir(folder):
@@ -547,10 +583,10 @@ def cmd_pending(args):
     sort_batch.sh asks before every attempt, so a run that waited out a usage
     limit doesn't re-sort something already sorted (by us or by Scott)."""
     st, folder = (batch_state()[:2] if os.environ.get("BIRD_SORT_TEST")
-                  else (api("/api/state"), None))
+                  else (api("/api/state" + _q()), None))
     folder = folder or (st.get("active") or {}).get("folder")
     if st.get("proc_step") != "posting" or not folder or not st.get("new_birds"):
-        print("Nothing to sort: no batch with exports on the posting step.")
+        print(f"Nothing to sort: {FOLDER or 'no batch'} isn't waiting with exports.")
         sys.exit(1)
     touched, ours = _sort_status(st, folder)
     if ours:
@@ -745,11 +781,11 @@ def cmd_apply(args):
                 m["flag"] = ph["flag"]
             meta[f] = m
             box = _box_for(ph, an)
-            status = api(f"/api/crop-status?file={urllib.request.quote(f)}")
+            status = api(f"/api/crop-status?file={urllib.request.quote(f)}{_q('&')}")
             if status.get("hasOriginal"):
-                api("/api/crop", {"file": f, "reset": True})
+                api("/api/crop", {"file": f, "reset": True, "folder": folder})
             if box:
-                r = api("/api/crop", {"file": f, "box": box})
+                r = api("/api/crop", {"file": f, "box": box, "folder": folder})
                 if not r.get("ok"):
                     sys.exit(f"Crop failed for {f}: {r}")
                 cropped += 1
@@ -758,12 +794,12 @@ def cmd_apply(args):
     excluded = [f for f in files if f not in used]
     for f in excluded:
         meta[f] = {"species": "", "location": default_loc, "oos": False}
-    body = {"lanes": lanes, "excluded": excluded, "meta": meta,
+    body = {"lanes": lanes, "excluded": excluded, "meta": meta, "folder": folder,
             "note": "sort-batch: " + (plan.get("summary") or "")[:300]}
     r = api("/api/arrangement", body)
     if not r.get("ok"):
         sys.exit(f"Saving the arrangement failed: {r}")
-    saved = api("/api/state").get("arrangement") or {}
+    saved = api("/api/state" + _q()).get("arrangement") or {}
     last.write_text(json.dumps({
         "at": datetime.now().isoformat(timespec="seconds"), "plan": plan,
         "arrangement": {k: saved.get(k) for k in ("lanes", "excluded", "meta")}}, indent=1))
