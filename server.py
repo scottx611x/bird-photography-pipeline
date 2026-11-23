@@ -322,6 +322,10 @@ def _batch_size():
 
 AUTO_DENOISE = os.environ.get("AUTO_DENOISE", "1") != "0"
 AUTO_EXPORT  = os.environ.get("AUTO_EXPORT", "1") != "0"
+# birdqueue (the Pi's own Instagram queue) is switched off — the service on
+# birdpi is stopped and disabled (Scott, 2026-11-22). Buffer is the only way out
+# until BIRDQUEUE=1; the Post screen hides the option.
+BIRDQUEUE_ON = os.environ.get("BIRDQUEUE", "0") == "1"
 AUTO_DENOISE_TRIES = 2
 EXPORT_NOTHING_AFTER = 15 * 60   # an export that lands nothing in birbs for this long went elsewhere
 AUTO_DENOISE_LOG = DOWNLOADS / ".auto_denoise.jsonl"
@@ -1689,6 +1693,7 @@ def get_state():
             "post_error":     state.get("post_error", False),
             "posting":        state.get("posting", False),
             "post_status":    dict(state.get("post_status") or {}),
+            "birdqueue_on":   BIRDQUEUE_ON,
             "thread_active":  state["thread_active"],
             "run_error":      state.get("run_error", ""),
             "buffer_ready":   any(f"{n}=" in os.environ.get("BUFFER_COOKIES", "")
@@ -1985,7 +1990,7 @@ def post_to_buffer():
         state["post_status"] = {"folder": state["active"], "state": "running", "done": 0,
                                 "total": 0, "step": "Starting…", "msg": "", "at": time.time()}
 
-    use_bq = data.get("backend") == "birdqueue"
+    use_bq = BIRDQUEUE_ON and data.get("backend") == "birdqueue"
     dest_name = "birdqueue" if use_bq else "Buffer"
 
     def _post():
@@ -2007,7 +2012,9 @@ def post_to_buffer():
                 capped.append(g[i:i+10])
         chunks = capped or chunks
         n = len(chunks)
-        _post_progress(total=n, step="Finding open days in the queue…")
+        items = [{"label": ((c[0].get("species") or "").replace("⚠️", "").strip() or "Untitled"),
+                  "photos": len(c), "state": "pending", "due": ""} for c in chunks]
+        _post_progress(total=n, items=items, step="Finding open days in the queue…")
         # One open day per split post; a single post keeps the old behaviour
         # (honour a manual slot, else next open slot). birdqueue slots each
         # post itself, one per open day, so it skips Buffer's calendar.
@@ -2028,7 +2035,8 @@ def post_to_buffer():
             exif_dates = list(dict.fromkeys(d for d in (photo_dates.get(f) for f in chunk_files) if d))
             chunk_cap = cap_date or " & ".join(exif_dates) or batch_cap
             caption_text = _caption_for(chunk, chunk_cap)
-            _post_progress(step=(f"Post {i+1} of {n}: " if n > 1 else "")
+            items[i]["state"] = "running"
+            _post_progress(items=items, step=(f"Post {i+1} of {n}: " if n > 1 else "")
                            + f"resizing and uploading {len(chunk_files)} photo(s) to {dest_name}…")
             if use_bq:
                 if n > 1:
@@ -2037,6 +2045,7 @@ def post_to_buffer():
                 if not ok:
                     all_ok = False
                     fail_out = "birdqueue didn't accept it — see the log."
+                    items[i]["state"] = "failed"
                     log(f"Post {i+1}/{n} failed — check log.")
                     break
                 log(f"🐦 Queued to birdqueue for {due}" if n == 1
@@ -2044,7 +2053,8 @@ def post_to_buffer():
                 record_post(chunk, caption_text, due)
                 last_due = due or last_due
                 _mark_chunk_posted(chunk_files)
-                _post_progress(done=i + 1)
+                items[i].update(state="done", due=due or "")
+                _post_progress(done=i + 1, items=items)
                 continue
             cmd = ["/usr/local/bin/python", "/app/bird_post.py",
                    "--file"] + chunk_files + ["--text", caption_text]
@@ -2085,10 +2095,13 @@ def post_to_buffer():
                             if "Scheduled for:" in l), "")
                 last_due = due or last_due
                 _mark_chunk_posted(chunk_files)
-                _post_progress(done=i + 1)
+                items[i].update(state="done", due=due or "")
+                _post_progress(done=i + 1, items=items)
             else:
                 all_ok = False
                 fail_out = out
+                items[i]["state"] = "failed"
+                _post_progress(items=items)
                 log(f"Post {i+1}/{n} failed — check log.")
                 break
 
@@ -2760,7 +2773,20 @@ def goto_step():
         state["stop_requested"] = True
 
     def _restart():
-        time.sleep(0.8)  # let the thread notice and exit
+        # Wait for the old run to actually finish. A fixed 0.8s once let it
+        # outlive the stop flag (cleared for the new run) on 2026-11-22: it
+        # carried on to the export gate while the new run ticked Denoise, and
+        # would have exported in the middle of the new run's paste.
+        end = time.time() + 120
+        while time.time() < end:
+            with lock:
+                if not state["thread_active"]:
+                    break
+            time.sleep(0.5)
+        else:
+            log("✗ The previous run won't stop — not starting another on top of it. "
+                "Reset the batch, or restart the app.")
+            return
         with lock:
             state["stop_requested"] = False
             state["thread_active"]  = True

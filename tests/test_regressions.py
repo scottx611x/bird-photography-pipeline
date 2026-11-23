@@ -972,14 +972,26 @@ def test_crank_and_review():
           and "only the 2 left" in pf("Buffer rejected: x", 2, 4, "Buffer"))
     post = src[src.find("def post_to_buffer("):src.find("@app.get(\"/api/next-post-date\")")]
     check("post: progress and the outcome are recorded for the button",
-          '"state": "running"' in post and "_post_progress(done=i + 1)" in post
+          '"state": "running"' in post and "_post_progress(done=i + 1, items=items)" in post
+          and 'items[i]["state"] = "running"' in post and 'items[i]["state"] = "failed"' in post
           and 'state="failed"' in post and 'state="done"' in post)
+    gs = src[src.find("def goto_step("):src.find("def force_advance(")]
+    check("restart: waits for the old run to finish before starting the new one",
+          'if not state["thread_active"]:' in gs and "time.sleep(0.8)" not in gs)
+    check("birdqueue: off unless BIRDQUEUE=1, and the Post screen hides it",
+          'BIRDQUEUE_ON = os.environ.get("BIRDQUEUE", "0") == "1"' in src
+          and 'use_bq = BIRDQUEUE_ON and' in src and "data.birdqueue_on ?" in html
+          and "if (!lastState?.birdqueue_on) return 'buffer';" in html)
     check("post: a refreshed Buffer login is kept for the rest of the posts",
           'os.environ["BUFFER_COOKIES"] = cand' in post)
     check("ui: the Post button follows the server — locked while posting, Try again on failure",
           "function renderPostLive(d)" in html and 'id="post-live"' in html
           and "renderPostLive(d);" in html and "'↻ Try again'" in html
           and "if (btn?.disabled) return;" in html)
+    check("ui: a checklist and bar show each post — queued, sending, failed, waiting",
+          "function postItemsHtml(ps)" in html and "post-seg" in html and "is-posting" in html)
+    check("ui: Post and Resize wrap instead of running off the card on a phone",
+          'class="post-btn-row"' in html and ".post-btn-row { display: flex; flex-wrap: wrap;" in html)
     check("ui: a failed post no longer silently resets the button",
           "btn.textContent = '▶ Post to Buffer'; }" not in html)
     check("ui: Lightroom's batch and the posting screen are drawn separately",

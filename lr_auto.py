@@ -702,9 +702,25 @@ end tell
 ''')
 
     time.sleep(0.3)
+    # Select All in Detail view left one photo selected on 2026-11-22 (10/24,
+    # 36 photos): the paste reached only the photo it was copied from, and
+    # the batch would have exported noisy. The grid selects the whole album —
+    # and the count is checked before anything is pasted.
     print("Selecting all photos…")
-    lr_menu_click("Edit", "Select All")
-    time.sleep(0.3)
+    got = None
+    for _ in range(2):
+        grid_view()
+        time.sleep(1.0)
+        lr_menu_click("Edit", "Select All")
+        time.sleep(0.6)
+        got = _menu_item_count("Photo", "Create Album with", r"with ([\d,]+) Photo")
+        if args.expect is None or got == args.expect:
+            break
+    if args.expect is not None and got != args.expect:
+        print(f"Refusing to paste: the selection is {got} photos, the batch is {args.expect}. "
+              "Is Lightroom showing the batch?")
+        sys.exit(1)
+    print(f"  {got} photos selected.")
 
     print("Pasting to entire selection…")
     pasted = False

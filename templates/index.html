@@ -211,7 +211,28 @@
     .post-live.busy { border-color: var(--blue);  color: var(--blue); }
     .post-live.bad  { border-color: var(--red);   color: var(--red); }
     .post-live.good { border-color: var(--green); color: var(--green); }
-    .post-live .sub { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .post-live .sub { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .post-live .head { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+    .post-segs { display: flex; gap: 4px; margin: 8px 0 6px; }
+    .post-seg { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); }
+    .post-seg.done    { background: var(--green); }
+    .post-seg.running { background: var(--blue); animation: segpulse 1.2s ease-in-out infinite; }
+    .post-seg.failed  { background: var(--red); }
+    @keyframes segpulse { 50% { opacity: .35; } }
+    .post-items { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
+    .post-items li { display: flex; gap: 8px; padding: 2px 0; color: var(--muted); min-width: 0; }
+    .post-items li span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .post-items li.done    { color: var(--green); }
+    .post-items li.running { color: var(--blue); font-weight: 600; }
+    .post-items li.failed  { color: var(--red); font-weight: 600; }
+    /* The Post button while posting: readable, not the 30% "disabled" ghost. */
+    .btn.is-posting:disabled { opacity: 1; background: rgba(91,154,255,.18); color: var(--blue);
+                               box-shadow: none; border: 1px solid var(--blue); }
+    /* Post + Resize wrap on a phone instead of running off the card. */
+    .post-btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .post-btn-row #post-btn   { flex: 1 1 200px; min-width: 0; justify-content: center; }
+    .post-btn-row #resize-btn { flex: 0 1 auto; justify-content: center; }
+    @media (max-width: 480px) { .post-btn-row #resize-btn { flex: 1 1 100%; } }
     .lane-remove {
       background: none; border: none; color: var(--muted);
       cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px;
@@ -1053,15 +1074,15 @@ function renderPostForm(batch, data) {
         </div>
       </div>
     </div>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-success" id="post-btn" data-label="${postLabel}" onclick="doPost()" style="flex:1" ${overfull ? 'disabled' : ''}>${postLabel}</button>
+    <div class="post-btn-row">
+      <button class="btn btn-success" id="post-btn" data-label="${postLabel}" onclick="doPost()" ${overfull ? 'disabled' : ''}>${postLabel}</button>
       <button class="btn btn-neutral" id="resize-btn" onclick="doResizeOnly()" title="Resize images into .ready without posting">⤵ Resize only</button>
     </div>
     <div id="post-live" class="post-live" aria-live="polite"></div>
-    <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-top:6px">
+    ${data.birdqueue_on ? `<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-top:6px">
       <input type="checkbox" id="pf-bq" ${postBackend() === 'birdqueue' ? 'checked' : ''} onchange="setPostBackend(this.checked)" />
       Send to birdqueue (the Pi) instead of Buffer — <a href="/queue" target="_blank">open queue</a>
-    </label>
+    </label>` : ''}
   </div>`;
 }
 
@@ -1943,6 +1964,7 @@ async function doResizeOnly() {
 
 // Where Post sends things: "buffer" (default) or "birdqueue". Per-browser.
 function postBackend() {
+  if (!lastState?.birdqueue_on) return 'buffer';      // feature flag: birdqueue is off
   try { return localStorage.getItem('postBackend') || 'buffer'; } catch (e) { return 'buffer'; }
 }
 function setPostBackend(on) {
@@ -2021,27 +2043,49 @@ function renderPostLive(d) {
   if (running) {
     const total = ps.total || 0, at = Math.min((ps.done || 0) + 1, total || 1);
     btn.disabled = true;
+    btn.classList.add('is-posting');
     btn.textContent = total > 1 ? `⏳ Posting ${at} of ${total}…` : '⏳ Posting…';
     cls = "busy";
-    html = `<span class="beta-spin"></span> ${escHtml(ps.step || 'Sending to Buffer…')}
-      <span class="sub">It runs on the Mac — fine to leave this page. The button stays locked until it's done, so it can't post twice.</span>`;
+    html = `<div class="head"><span class="beta-spin"></span> Posting to Buffer${total > 1 ? ` — ${ps.done || 0} of ${total} done` : ''}</div>`
+      + postItemsHtml(ps)
+      + `<span class="sub">${escHtml(ps.step || 'Starting…')}<br>Runs on the Mac — fine to leave this page. The button stays locked until it's done, so nothing posts twice.</span>`;
   } else if (postLocalNote) {
     btn.disabled = false; btn.textContent = label;
     cls = postLocalNote.cls; html = escHtml(postLocalNote.text);
   } else if (mine && ps.state === "failed") {
+    btn.classList.remove('is-posting');
     btn.disabled = false; btn.textContent = '↻ Try again';
-    cls = "bad"; html = `✕ ${escHtml(ps.msg || 'The post failed — see the log.')}`;
+    cls = "bad";
+    html = `<div class="head">✕ Not all posted</div>` + postItemsHtml(ps)
+      + `<span class="sub" style="color:inherit">${escHtml(ps.msg || 'The post failed — see the log.')}</span>`;
   } else if (mine && ps.state === "done" && ps.msg) {
+    btn.classList.remove('is-posting');
     if (btn.textContent.startsWith('⏳') || btn.textContent.startsWith('↻')) btn.textContent = label;
     btn.disabled = false;
-    cls = "good"; html = escHtml(ps.msg);
+    cls = "good"; html = `<div class="head">${escHtml(ps.msg)}</div>` + postItemsHtml(ps);
   } else {
+    btn.classList.remove('is-posting');
     if (btn.textContent.startsWith('⏳') || btn.textContent.startsWith('↻')) btn.textContent = label;
     btn.disabled = btn.dataset.label?.startsWith('⚠') || false;
   }
   box.className = "post-live" + (cls ? ` show ${cls}` : "");
   box.innerHTML = html;
   document.querySelectorAll('.lane-post').forEach(b => { b.disabled = running; });
+}
+// One segment and one line per post: ✓ queued (with its day), ⏳ sending, ✕ failed, · waiting.
+function postItemsHtml(ps) {
+  const items = ps.items || [];
+  if (!items.length) return "";
+  const icon = { done: "✓", running: "⏳", failed: "✕", pending: "·" };
+  const day = d => d ? new Date(d).toLocaleDateString(undefined, { month: "numeric", day: "numeric" }) : "";
+  const segs = items.map(it => `<div class="post-seg ${it.state}"></div>`).join("");
+  const rows = items.map((it, i) => {
+    const what = it.state === "done" ? (it.due ? `queued for ${day(it.due)}` : "queued")
+               : it.state === "running" ? "sending…" : it.state === "failed" ? "failed" : "waiting";
+    return `<li class="${it.state}"><span>${icon[it.state] || "·"}</span>
+      <span>Post ${i + 1} · ${escHtml(it.label)} (${it.photos})</span><span>${what}</span></li>`;
+  }).join("");
+  return `<div class="post-segs">${segs}</div><ul class="post-items">${rows}</ul>`;
 }
 function escHtml(t) { return String(t ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
