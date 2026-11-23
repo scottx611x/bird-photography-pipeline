@@ -79,6 +79,11 @@ def _toolbar_activity():
                 blue = [i for i, (r, g, b) in enumerate(row) if b > 180 and r < 120 and b - r > 90]
                 track = [i for i, (r, g, b) in enumerate(row)
                          if 25 < r < 70 and abs(r - g) < 8 and abs(g - b) < 8]
+                # The task bar's fill starts at its left end (~x 222). The search
+                # box's blue focus ring starts at ~x 375 — that read as a paste
+                # at 19% while nothing was running.
+                if blue and min(blue) > int(60 * sx):
+                    continue
                 if len(blue) > 5 and (best is None or len(blue) > best[0]):
                     span = (max(blue + track) - min(blue + track)) if track else 0
                     best = (len(blue), max(blue) - min(blue), span)

@@ -979,7 +979,7 @@ def test_crank_and_review():
     host = (ROOT / "lr_host.py").read_text()
     check("progress: Lightroom's toolbar paste counts as work, read off its own window",
           "def _toolbar_activity():" in host and "_toolbar_activity() or out" in host
-          and '"-l", wid' in host)
+          and '"-l", wid' in host and "if blue and min(blue) > int(60 * sx):" in host)
     la2 = (ROOT / "lr_auto.py").read_text()
     rend = la2[la2.find("def render_ai_settings("):la2.find("def render_ai_settings(") + 1500]
     check("render: never asks for a render while the toolbar paste is rendering",
