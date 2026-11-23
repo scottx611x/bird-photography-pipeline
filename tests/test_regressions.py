@@ -1000,6 +1000,22 @@ def test_crank_and_review():
           "function renderPostLive(d)" in html and 'id="post-live"' in html
           and "renderPostLive(d);" in html and "'↻ Try again'" in html
           and "if (btn?.disabled) return;" in html)
+    # bird_post.py read line by line: each step reaches the Post button
+    import sys as _sys
+    seen = []
+    ns = _load_funcs(srv, {"_post_day", "_post_stage", "_run_bird_post"},
+                     {"datetime": datetime, "_post_progress": lambda **kw: seen.append(kw.get("step"))})
+    fake = ("print('Resizing DSC_1.jpg …'); print('Resizing DSC_2.jpg …'); "
+            "print(\"Uploading to Buffer's S3 …\"); print('  DSC_1.jpg ✓'); print('  DSC_2.jpg ✓'); "
+            "print('Queuing to Buffer …'); print('  Scheduling for: 2026-11-30T20:41:00.000Z'); "
+            "print('Done! Scheduled for: 2026-11-30T20:41:00.000Z')")
+    items = [{"label": "Hawk", "photos": 2, "state": "running"}]
+    r = ns["_run_bird_post"]([_sys.executable, "-c", fake], {}, 0, 1, items, 2)
+    check("post: each step is reported as it happens — resize, upload, create, schedule",
+          seen == ["resizing photo 1 of 2", "resizing photo 2 of 2", "uploading to Buffer — 0 of 2",
+                   "uploading to Buffer — 1 of 2", "uploading to Buffer — 2 of 2",
+                   "creating the post in Buffer", "scheduling it for Nov 30"]
+          and r.returncode == 0 and "Done! Scheduled for:" in r.stdout and items[0]["frac"] > 0.9, str(seen))
     check("ui: a checklist and bar show each post — queued, sending, failed, waiting",
           "function postItemsHtml(ps)" in html and "post-seg" in html and "is-posting" in html)
     check("ui: Post and Resize wrap instead of running off the card on a phone",

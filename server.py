@@ -1936,6 +1936,50 @@ def _post_failure(out: str, done: int, total: int, dest: str) -> str:
     return f"{why} {sent}"
 
 
+def _post_day(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso.strip().replace("Z", "+00:00")).strftime("%b %-d")
+    except ValueError:
+        return iso.strip()[:10]
+
+
+def _post_stage(i, n, items, stage, frac=None):
+    items[i]["stage"] = stage
+    if frac is not None:
+        items[i]["frac"] = round(min(1.0, frac), 3)
+    _post_progress(items=items, step=(f"Post {i+1} of {n}: " if n > 1 else "") + stage)
+
+
+def _run_bird_post(cmd, env, i, n, items, nphotos):
+    """Run bird_post.py and read it as it goes, so the Post button can say
+    which photo it is resizing or uploading instead of a bare "sending…"
+    (Scott, 2026-11-22). Same result shape as subprocess.run."""
+    import subprocess
+    env = {**env, "PYTHONUNBUFFERED": "1"}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, env=env)
+    out, resized, uploaded, total = [], 0, 0, max(1, nphotos)
+    for line in proc.stdout:
+        out.append(line)
+        t = line.strip()
+        if t.startswith("Resizing "):
+            resized += 1
+            _post_stage(i, n, items, f"resizing photo {min(resized, total)} of {total}",
+                        0.4 * resized / total)
+        elif t.startswith("Uploading to Buffer"):
+            _post_stage(i, n, items, f"uploading to Buffer — 0 of {total}", 0.4)
+        elif t.endswith("✓") and ".jp" in t.lower():
+            uploaded += 1
+            _post_stage(i, n, items, f"uploading to Buffer — {min(uploaded, total)} of {total}",
+                        0.4 + 0.45 * uploaded / total)
+        elif t.startswith("Queuing to Buffer"):
+            _post_stage(i, n, items, "creating the post in Buffer", 0.88)
+        elif t.startswith("Scheduling for:"):
+            _post_stage(i, n, items, "scheduling it for " + _post_day(t.split(":", 1)[1]), 0.93)
+    from types import SimpleNamespace      # shaped like subprocess.run's result
+    return SimpleNamespace(returncode=proc.wait(), stdout="".join(out), stderr="")
+
+
 def _post_progress(**kw):
     with lock:
         state["post_status"] = {**(state.get("post_status") or {}), **kw, "at": time.time()}
@@ -2074,15 +2118,15 @@ def post_to_buffer():
                 log(f"── Post {i+1}/{n} · {len(chunk_files)} photo(s) ──")
             log(f"Posting: {' '.join(cmd)}")
             env = {**os.environ}
-            r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            _post_stage(i, n, items, "starting", 0.02)
+            r = _run_bird_post(cmd, env, i, n, items, len(chunk_files))
             out = r.stdout + r.stderr
             # Buffer's access token expires roughly hourly and only the browser
             # can renew it, so a 401 here isn't a real failure — refresh the
             # session once and try again before giving up.
             if r.returncode != 0 and "401" in out:
                 log("  Buffer session expired — refreshing it in Chrome, then retrying…")
-                _post_progress(step=(f"Post {i+1} of {n}: " if n > 1 else "")
-                               + "Buffer's login expired — refreshing it from Chrome and retrying…")
+                _post_stage(i, n, items, "Buffer's login expired — refreshing it from Chrome…", 0.02)
                 fresh = (call_host("buffer-refresh", timeout=120).get("output") or "").strip()
                 cand = fresh.splitlines()[-1] if fresh else ""
                 if "buffer_access_token=" in cand:
@@ -2090,7 +2134,8 @@ def post_to_buffer():
                     # Keep it for the posts after this one too — each split post
                     # used to start from the stale login and refresh all over again.
                     os.environ["BUFFER_COOKIES"] = cand
-                    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                    _post_stage(i, n, items, "login refreshed — starting again", 0.02)
+                    r = _run_bird_post(cmd, env, i, n, items, len(chunk_files))
                     out = r.stdout + r.stderr
                 else:
                     log("  Couldn't refresh the session — is Chrome running?")
@@ -2098,13 +2143,14 @@ def post_to_buffer():
                 log(line)
             if r.returncode == 0:
                 log("🐦 Posted to Buffer!" if n == 1 else f"🐦 Post {i+1}/{n} queued!")
+                _post_stage(i, n, items, "saving the post record and archiving the originals", 0.97)
                 record_post(chunk, caption_text, slot)
                 due = next((l.split("Scheduled for:")[-1].strip()
                             for l in (r.stdout + r.stderr).splitlines()
                             if "Scheduled for:" in l), "")
                 last_due = due or last_due
                 _mark_chunk_posted(chunk_files)
-                items[i].update(state="done", due=due or "")
+                items[i].update(state="done", due=due or "", stage="", frac=1)
                 _post_progress(done=i + 1, items=items)
             else:
                 all_ok = False

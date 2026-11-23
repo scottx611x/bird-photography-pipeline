@@ -223,10 +223,11 @@
     .post-live .sub { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
     .post-live .head { display: flex; align-items: center; gap: 8px; font-weight: 700; }
     .post-segs { display: flex; gap: 4px; margin: 8px 0 6px; }
-    .post-seg { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); }
-    .post-seg.done    { background: var(--green); }
-    .post-seg.running { background: var(--blue); animation: segpulse 1.2s ease-in-out infinite; }
-    .post-seg.failed  { background: var(--red); }
+    .post-seg { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; }
+    .post-seg i { display: block; height: 100%; width: 0; border-radius: 3px; transition: width .6s ease; }
+    .post-seg.done i    { width: 100%; background: var(--green); }
+    .post-seg.running i { background: var(--blue); animation: segpulse 1.2s ease-in-out infinite; }
+    .post-seg.failed i  { width: 100%; background: var(--red); }
     @keyframes segpulse { 50% { opacity: .35; } }
     .post-items { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
     .post-items li { display: flex; gap: 8px; padding: 2px 0; color: var(--muted); min-width: 0; }
@@ -234,6 +235,8 @@
     .post-items li.done    { color: var(--green); }
     .post-items li.running { color: var(--blue); font-weight: 600; }
     .post-items li.failed  { color: var(--red); font-weight: 600; }
+    .post-items li { flex-wrap: wrap; }
+    .post-items .stage { flex-basis: 100%; padding-left: 20px; font-weight: 400; font-size: 12px; }
     /* The Post button while posting: readable, not the 30% "disabled" ghost. */
     .btn.is-posting:disabled { opacity: 1; background: rgba(91,154,255,.18); color: var(--blue);
                                box-shadow: none; border: 1px solid var(--blue); }
@@ -2085,7 +2088,7 @@ function renderPostLive(d) {
     cls = "busy";
     html = `<div class="head"><span class="beta-spin"></span> Posting ${escHtml(ps.folder || 'this batch')} to Buffer${total > 1 ? ` — ${ps.done || 0} of ${total} done` : ''}</div>`
       + postItemsHtml(ps)
-      + `<span class="sub">${escHtml(ps.step || 'Starting…')}<br>Runs on the Mac — fine to leave this page. The button stays locked until it's done, so nothing posts twice.</span>`;
+      + `<span class="sub">Runs on the Mac — fine to leave this page. The button stays locked until it's done, so nothing posts twice.</span>`;
   } else if (postLocalNote) {
     btn.disabled = false; btn.textContent = label;
     cls = postLocalNote.cls; html = escHtml(postLocalNote.text);
@@ -2115,12 +2118,18 @@ function postItemsHtml(ps) {
   if (!items.length) return "";
   const icon = { done: "✓", running: "⏳", failed: "✕", pending: "·" };
   const day = d => d ? new Date(d).toLocaleDateString(undefined, { month: "numeric", day: "numeric" }) : "";
-  const segs = items.map(it => `<div class="post-seg ${it.state}"></div>`).join("");
+  const segs = items.map(it => {
+    const w = it.state === "running" ? Math.max(4, Math.round((it.frac || 0) * 100)) : null;
+    return `<div class="post-seg ${it.state}"><i${w != null ? ` style="width:${w}%"` : ''}></i></div>`;
+  }).join("");
   const rows = items.map((it, i) => {
+    const pct = it.state === "running" && it.frac ? ` ${Math.round(it.frac * 100)}%` : "";
     const what = it.state === "done" ? (it.due ? `queued for ${day(it.due)}` : "queued")
-               : it.state === "running" ? "sending…" : it.state === "failed" ? "failed" : "waiting";
+               : it.state === "running" ? `sending${pct}` : it.state === "failed" ? "failed" : "waiting";
+    const stage = it.state === "running" && it.stage
+      ? `<span class="stage">↳ ${escHtml(it.stage)}</span>` : "";
     return `<li class="${it.state}"><span>${icon[it.state] || "·"}</span>
-      <span>Post ${i + 1} · ${escHtml(it.label)} (${it.photos})</span><span>${what}</span></li>`;
+      <span>Post ${i + 1} · ${escHtml(it.label)} (${it.photos})</span><span>${what}</span>${stage}</li>`;
   }).join("");
   return `<div class="post-segs">${segs}</div><ul class="post-items">${rows}</ul>`;
 }
