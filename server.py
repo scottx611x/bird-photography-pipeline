@@ -385,6 +385,33 @@ def _verify_spread(count: int = 4) -> str:
     return "all" if on == total else ("none" if on == 0 else "partial")
 
 
+def _wait_render_done(cap: float = 3 * 3600) -> bool:
+    """Follow Lightroom's render dialog until it has been gone for ~30s.
+    False if it froze for STALL_AFTER or ran past `cap`."""
+    t0, gone, last_note, last_done, frozen = time.time(), 0, "", None, 0
+    while time.time() - t0 < cap:
+        time.sleep(10)
+        if state.get("stop_requested"):
+            return False
+        prog = lr_modal_progress()
+        if not prog.get("active"):
+            gone += 1
+            if gone >= 3:
+                return True
+            continue
+        gone = 0
+        note = _prog_line(prog)
+        if note != last_note:
+            log(f"  {note}")
+            last_note = note
+        frozen = frozen + 10 if prog.get("done") == last_done else 0
+        last_done = prog.get("done")
+        if frozen >= STALL_AFTER:
+            log(f"  ⚠ The render hasn't moved in {STALL_AFTER // 60} min.")
+            return False
+    return False
+
+
 def _prog_line(p: dict) -> str:
     bits = [p.get("label") or "working"]
     if p.get("done") is not None and p.get("total") is not None:
@@ -728,17 +755,29 @@ def _pick_export_post(trigger: bool = True):
         log("Exporting all photos…")
         result = call_host("export", body={"all": True, "expect": _batch_size()},
                            timeout=180)
-        if not result.get("ok") and "AI UPDATE REQUIRED" in result.get("output", ""):
-            # Some photos' Denoise never rendered; lr_auto cancelled the
-            # export instead of letting them go out noisy. Render them one by
-            # one (the fix that worked on Nov 10) and try once more.
+        # Some photos' Denoise never rendered; lr_auto cancelled the export
+        # instead of letting them go out noisy. First ask for the batch render
+        # again — menu clicks only, so it runs while Scott uses the Mac (a
+        # 75-photo batch needed just this on 2026-11-22). Only if that still
+        # leaves photos pending, render them one by one (the Nov 10 fix),
+        # which steps through with arrow keys and so has to take focus.
+        for fix in ("batch", "each"):
+            if result.get("ok") or "AI UPDATE REQUIRED" not in result.get("output", ""):
+                break
             for line in result.get("output", "").splitlines():
                 log(f"  {line}")
-            log("Rendering the unfinished Denoise one photo at a time, then exporting again…")
-            r = call_host("render-each", body={"expect": _batch_size()}, timeout=6 * 3600)
-            for line in (r.get("output", "") or "").splitlines():
-                log(f"    {line}")
-            log("Exporting all photos (second try)…")
+            if fix == "batch":
+                log("Rendering the unfinished Denoise again, then exporting…")
+                r = call_host("ai-resume", body={"expect": _batch_size()}, timeout=120)
+                for line in (r.get("output", "") or "").splitlines():
+                    log(f"    {line}")
+                _wait_render_done()
+            else:
+                log("Still unrendered — rendering one photo at a time, then exporting again…")
+                r = call_host("render-each", body={"expect": _batch_size()}, timeout=6 * 3600)
+                for line in (r.get("output", "") or "").splitlines():
+                    log(f"    {line}")
+            log("Exporting all photos (again)…")
             result = call_host("export", body={"all": True, "expect": _batch_size()},
                                timeout=180)
     for line in result.get("output", "").splitlines():

@@ -59,8 +59,39 @@ def lr_frontmost() -> str:
         return ""
 
 
+def user_idle_seconds() -> float:
+    """Seconds since the last keyboard or mouse input on the Mac."""
+    try:
+        out = subprocess.run(["ioreg", "-c", "IOHIDSystem", "-d", "4"],
+                             capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r'"HIDIdleTime" = (\d+)', out)
+        return int(m.group(1)) / 1e9 if m else 1e9
+    except (subprocess.TimeoutExpired, OSError):
+        return 1e9
+
+
+USER_IDLE_BEFORE_FOCUS = 45     # seconds of no input before Lightroom takes focus
+USER_IDLE_WAIT_CAP     = 30 * 60
+
+
+def wait_for_user_idle() -> None:
+    """Don't pull focus from someone mid-use: wait until the Mac has been left
+    alone for a bit. Taking focus while Scott types in Chrome sends his keys to
+    Lightroom, where single letters rate, flag and reject photos."""
+    t0, said = time.time(), False
+    while (user_idle_seconds() < USER_IDLE_BEFORE_FOCUS
+           and time.time() - t0 < USER_IDLE_WAIT_CAP):
+        if not said:
+            print(f"  You're using the Mac — waiting until it's been idle "
+                  f"{USER_IDLE_BEFORE_FOCUS}s before bringing Lightroom forward.", flush=True)
+            said = True
+        time.sleep(5)
+
+
 def ensure_lr_front(tries: int = 3) -> None:
     front = ""
+    if lr_frontmost() != "Adobe Lightroom":
+        wait_for_user_idle()
     for i in range(tries):
         front = lr_frontmost()
         if front == "Adobe Lightroom":
@@ -84,6 +115,14 @@ def run_applescript(script: str) -> str:
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())
     return r.stdout.strip()
+
+
+def grid_view() -> None:
+    """Photo Grid by its View-menu item. The "g" shortcut needs Lightroom in
+    front, which means pulling focus from whatever Scott is using; the menu
+    click works with Lightroom in the background (2026-11-22: a recovery step's
+    "g" stopped a 75-photo export because Chrome was in front)."""
+    lr_menu_click("View", "Photo Grid")
 
 
 def lr_is_running() -> bool:
@@ -350,16 +389,8 @@ end tell
     elif "Pasting" not in label:
         print("  No progress dialog up — nothing to dismiss.")
 
-    run_applescript('tell application "Adobe Lightroom" to activate')
-    time.sleep(0.5)
-    run_applescript('''
-tell application "System Events"
-  tell process "Adobe Lightroom"
-    keystroke "g"
-    delay 1.5
-  end tell
-end tell
-''')
+    grid_view()
+    time.sleep(1.5)
     lr_menu_click("Edit", "Select All")
     time.sleep(1.0)
     render_ai_settings(expect=args.expect)
@@ -463,14 +494,8 @@ def cmd_auto_tone(args):
 
     # Briefly switch to Grid so Apply Auto Settings hits all photos, not just active
     print("Switching to Grid view…")
-    run_applescript('''
-tell application "System Events"
-  tell process "Adobe Lightroom"
-    keystroke "g"
-    delay 0.8
-  end tell
-end tell
-''')
+    grid_view()
+    time.sleep(0.8)
 
     print("Selecting all photos…")
     lr_menu_click("Edit", "Select All")
@@ -758,21 +783,14 @@ def cmd_export(args):
               f"to reset it.")
         sys.exit(1)
 
-    run_applescript('tell application "Adobe Lightroom" to activate')
-    time.sleep(0.3)
-
+    # No activate: every step below is a menu or button click, which works with
+    # Lightroom in the background, so an export never takes focus from Scott.
     if args.all:
         # Hands-off mode: export the whole batch — culling happens later on
         # the posting screen. Grid view first so Select All grabs every photo.
         print("Selecting all photos…")
-        run_applescript('''
-tell application "System Events"
-  tell process "Adobe Lightroom"
-    keystroke "g"
-    delay 0.8
-  end tell
-end tell
-''')
+        grid_view()
+        time.sleep(0.8)
         lr_menu_click("Edit", "Select All")
         time.sleep(0.5)
         # Same trap as the render: Select All grabs whatever view is open.
@@ -934,8 +952,7 @@ def cmd_render_each(args):
     if _render_dialog_count():
         print("A render dialog won't close — not rendering on top of it.")
         sys.exit(1)
-    run_applescript('tell application "Adobe Lightroom" to activate')
-    run_applescript('tell application "System Events" to tell process "Adobe Lightroom" to keystroke "g"')
+    grid_view()
     time.sleep(1.5)
     _arrow(124); _arrow(123)            # collapse any multi-selection to one
     for _ in range(n + 2):              # left arrow clamps at the first photo

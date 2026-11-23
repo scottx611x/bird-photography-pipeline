@@ -431,7 +431,7 @@ def test_stalled_render_is_nudged():
     check("lr_host: passes the batch size through",
           '"--expect"' in (ROOT / "lr_host.py").read_text())
     check("server: every render request carries the batch size",
-          src.count('body={"expect": _batch_size()}') == 4)   # + export's AI-update retry
+          src.count('body={"expect": _batch_size()}') == 5)   # + export's two AI-update fixes
     each = auto[auto.find("def cmd_render_each("):auto.find("# ── Main")]
     check("lr_auto: render-each exists and is allowed through the bridge",
           bool(each) and '"render-each"' in (ROOT / "lr_host.py").read_text())
@@ -661,8 +661,9 @@ def test_sort_batch():
           and 'click button "Cancel" of window' in la
           and 'click button "Export" of window "AI Update' not in la)
     pe = srv[srv.find("def _pick_export_post("):srv.find('set_step("export_wait")')]
-    check("server: an AI-update cancel renders one by one, then retries once",
-          '"AI UPDATE REQUIRED" in result.get("output", "")' in pe
+    check("server: an AI-update cancel re-renders, then goes one by one, retrying after each",
+          '"AI UPDATE REQUIRED" not in result.get("output", "")' in pe
+          and 'for fix in ("batch", "each"):' in pe
           and 'call_host("render-each"' in pe and pe.count('call_host("export"') == 2)
     # Wrapped filenames: a stale crop backup from an older photo of the same
     # name must never be restored over, or analysed in place of, a new export.
@@ -978,18 +979,32 @@ def test_keys_only_reach_lightroom():
         def __init__(self, out=""):
             self.returncode, self.stdout, self.stderr = 0, out, ""
 
+    idle = [999.0]                  # seconds since Scott last touched the Mac
+    clock = [0.0]
+
     def fake_run(args, **kw):
+        if args[0] == "ioreg":
+            return R(f'"HIDIdleTime" = {int(idle[0] * 1e9)}')
         script = args[-1]
         ran.append(script)
         if "frontmost is true" in script and "keystroke" not in script:
             return R(front[0])
+        if "activate" in script:
+            ran.append(f"activate@idle={idle[0]}")
         return R()
+
+    def fake_sleep(sec):
+        clock[0] += sec
+        idle[0] += sec
 
     front = ["Adobe Lightroom"]
     fake_sp = type("SP", (), {"run": staticmethod(fake_run), "TimeoutExpired": TimeoutError})
-    fake_time = type("T", (), {"sleep": staticmethod(lambda s: None)})
+    fake_time = type("T", (), {"sleep": staticmethod(fake_sleep),
+                               "time": staticmethod(lambda: clock[0])})
     ns = _load_funcs(lra, {"KEYS_RE", "FRONT_GUARD", "lr_frontmost", "ensure_lr_front",
-                           "run_applescript"}, {"re": re, "subprocess": fake_sp, "time": fake_time})
+                           "run_applescript", "user_idle_seconds", "wait_for_user_idle",
+                           "USER_IDLE_BEFORE_FOCUS", "USER_IDLE_WAIT_CAP"},
+                     {"re": re, "subprocess": fake_sp, "time": fake_time, "OSError": OSError})
     ns["run_applescript"]('tell application "System Events" to keystroke "g"')
     check("keys: a keystroke script carries the in-script frontmost check",
           ran[-1].startswith(ns["FRONT_GUARD"]))
@@ -1005,6 +1020,25 @@ def test_keys_only_reach_lightroom():
         raised = "iTerm2" in str(e)
     check("keys: nothing is typed while another app is in front",
           raised and not any("keystroke" in r for r in ran))
+    ran.clear()
+    idle[0] = 3.0                   # typing in Chrome a moment ago
+    try:
+        ns["run_applescript"]('tell application "System Events" to keystroke "a"')
+    except RuntimeError:
+        pass
+    acts = [r for r in ran if r.startswith("activate@")]
+    check("keys: Lightroom isn't pulled forward while someone is using the Mac",
+          acts and float(acts[0].split("=")[1]) >= ns["USER_IDLE_BEFORE_FOCUS"], str(acts))
+    src = lra.read_text()
+    exp = src[src.find("def cmd_export("):src.find("AI_UPDATE_MARKER =")]
+    check("keys: an export is menu clicks only — it never takes focus",
+          "keystroke" not in exp and "key code" not in exp and "to activate" not in exp)
+    check("keys: grid view comes from the View menu, not the G key",
+          'keystroke "g"' not in src and 'lr_menu_click("View", "Photo Grid")' in src)
+    srv = (ROOT / "server.py").read_text()
+    tail = srv[srv.find("def _pick_export_post("):]
+    check("export: an unrendered batch is re-rendered by menu before going one by one",
+          0 < tail.find('"ai-resume"') < tail.find('"render-each"'))
     den = (ROOT / "lr_denoise.py").read_text()
     check("keys: lr_denoise checks before a screen click and before arrow keys",
           "if not lr_in_front():" in den[den.find("def click("):den.find("def lr_window_names")]
