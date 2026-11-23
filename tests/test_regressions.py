@@ -807,9 +807,14 @@ def test_crank_and_review():
               not ok and "B" in msg and (shelf / "live" / "DSC_0947.jpg").exists())
         st["active"], st["proc_step"] = None, None
         st["run"], st["run_step"] = "C", "export_wait"
+        env["_batch_raw_stems"] = lambda f: {"dsc_0947"}
+        env["_export_stem"] = lambda n: re.sub(r"-\d+$", "", Path(n).stem.lower())
+        ns["open_review"].__globals__.update(_batch_raw_stems=env["_batch_raw_stems"],
+                                             _export_stem=env["_export_stem"], re=re, Path=Path)
         ok, msg = ns["open_review"]("A")
-        check("review: waits out the minute Lightroom is writing an export into birbs",
-              not ok and "exporting" in msg)
+        check("review: waits only when a photo shares a name with the batch being exported",
+              not ok and "share a name" in msg and "DSC_0947.jpg" in msg)
+        ns["open_review"].__globals__["_batch_raw_stems"] = lambda f: {"dsc_9999"}
         st["run_step"] = "denoising"
         st["sort"] = {"folder": "A", "state": "running", "at": _time.time()}
         ok, msg = ns["open_review"]("A")

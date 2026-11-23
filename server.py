@@ -3218,19 +3218,29 @@ def open_review(folder: str) -> tuple:
     """Put a shelved batch back on the posting screen. (ok, message)
 
     Lightroom keeps working on other batches meanwhile — the run has its own
-    slot. Only two short moments wait: Lightroom writing an export into
-    ~/Desktop/birbs, and Claude part-way through sorting this very batch."""
+    slot. It waits only if Claude is part-way through sorting this very batch,
+    or — rarely — if one of its photos shares a name with the batch Lightroom
+    is exporting into ~/Desktop/birbs right now. (A blanket "not while it
+    exports" made no sense to Scott, rightly: the export collects by name and
+    skips photos another batch owns.)"""
     with lock:
         if state["active"]:
             return False, (f"{state['active']} is open on the posting screen — post it "
                            "or set it aside (⏸ Later) first.")
-        if state["run_step"] in ("exporting", "export_wait", "export_done"):
-            return False, (f"Lightroom is exporting {state['run']} into ~/Desktop/birbs — "
-                           "try again in a minute or two.")
+        exporting = state["run"] if state["run_step"] in ("exporting", "export_wait",
+                                                          "export_done") else None
         sort = dict(state.get("sort") or {})
         rec = state["review"].get(folder)
     if not rec:
         return False, "That batch isn't waiting for review."
+    if exporting:
+        stems = _batch_raw_stems(exporting)
+        mine = rec.get("files") or _shelf_files(rec.get("arrangement"), rec.get("new_birds"))
+        clash = [f for f in mine if _export_stem(f) in stems]
+        if clash:
+            return False, (f"{len(clash)} of its photos share a name with {exporting}, which "
+                           f"Lightroom is exporting right now ({', '.join(clash[:3])}) — "
+                           "try again in a minute or two.")
     if sort.get("folder") == folder and sort.get("state") in ("starting", "running") \
             and time.time() - (sort.get("at") or 0) < SORT_START_GRACE:
         return False, (f"Claude is sorting {folder} right now — it'll be ready in a "
