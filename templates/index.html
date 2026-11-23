@@ -203,6 +203,15 @@
     .post-status.busy { border-color: var(--blue); color: var(--blue); }
     .post-status.good { border-color: var(--green); color: var(--green); }
     .post-status.bad  { border-color: var(--red);   color: var(--red); }
+    /* Live post state, right under the Post button — the banner at the top of
+       the form is off-screen when you're down at the button. */
+    .post-live { margin-top: 8px; padding: 10px 12px; border-radius: 10px; font-size: 13px;
+                 line-height: 1.4; border: 1px solid var(--border); display: none; }
+    .post-live.show { display: block; }
+    .post-live.busy { border-color: var(--blue);  color: var(--blue); }
+    .post-live.bad  { border-color: var(--red);   color: var(--red); }
+    .post-live.good { border-color: var(--green); color: var(--green); }
+    .post-live .sub { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
     .lane-remove {
       background: none; border: none; color: var(--muted);
       cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 5px; border-radius: 6px;
@@ -1045,9 +1054,10 @@ function renderPostForm(batch, data) {
       </div>
     </div>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-success" id="post-btn" onclick="doPost()" style="flex:1" ${overfull ? 'disabled' : ''}>${postLabel}</button>
+      <button class="btn btn-success" id="post-btn" data-label="${postLabel}" onclick="doPost()" style="flex:1" ${overfull ? 'disabled' : ''}>${postLabel}</button>
       <button class="btn btn-neutral" id="resize-btn" onclick="doResizeOnly()" title="Resize images into .ready without posting">⤵ Resize only</button>
     </div>
+    <div id="post-live" class="post-live" aria-live="polite"></div>
     <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-top:6px">
       <input type="checkbox" id="pf-bq" ${postBackend() === 'birdqueue' ? 'checked' : ''} onchange="setPostBackend(this.checked)" />
       Send to birdqueue (the Pi) instead of Buffer — <a href="/queue" target="_blank">open queue</a>
@@ -1222,12 +1232,12 @@ async function poll() {
       postingInFlight = false;
       if (d.last_post) showPostToast(d.last_post);
     }
-    if (postingInFlight && d.post_error) {
+    if (postingInFlight && !d.posting && Date.now() - postPressedAt > 6000) {
+      if (d.post_status?.state === "done" && d.last_post) showPostToast(d.last_post);
       postingInFlight = false;
-      const btn = document.getElementById('post-btn');
-      if (btn) { btn.disabled = false; btn.textContent = '▶ Post to Buffer'; }
     }
     renderBatches(d);
+    renderPostLive(d);
     renderCrank(d);
     renderHost(d.host_ok);
     // The overlay covers the page during quick Lightroom steps — never while
@@ -1727,7 +1737,9 @@ function rerenderPhotoCards() {
     const fresh = tmp.querySelector("#photo-cards-list");
     if (fresh) container.replaceWith(fresh);
     const newBtn = tmp.querySelector("#post-btn"), curBtn = document.getElementById("post-btn");
-    if (newBtn && curBtn && !postingInFlight) { curBtn.textContent = newBtn.textContent; curBtn.disabled = newBtn.disabled; }
+    if (newBtn && curBtn) curBtn.dataset.label = newBtn.dataset.label;
+    if (newBtn && curBtn && !postingInFlight && !lastState?.posting) { curBtn.textContent = newBtn.textContent; curBtn.disabled = newBtn.disabled; }
+    if (lastState) renderPostLive(lastState);
   }
   syncArrangement();
 }
@@ -1965,13 +1977,73 @@ async function doPost() {
   const scheduledAt  = _scheduledAt || '';
   const n = groups.length;
   const btn = document.getElementById('post-btn');
-  if (btn) { btn.disabled = true; btn.textContent = n > 1 ? `⏳ Scheduling ${n} posts…` : '⏳ Posting…'; }
+  if (btn?.disabled) return;                       // one press, one post
+  if (btn) { btn.disabled = true; btn.textContent = n > 1 ? `⏳ Posting 1 of ${n}…` : '⏳ Posting…'; }
   postingInFlight = true;
-  await fetch("/api/post", {
-    method: "POST", headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, finalize: true, backend: postBackend() }),
-  });
+  postPressedAt = Date.now();
+  postLocalNote = null;
+  let refused = "";
+  try {
+    const r = await fetch("/api/post", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, finalize: true, backend: postBackend() }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) refused = d.error || `HTTP ${r.status}`;
+  } catch (e) {
+    refused = "Couldn't reach the app — check the connection, then try again.";
+  }
+  if (refused) {
+    postingInFlight = false;
+    postLocalNote = { cls: "bad", text: `✕ Not posted: ${refused}` };
+  }
+  if (lastState) renderPostLive(lastState);
 }
+
+// The Post button and the line under it follow the server's post state on
+// every poll, so a post running on the Mac reads the same after a reload, on
+// another device, or scrolled down at the button: disabled with progress
+// while it runs, "↻ Try again" with the reason when it failed.
+let postLocalNote = null;    // a refusal the server never recorded (409, offline)
+let postPressedAt = 0;       // a poll in the first moments can still carry the last post's failure
+function renderPostLive(d) {
+  const btn = document.getElementById('post-btn');
+  const box = document.getElementById('post-live');
+  if (!btn || !box) return;
+  const ps = d.post_status || {};
+  const mine = !!ps.folder && ps.folder === d.active?.folder;
+  // The server says "posting" from the moment it accepts the press; the few
+  // seconds before that answer arrives are covered by the press itself.
+  const fresh = postingInFlight && Date.now() - postPressedAt < 6000;
+  const running = !!d.posting || fresh;
+  const label = btn.dataset.label || '▶ Post to Buffer';
+  let cls = "", html = "";
+  if (running) {
+    const total = ps.total || 0, at = Math.min((ps.done || 0) + 1, total || 1);
+    btn.disabled = true;
+    btn.textContent = total > 1 ? `⏳ Posting ${at} of ${total}…` : '⏳ Posting…';
+    cls = "busy";
+    html = `<span class="beta-spin"></span> ${escHtml(ps.step || 'Sending to Buffer…')}
+      <span class="sub">It runs on the Mac — fine to leave this page. The button stays locked until it's done, so it can't post twice.</span>`;
+  } else if (postLocalNote) {
+    btn.disabled = false; btn.textContent = label;
+    cls = postLocalNote.cls; html = escHtml(postLocalNote.text);
+  } else if (mine && ps.state === "failed") {
+    btn.disabled = false; btn.textContent = '↻ Try again';
+    cls = "bad"; html = `✕ ${escHtml(ps.msg || 'The post failed — see the log.')}`;
+  } else if (mine && ps.state === "done" && ps.msg) {
+    if (btn.textContent.startsWith('⏳') || btn.textContent.startsWith('↻')) btn.textContent = label;
+    btn.disabled = false;
+    cls = "good"; html = escHtml(ps.msg);
+  } else {
+    if (btn.textContent.startsWith('⏳') || btn.textContent.startsWith('↻')) btn.textContent = label;
+    btn.disabled = btn.dataset.label?.startsWith('⚠') || false;
+  }
+  box.className = "post-live" + (cls ? ` show ${cls}` : "");
+  box.innerHTML = html;
+  document.querySelectorAll('.lane-post').forEach(b => { b.disabled = running; });
+}
+function escHtml(t) { return String(t ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 // Schedule just one post (lane) now, leaving the rest staged
 async function postLane(i) {

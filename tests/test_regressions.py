@@ -962,6 +962,26 @@ def test_crank_and_review():
     check("ui: Review, Later and the crank toggle are wired",
           all(x in html for x in ("doReviewOpen(", "doShelve()", "renderCrank(d)", "/api/crank",
                                   "/api/review/open/", "/api/review/shelve", 'data-f="review"')))
+    ns = _load_funcs(srv, {"_post_failure"})
+    pf = ns["_post_failure"]
+    m401 = pf("httpx.HTTPStatusError: Client error '401 Unauthorized' for url", 0, 4, "Buffer")
+    check("post: a 401 says the login expired, what to do, and that nothing went out",
+          "login has expired" in m401 and "publish.buffer.com" in m401 and "Nothing was posted." in m401)
+    check("post: a partial failure says what went out and that a retry sends only the rest",
+          "2 of 4 posts went out" in pf("Buffer rejected: x", 2, 4, "Buffer")
+          and "only the 2 left" in pf("Buffer rejected: x", 2, 4, "Buffer"))
+    post = src[src.find("def post_to_buffer("):src.find("@app.get(\"/api/next-post-date\")")]
+    check("post: progress and the outcome are recorded for the button",
+          '"state": "running"' in post and "_post_progress(done=i + 1)" in post
+          and 'state="failed"' in post and 'state="done"' in post)
+    check("post: a refreshed Buffer login is kept for the rest of the posts",
+          'os.environ["BUFFER_COOKIES"] = cand' in post)
+    check("ui: the Post button follows the server — locked while posting, Try again on failure",
+          "function renderPostLive(d)" in html and 'id="post-live"' in html
+          and "renderPostLive(d);" in html and "'↻ Try again'" in html
+          and "if (btn?.disabled) return;" in html)
+    check("ui: a failed post no longer silently resets the button",
+          "btn.textContent = '▶ Post to Buffer'; }" not in html)
     check("ui: Lightroom's batch and the posting screen are drawn separately",
           "renderStepCard(data.run_step, b, data)" in html
           and "renderStepCard('posting', b, data)" in html

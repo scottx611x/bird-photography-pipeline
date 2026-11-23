@@ -55,6 +55,7 @@ state = {
     "done_albums":     set(),   # posted album names — stay hidden even if local folder is deleted
     "syno_fetching":   {},      # album -> {got, total} while a download is in progress
     "posting":         False,   # a post is in flight — blocks a second one
+    "post_status":     {},      # the last post: {folder, state, done, total, step, msg} — drives the Post button
     "run_error":       "",      # why the last run thread stopped, if it failed
     "photo_dates":     {},      # exported file -> capture date "M-D-YY" (EXIF) for combined batches
     "claimed":         {},      # exported file -> the batch that collected it
@@ -1687,6 +1688,7 @@ def get_state():
             "last_post":  state["last_post"],
             "post_error":     state.get("post_error", False),
             "posting":        state.get("posting", False),
+            "post_status":    dict(state.get("post_status") or {}),
             "thread_active":  state["thread_active"],
             "run_error":      state.get("run_error", ""),
             "buffer_ready":   any(f"{n}=" in os.environ.get("BUFFER_COOKIES", "")
@@ -1899,6 +1901,32 @@ def _queue_to_birdqueue(chunk_files: list, caption_text: str):
     return True, r.json().get("due_at", "")
 
 
+def _post_failure(out: str, done: int, total: int, dest: str) -> str:
+    """What went wrong, in words, and what to do — for the Post button."""
+    if "401" in out or "Unauthorized" in out or "No Buffer session" in out:
+        why = (f"{dest}'s login has expired, and refreshing it from Chrome didn't work. "
+               "On the Mac, open publish.buffer.com in Chrome (log in if it asks), then press Try again.")
+    elif "BUFFER_COOKIES is empty" in out:
+        why = "The app lost its Buffer login on restart — run ./bird up on the Mac, then press Try again."
+    elif "lost channel access" in out.lower():
+        why = ("Buffer says it lost access to Instagram — usually brief. Open Buffer, tap Refresh "
+               "on the channel, then press Try again.")
+    else:
+        lines = [l.strip() for l in out.splitlines() if l.strip()]
+        why = f"{dest} said: {lines[-1][:200]}" if lines else f"{dest} didn't answer."
+    if done == 0:
+        sent = "Nothing was posted."
+    else:
+        sent = (f"{done} of {total} post{'s' if total != 1 else ''} went out; "
+                f"Try again sends only the {total - done} left.")
+    return f"{why} {sent}"
+
+
+def _post_progress(**kw):
+    with lock:
+        state["post_status"] = {**(state.get("post_status") or {}), **kw, "at": time.time()}
+
+
 @app.post("/api/post")
 def post_to_buffer():
     """Post selected photo to Buffer."""
@@ -1954,6 +1982,8 @@ def post_to_buffer():
             return jsonify({"ok": False,
                             "error": "A post is already running — wait for it to finish."}), 409
         state["posting"] = True
+        state["post_status"] = {"folder": state["active"], "state": "running", "done": 0,
+                                "total": 0, "step": "Starting…", "msg": "", "at": time.time()}
 
     use_bq = data.get("backend") == "birdqueue"
     dest_name = "birdqueue" if use_bq else "Buffer"
@@ -1977,6 +2007,7 @@ def post_to_buffer():
                 capped.append(g[i:i+10])
         chunks = capped or chunks
         n = len(chunks)
+        _post_progress(total=n, step="Finding open days in the queue…")
         # One open day per split post; a single post keeps the old behaviour
         # (honour a manual slot, else next open slot). birdqueue slots each
         # post itself, one per open day, so it skips Buffer's calendar.
@@ -1989,7 +2020,7 @@ def post_to_buffer():
         with lock:
             photo_dates = dict(state.get("photo_dates", {}))
             batch_cap = (state["batches"].get(state["active"]) or {}).get("cap_date", "")
-        all_ok, last_due = True, ""
+        all_ok, last_due, fail_out = True, "", ""
         for i, chunk in enumerate(chunks):
             chunk_files  = [p["file"] for p in chunk]
             # Explicit date wins; else each post is dated from its photos' EXIF
@@ -1997,12 +2028,15 @@ def post_to_buffer():
             exif_dates = list(dict.fromkeys(d for d in (photo_dates.get(f) for f in chunk_files) if d))
             chunk_cap = cap_date or " & ".join(exif_dates) or batch_cap
             caption_text = _caption_for(chunk, chunk_cap)
+            _post_progress(step=(f"Post {i+1} of {n}: " if n > 1 else "")
+                           + f"resizing and uploading {len(chunk_files)} photo(s) to {dest_name}…")
             if use_bq:
                 if n > 1:
                     log(f"── Post {i+1}/{n} · {len(chunk_files)} photo(s) ──")
                 ok, due = _queue_to_birdqueue(chunk_files, caption_text)
                 if not ok:
                     all_ok = False
+                    fail_out = "birdqueue didn't accept it — see the log."
                     log(f"Post {i+1}/{n} failed — check log.")
                     break
                 log(f"🐦 Queued to birdqueue for {due}" if n == 1
@@ -2010,6 +2044,7 @@ def post_to_buffer():
                 record_post(chunk, caption_text, due)
                 last_due = due or last_due
                 _mark_chunk_posted(chunk_files)
+                _post_progress(done=i + 1)
                 continue
             cmd = ["/usr/local/bin/python", "/app/bird_post.py",
                    "--file"] + chunk_files + ["--text", caption_text]
@@ -2027,10 +2062,15 @@ def post_to_buffer():
             # session once and try again before giving up.
             if r.returncode != 0 and "401" in out:
                 log("  Buffer session expired — refreshing it in Chrome, then retrying…")
+                _post_progress(step=(f"Post {i+1} of {n}: " if n > 1 else "")
+                               + "Buffer's login expired — refreshing it from Chrome and retrying…")
                 fresh = (call_host("buffer-refresh", timeout=120).get("output") or "").strip()
                 cand = fresh.splitlines()[-1] if fresh else ""
                 if "buffer_access_token=" in cand:
                     env["BUFFER_COOKIES"] = cand
+                    # Keep it for the posts after this one too — each split post
+                    # used to start from the stale login and refresh all over again.
+                    os.environ["BUFFER_COOKIES"] = cand
                     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
                     out = r.stdout + r.stderr
                 else:
@@ -2045,8 +2085,10 @@ def post_to_buffer():
                             if "Scheduled for:" in l), "")
                 last_due = due or last_due
                 _mark_chunk_posted(chunk_files)
+                _post_progress(done=i + 1)
             else:
                 all_ok = False
+                fail_out = out
                 log(f"Post {i+1}/{n} failed — check log.")
                 break
 
@@ -2067,6 +2109,9 @@ def post_to_buffer():
                 state["last_post"] = {"due": last_due, "url": "https://publish.buffer.com"}
                 if use_bq:
                     state["last_post"] = {"due": last_due, "url": "/queue"}
+            _post_progress(state="done", step="", msg=(
+                f"✓ {n} post{'s' if n != 1 else ''} queued to {dest_name}"
+                + (f" — first on {last_due[:10]}" if last_due else "") + "."))
             if finalized_folder:
                 log(f"✓ All posts queued to {dest_name}." if finalize else "✓ Final post queued — batch complete.")
             else:
@@ -2077,10 +2122,18 @@ def post_to_buffer():
         else:
             with lock:
                 state["post_error"] = True
+                done = (state.get("post_status") or {}).get("done", 0)
+            _post_progress(state="failed", step="",
+                           msg=_post_failure(fail_out, done, n, dest_name))
 
     def _post_guarded():
         try:
             _post()
+        except Exception as e:
+            log(f"✗ Posting failed: {type(e).__name__}: {e}")
+            _post_progress(state="failed", step="",
+                           msg=f"The post crashed ({type(e).__name__}) — see the log. "
+                               "Posts that went out are kept; Try again sends the rest.")
         finally:
             with lock:
                 state["posting"] = False
