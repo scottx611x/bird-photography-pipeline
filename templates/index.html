@@ -435,6 +435,10 @@
     .btn-sm { font-size: 12px; padding: 5px 13px; border-radius: 8px; }
     .empty { text-align: center; padding: 60px 20px; color: var(--muted); font-size: 13px; line-height: 2.2; }
 
+    .grainy-badge { position: absolute; left: 6px; top: 6px; background: var(--red); color: #fff;
+      font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 6px; pointer-events: none; }
+    .grainy-pill { color: var(--red); border-color: var(--red); }
+    .post-anyway { margin-left: 8px; font-size: 12px; padding: 2px 8px; }
     /* ── Post toast ── */
     .post-toast {
       position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
@@ -988,6 +992,7 @@ function renderPostForm(batch, data) {
                onclick="openModal(previewUrl('${f}'),'${f}',flatFiles(),${idx})"
                loading="lazy" title="Click to preview" />
           <div class="zoom-hint">🔍 preview</div>
+          ${grainyBadge(f)}
         </div>
         <div class="photo-card-fields">
           <div class="photo-card-header">
@@ -1056,6 +1061,7 @@ function renderPostForm(batch, data) {
                  ondragstart="onCardDragStart(event,'${f}')" ondragend="onDragEnd()">
               <div class="photo-card-img-row">
                 <img src="/bird-thumb/${encodeURIComponent(f)}${imgV(f)}" loading="lazy" title="${f}" />
+                ${grainyBadge(f)}
               </div>
               <div class="photo-card-fields">
                 <div class="photo-card-header">
@@ -1161,6 +1167,7 @@ function renderBatches(data) {
     if (kids.length) meta += `<span class="meta-pill" title="Albums combined into this batch">📦 ${kids.join(" · ")}</span>`;
     if (shelf) {
       meta += `<span class="meta-pill">🗂 ${shelf.posts} post${shelf.posts === 1 ? "" : "s"} · ${shelf.photos} photos</span>`;
+      if (shelf.grainy) meta += `<span class="meta-pill grainy-pill" title="${(shelf.why || "").replace(/"/g, "&quot;")}">⚠ ${shelf.grainy} look un-denoised</span>`;
       if (!shelf.sorted) {
         const so = data.sort || {};
         const mine = so.folder === b.folder;
@@ -1279,6 +1286,7 @@ async function poll() {
     // past it). Its progress shows on the batch card and in the crank bar.
     renderOverlay(null);
     lastState = d;
+    applyGrainyBadges();
   } catch (_) {}
   setTimeout(poll, d?.proc_step === 'posting' ? 3000 : 1200);
 }
@@ -2011,7 +2019,7 @@ function setPostBackend(on) {
   try { localStorage.setItem('postBackend', on ? 'birdqueue' : 'buffer'); } catch (e) {}
 }
 
-async function doPost() {
+async function doPost(allowGrainy = false) {
   capturePhotoInputs();
   const date = document.getElementById("pf-date")?.value.trim() || "";
   const groups = [];
@@ -2044,20 +2052,21 @@ async function doPost() {
   postingInFlight = true;
   postPressedAt = Date.now();
   postLocalNote = null;
-  let refused = "";
+  let refused = "", grainyRefused = false;
   try {
     const r = await fetch("/api/post", {
       method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, finalize: true, backend: postBackend() }),
+      body: JSON.stringify({ groups, date, schedule_date: scheduleDate, scheduled_at: scheduledAt, finalize: true, backend: postBackend(), allow_grainy: allowGrainy }),
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok || d.ok === false) refused = d.error || `HTTP ${r.status}`;
+    if (d.grainy) grainyRefused = true;
   } catch (e) {
     refused = "Couldn't reach the app — check the connection, then try again.";
   }
   if (refused) {
     postingInFlight = false;
-    postLocalNote = { cls: "bad", text: `✕ Not posted: ${refused}` };
+    postLocalNote = { cls: "bad", text: `✕ Not posted: ${refused}`, grainy: grainyRefused };
   }
   if (lastState) renderPostLive(lastState);
 }
@@ -2067,6 +2076,23 @@ async function doPost() {
 // another device, or scrolled down at the button: disabled with progress
 // while it runs, "↻ Try again" with the reason when it failed.
 let postLocalNote = null;    // a refusal the server never recorded (409, offline)
+// A photo whose exported pixels are grainy — Denoise never reached it.
+// The grain check runs in the background, so badges arrive on a later poll:
+// patch them onto the cards already on the page rather than re-rendering.
+function applyGrainyBadges() {
+  document.querySelectorAll('.photo-card[data-file]').forEach(card => {
+    const row = card.querySelector('.photo-card-img-row');
+    if (!row) return;
+    const has = row.querySelector('.grainy-badge');
+    const want = grainyBadge(card.dataset.file);
+    if (want && !has) row.insertAdjacentHTML('beforeend', want);
+    else if (!want && has) has.remove();
+  });
+}
+function grainyBadge(f) {
+  const g = (lastState && lastState.grainy) ? lastState.grainy[f] : null;
+  return g ? `<div class="grainy-badge" title="Background grain ${g} — denoised frames read under 1. Re-render it in Lightroom.">⚠ not denoised</div>` : '';
+}
 let postPressedAt = 0;       // a poll in the first moments can still carry the last post's failure
 function renderPostLive(d) {
   const btn = document.getElementById('post-btn');
@@ -2091,7 +2117,8 @@ function renderPostLive(d) {
       + `<span class="sub">Runs on the Mac — fine to leave this page. The button stays locked until it's done, so nothing posts twice.</span>`;
   } else if (postLocalNote) {
     btn.disabled = false; btn.textContent = label;
-    cls = postLocalNote.cls; html = escHtml(postLocalNote.text);
+    cls = postLocalNote.cls; html = escHtml(postLocalNote.text)
+      + (postLocalNote.grainy ? ` <button class="post-anyway" onclick="postLocalNote=null; doPost(true)">Post anyway</button>` : '');
   } else if (mine && ps.state === "failed") {
     btn.classList.remove('is-posting');
     btn.disabled = false; btn.textContent = '↻ Try again';

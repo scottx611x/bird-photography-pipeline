@@ -388,6 +388,67 @@ def _flag_corrupt_exports(names: list[str]):
                 log(f"  (couldn't park it: {e})")
 
 
+# ── Grain: did Denoise actually reach the export? ────────────────────────────
+# On 2026-11-22 a batch's render wedged, the one-by-one fallback reported "27
+# rendered", the checkbox read-back saw Denoise on 0 of 4 photos — and the run
+# logged that it was carrying on, and exported. Every 10/19–10/20 frame went out
+# grainy. Lightroom's UI can say anything; the pixels can't lie. Measured on
+# real exports: denoised frames read ~0.1–1.0 here, un-denoised ones 2.7–12.
+GRAINY_AT = 2.5
+_grain_cache = {}   # (path, size, mtime) -> grain
+
+
+def _grain(path: Path) -> float:
+    """Background grain: high-pass energy in the flattest tenth of the frame.
+    Sharp feathers and busy backgrounds don't count; noise in smooth bokeh does."""
+    from PIL import Image as PILImage, ImageChops, ImageFilter
+    with PILImage.open(path) as im:
+        g = im.convert("L")
+        g.thumbnail((2000, 2000))
+    d = ImageChops.difference(g, g.filter(ImageFilter.GaussianBlur(2)))
+    local = d.point(lambda x: min(255, x * 16)).filter(ImageFilter.BoxBlur(8))
+    h = local.histogram()
+    need, acc = sum(h) * 0.10, 0
+    for v, c in enumerate(h):
+        acc += c
+        if acc >= need:
+            return round(v / 16, 2)
+    return 0.0
+
+
+def _grain_of(path: Path):
+    """Cached by path, size and mtime; None if unreadable."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_size, st.st_mtime)
+    if key not in _grain_cache:
+        try:
+            _grain_cache[key] = _grain(path)
+        except Exception:
+            _grain_cache[key] = None
+    return _grain_cache[key]
+
+
+def _grainy(names, live_dir: Path = None) -> dict:
+    """{name: grain} for the photos that look un-denoised."""
+    out = {}
+    for n in names:
+        p = (live_dir / n) if live_dir else bird_file(n)
+        g = _grain_of(p)
+        if g is not None and g >= GRAINY_AT:
+            out[n] = g
+    return out
+
+
+def _grain_note(bad: dict, total: int) -> str:
+    worst = sorted(bad.items(), key=lambda kv: -kv[1])
+    names = ", ".join(f"{n} ({g:g})" for n, g in worst[:6]) + ("…" if len(worst) > 6 else "")
+    return (f"{len(bad)} of {total} photo(s) look un-denoised — {names}. "
+            "Denoised frames read under 1; re-render them in Lightroom and re-export.")
+
+
 def _verify_spread(count: int = 4) -> str:
     """Read the Denoise checkbox off `count` photos after a paste.
 
@@ -654,8 +715,11 @@ def _denoise_and_export_tail():
     # batch back to the denoise gate on a loop with no way past it.
     spread = _verify_spread()
     if spread == "none":
-        log("⚠ Couldn't see Denoise on the sampled photos — worth an eyeball")
-        log("  in Lightroom before you export. Continuing anyway.")
+        log("⚠ Denoise is OFF on every sampled photo. Not exporting on its own —")
+        log("  check Lightroom; the export's grain check will flag any that go out noisy.")
+        with lock:
+            state["run_error"] = ("Denoise didn't show on any sampled photo — check "
+                                  "Lightroom before ▶ Export")
     elif spread == "partial":
         log("⚠ Denoise reached only some sampled photos — check before export.")
 
@@ -965,7 +1029,17 @@ def _pick_export_post(trigger: bool = True):
     # screen stays Scott's. Claude sorts it there; 👀 Review opens it.
     with lock:
         dates = {f: state["photo_dates"][f] for f in new if f in state.get("photo_dates", {})}
-    _shelve(folder, None, new, dates, False, "exported — waiting to be sorted")
+    bad = _grainy(new)
+    why = "exported — waiting to be sorted"
+    if bad:
+        log("⚠ " + _grain_note(bad, len(new)))
+        why = f"⚠ {len(bad)} photo(s) look un-denoised — re-render before posting"
+    rec = _shelve(folder, None, new, dates, False, why)
+    if bad:
+        with lock:
+            rec["grainy"] = bad
+        _write_shelf(folder, rec)
+        save_state()
     with lock:
         state["run"], state["run_step"] = None, None
         by_hand = state["crank"].get("batch") != folder
@@ -1715,7 +1789,42 @@ def get_state():
             "crank":          dict(state["crank"]),
             "sort":           dict(state.get("sort") or {}),
         }
+        open_files = (_shelf_files(state.get("arrangement"), state["new_birds"])
+                      if state["active"] else [])
+    payload["grainy"] = _grainy_cached(open_files)
+    for f, r in payload["review"].items():
+        r["grainy"] = len((state["review"].get(f) or {}).get("grainy") or {})
     return jsonify(payload)
+
+
+_grain_warming = threading.Event()
+
+
+def _grainy_cached(names) -> dict:
+    """Grainy photos among `names`, from the cache only — a poll must not wait
+    on image analysis. Anything unmeasured is measured in the background."""
+    out, todo = {}, []
+    for n in names:
+        p = bird_file(n)
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        g = _grain_cache.get((str(p), st.st_size, st.st_mtime), "todo")
+        if g == "todo":
+            todo.append(n)
+        elif g is not None and g >= GRAINY_AT:
+            out[n] = g
+    if todo and not _grain_warming.is_set():
+        _grain_warming.set()
+
+        def _warm():
+            try:
+                _grainy(todo)
+            finally:
+                _grain_warming.clear()
+        threading.Thread(target=_warm, daemon=True).start()
+    return out
 
 
 @app.post("/api/process/<folder_name>")
@@ -2035,6 +2144,13 @@ def post_to_buffer():
         if not (groups or photos or files):
             return jsonify({"error": "All selected photos were already posted"}), 400
 
+    if not data.get("allow_grainy"):
+        want = ([p["file"] for g in groups for p in g] if groups
+                else [p["file"] for p in photos] if photos else list(files))
+        bad = _grainy(want)
+        if bad:
+            return jsonify({"ok": False, "grainy": bad,
+                            "error": _grain_note(bad, len(want))}), 409
     with lock:
         if state.get("posting"):
             return jsonify({"ok": False,

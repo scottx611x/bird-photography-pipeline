@@ -142,7 +142,7 @@ def test_denoise_spread_verified():
     # enough to stop a run, and a false negative once trapped a good batch at
     # the denoise gate with no way forward.
     check("server: a failed spread check warns but does not block",
-          'if spread == "none"' in src and "Continuing anyway" in src)
+          'if spread == "none"' in src and "Not exporting on its own" in src)
     i_sp = src.find("spread = _verify_spread(")
     tail = src[i_sp:i_sp + 700]
     check("server: verification never sends the run back a step",
@@ -1358,6 +1358,44 @@ def test_post_never_opens_buffer():
           "publish.buffer.com" not in host and "open -g -a 'Google Chrome'" not in host)
 
 
+def test_grain_guard():
+    """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
+    Denoise on 0 of 4 photos and the run "continued anyway". The export's own
+    pixels are now measured, and Post refuses grainy photos."""
+    import tempfile
+    from pathlib import Path as P
+    from PIL import Image, ImageChops, ImageFilter
+    srv = ROOT / "server.py"
+    ns = _load_funcs(srv, {"_grain", "_grain_of", "_grainy", "_grain_note", "GRAINY_AT",
+                           "_grain_cache"}, env={"Path": P})
+    with tempfile.TemporaryDirectory() as d:
+        d = P(d)
+        smooth = Image.linear_gradient("L").resize((1200, 800)).filter(ImageFilter.GaussianBlur(20))
+        noise = Image.effect_noise((1200, 800), 18)
+        grainy = ImageChops.add(smooth, noise, 1, -128)
+        smooth.convert("RGB").save(d / "clean.jpg", quality=92)
+        grainy.convert("RGB").save(d / "noisy.jpg", quality=92)
+        gc, gn = ns["_grain"](d / "clean.jpg"), ns["_grain"](d / "noisy.jpg")
+        check("grain: a smooth (denoised-looking) frame reads under 1", gc < 1, str(gc))
+        check("grain: a noisy frame reads over the threshold", gn >= ns["GRAINY_AT"], str(gn))
+        bad = ns["_grainy"](["clean.jpg", "noisy.jpg", "missing.jpg"], d)
+        check("grain: only the noisy frame is flagged", list(bad) == ["noisy.jpg"], str(bad))
+        check("grain: the note names the photo", "noisy.jpg" in ns["_grain_note"](bad, 2))
+    real = P.home() / "Desktop/birbs/.originals/DSC_4449.jpg"
+    if real.exists():
+        g = ns["_grain"](real)
+        check("grain: the real un-denoised hawk (DSC_4449) is flagged", g >= ns["GRAINY_AT"], str(g))
+    src = srv.read_text()
+    check("grain: Post refuses grainy photos unless allow_grainy",
+          'if not data.get("allow_grainy"):' in src and '"grainy": bad' in src)
+    check("grain: the export flags grainy photos on the shelf", 'rec["grainy"] = bad' in src)
+    check("grain: no more 'Continuing anyway' after a failed Denoise read-back",
+          "Continuing anyway" not in src)
+    html = INDEX.read_text()
+    check("grain: UI badges grainy photos and offers Post anyway",
+          "function grainyBadge" in html and "doPost(true)" in html and "allow_grainy" in html)
+
+
 def main():
     print("static checks")
     test_index_structure()
@@ -1387,6 +1425,7 @@ def main():
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
     test_post_never_opens_buffer()
+    test_grain_guard()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:
