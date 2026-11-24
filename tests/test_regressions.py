@@ -1376,6 +1376,17 @@ def test_lr_click_stays_in_lightroom():
           '"-l", wid' in scr and "if app and not lr_only" in scr)
 
 
+def test_render_each_counts_only_seen_renders():
+    """2026-11-23: render-each said "Rendered 27" when nothing rendered — it
+    counted any photo that took over 10s, and the wait for a dialog is 10s."""
+    auto = (ROOT / "lr_auto.py").read_text()
+    body = auto[auto.index("def cmd_render_each"):auto.index("def cmd_click_at")]
+    check("render-each: counts a photo only if its render dialog appeared",
+          "seen = bool(_render_dialog_count())" in body and "elif seen:" in body
+          and "time.time() - t0 > 10" not in body)
+    check("render-each: says so when nothing rendered", "rendered == 0" in body)
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1456,6 +1467,7 @@ def main():
     test_post_never_opens_buffer()
     test_grain_guard()
     test_lr_click_stays_in_lightroom()
+    test_render_each_counts_only_seen_renders()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:

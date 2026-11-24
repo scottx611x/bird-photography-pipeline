@@ -1008,6 +1008,10 @@ def cmd_render_each(args):
             t0 = time.time()
             while time.time() - t0 < 10 and not _render_dialog_count():
                 time.sleep(1)
+            # Only a render we actually saw counts. On 2026-11-23 no dialog ever
+            # appeared (the photos had no Denoise to render), the 10s wait ran
+            # out, and the elapsed-time test reported "Rendered 27".
+            seen = bool(_render_dialog_count())
             while _render_dialog_count() and time.time() - t0 < RENDER_EACH_LIMIT:
                 time.sleep(3)
             if _render_dialog_count():
@@ -1021,11 +1025,14 @@ def cmd_render_each(args):
                     print(f"Stopped at photo {i}: its render dialog won't close.")
                     sys.exit(1)
                 bad.append(i)
-            elif time.time() - t0 > 10:
+            elif seen:
                 rendered += 1
         if i < n:
             _arrow(124)
     print(f"Rendered {rendered} photo(s) one by one.")
+    if rendered == 0:
+        print("Nothing rendered — if these photos should be denoised, Denoise "
+              "isn't ticked on them: tick it on one, copy-and-paste to all.")
     if bad:
         print(f"Could not render photo(s) {bad} (grid order) — check them by eye.")
 
