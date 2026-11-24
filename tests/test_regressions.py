@@ -1385,7 +1385,8 @@ def test_grain_guard():
     from PIL import Image, ImageChops, ImageFilter
     srv = ROOT / "server.py"
     ns = _load_funcs(srv, {"_grain", "_grain_of", "_grainy", "_grain_note", "GRAINY_AT",
-                           "_grain_cache"}, env={"Path": P})
+                           "_grain_cache", "_grain_target", "_has_capture_date"},
+                     env={"Path": P})
     with tempfile.TemporaryDirectory() as d:
         d = P(d)
         smooth = Image.linear_gradient("L").resize((1200, 800)).filter(ImageFilter.GaussianBlur(20))
@@ -1399,6 +1400,16 @@ def test_grain_guard():
         bad = ns["_grainy"](["clean.jpg", "noisy.jpg", "missing.jpg"], d)
         check("grain: only the noisy frame is flagged", list(bad) == ["noisy.jpg"], str(bad))
         check("grain: the note names the photo", "noisy.jpg" in ns["_grain_note"](bad, 2))
+        # 2026-11-24: a tight crop of a denoised frame reads grainy at 1:1. An app
+        # crop (no capture date) is judged by its uncropped original instead.
+        (d / ".originals").mkdir()
+        grainy.convert("RGB").save(d / "crop_ok.jpg", quality=92)
+        smooth.convert("RGB").save(d / ".originals" / "crop_ok.jpg", quality=92)
+        grainy.convert("RGB").save(d / "crop_bad.jpg", quality=92)
+        grainy.convert("RGB").save(d / ".originals" / "crop_bad.jpg", quality=92)
+        bad = ns["_grainy"](["crop_ok.jpg", "crop_bad.jpg"], d)
+        check("grain: a crop is judged by its saved original", list(bad) == ["crop_bad.jpg"],
+              str(bad))
     real = P.home() / "Desktop/birbs/.originals/DSC_4449.jpg"
     if real.exists():
         g = ns["_grain"](real)

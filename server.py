@@ -416,7 +416,20 @@ def _grain(path: Path) -> float:
     return 0.0
 
 
-def _grain_of(path: Path):
+def _grain_target(path: Path, orig_dir: Path = None) -> Path:
+    """What to measure for `path`. Our own crop is measured by its uncropped
+    original: the metric reads a full 6000px frame at 1/3 scale but a tight
+    1960px crop at 1:1, where even a denoised frame shows fine grain (the
+    2026-11-24 warbler crops read 4-6 clean vs 12 un-denoised). The backup is
+    only this photo's if the live file is our crop (no capture date)."""
+    if orig_dir is not None:
+        b = orig_dir / path.name
+        if b.is_file() and not _has_capture_date(path):
+            return b
+    return path
+
+
+def _grain_of(path: Path, orig_dir: Path = None):
     """Cached by path, size and mtime; None if unreadable."""
     try:
         st = path.stat()
@@ -425,7 +438,7 @@ def _grain_of(path: Path):
     key = (str(path), st.st_size, st.st_mtime)
     if key not in _grain_cache:
         try:
-            _grain_cache[key] = _grain(path)
+            _grain_cache[key] = _grain(_grain_target(path, orig_dir))
         except Exception:
             _grain_cache[key] = None
     return _grain_cache[key]
@@ -434,9 +447,14 @@ def _grain_of(path: Path):
 def _grainy(names, live_dir: Path = None) -> dict:
     """{name: grain} for the photos that look un-denoised."""
     out = {}
+    if live_dir is None:
+        orig_dir = globals().get("ORIGINALS_DIR")
+    else:   # ~/Desktop/birbs → .originals; .review/<batch>/live → originals
+        orig_dir = (live_dir.parent / "originals" if live_dir.name == "live"
+                    else live_dir / ".originals")
     for n in names:
         p = (live_dir / n) if live_dir else bird_file(n)
-        g = _grain_of(p)
+        g = _grain_of(p, orig_dir)
         if g is not None and g >= GRAINY_AT:
             out[n] = g
     return out
