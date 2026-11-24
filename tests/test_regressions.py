@@ -1342,6 +1342,22 @@ def test_live():
           f in (state.get("photo_versions") or {}))
 
 
+def test_post_never_opens_buffer():
+    """Posting must not open Buffer in Scott's Chrome (2026-11-23): images go to
+    our own bucket, and the login refresh only re-reads cookies."""
+    post = (ROOT / "bird_post.py").read_text()
+    host = (ROOT / "lr_host.py").read_text()
+    main = post[post.index("def main():"):]
+    check("post: uploads go through upload_image (own bucket first)",
+          "upload_image(ready)" in main and "upload_to_buffer_s3(ready" not in main)
+    check("post: own-bucket upload targets the public images prefix",
+          'IMAGE_PREFIX = "birds/images/buffer/"' in post)
+    check("post: no Chrome login needed unless the own-bucket upload fails",
+          "get_buffer_cookies()" not in main)
+    check("lr_host: buffer-refresh opens no browser",
+          "publish.buffer.com" not in host and "open -g -a 'Google Chrome'" not in host)
+
+
 def main():
     print("static checks")
     test_index_structure()
@@ -1370,6 +1386,7 @@ def main():
     test_export_runs_unattended()
     test_dust_section_not_ambiguous()
     test_lr_verify_logic()
+    test_post_never_opens_buffer()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:

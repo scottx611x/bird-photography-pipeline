@@ -2125,8 +2125,8 @@ def post_to_buffer():
             # can renew it, so a 401 here isn't a real failure — refresh the
             # session once and try again before giving up.
             if r.returncode != 0 and "401" in out:
-                log("  Buffer session expired — refreshing it in Chrome, then retrying…")
-                _post_stage(i, n, items, "Buffer's login expired — refreshing it from Chrome…", 0.02)
+                log("  Buffer session expired — re-reading the login from Chrome, then retrying…")
+                _post_stage(i, n, items, "Buffer's login expired — re-reading it from Chrome…", 0.02)
                 fresh = (call_host("buffer-refresh", timeout=120).get("output") or "").strip()
                 cand = fresh.splitlines()[-1] if fresh else ""
                 if "buffer_access_token=" in cand:

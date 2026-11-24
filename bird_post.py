@@ -24,7 +24,8 @@ Usage:
 Env vars required:
   BUFFER_TOKEN   Buffer API key (from publish.buffer.com/settings/api)
 
-Requires Chrome with an active Buffer login (for S3 upload).
+Images go to our own S3 bucket (AWS creds); Buffer's browser login is only a
+fallback if that upload fails.
 """
 
 import os, sys, argparse, time
@@ -195,6 +196,36 @@ def upload_to_buffer_s3(path: Path, cookies: dict) -> str:
     raise last_exc
 
 
+IMAGE_BUCKET = os.environ.get("POST_IMAGE_BUCKET", "birds-scott-ouellette")
+IMAGE_PREFIX = "birds/images/buffer/"   # public-read under the bucket policy
+
+
+def upload_to_own_s3(path: Path) -> str:
+    """Upload to our own bucket's public prefix and return its URL.
+
+    Buffer's API takes an image URL and fetches it when the post is created, so
+    any public URL works. Buffer's own upload endpoint needs the browser login,
+    whose token dies hourly and could only be renewed by opening Buffer in
+    Chrome. That opened a tab after nearly every post (2026-11-23). Our bucket
+    needs only the AWS credentials the container already has."""
+    import boto3, uuid
+    from datetime import datetime, timezone
+    key = (f"{IMAGE_PREFIX}{datetime.now(timezone.utc):%Y%m%d}-"
+           f"{uuid.uuid4().hex[:8]}-{path.name}")
+    boto3.client("s3").upload_file(str(path), IMAGE_BUCKET, key,
+                                    ExtraArgs={"ContentType": "image/jpeg"})
+    return f"https://{IMAGE_BUCKET}.s3.amazonaws.com/{key}"
+
+
+def upload_image(path: Path) -> str:
+    """Our bucket first; Buffer's login-based upload only if that fails."""
+    try:
+        return upload_to_own_s3(path)
+    except Exception as exc:  # noqa: BLE001 - no AWS creds/boto3: old route
+        print(f"  (own-bucket upload failed: {str(exc)[:80]} — using Buffer's upload)")
+        return upload_to_buffer_s3(path, get_buffer_cookies())
+
+
 def queue_to_buffer(text: str, image_urls: list[str], scheduled_at: str = "", schedule_date: str = "") -> dict:
     from datetime import datetime, timezone
     mutation = """
@@ -307,11 +338,10 @@ def main():
         readies.append(ready)
 
     # Upload all
-    print("\nUploading to Buffer's S3 …")
-    cookies = get_buffer_cookies()
+    print("\nUploading to Buffer …")
     image_urls = []
     for ready in readies:
-        url = upload_to_buffer_s3(ready, cookies)
+        url = upload_image(ready)
         image_urls.append(url)
         print(f"  {ready.name} ✓")
 

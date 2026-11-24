@@ -275,15 +275,13 @@ class Handler(BaseHTTPRequestHandler):
                     "awk '{s+=$1} END {printf \"%.0f\", s}'"]
         # Escape hatch: a modal Lightroom dialog (a failed import, say) blocks
         # every other command and used to need a mouse — i.e. a trip home.
-        # Buffer's OIDC access token dies after about an hour and only the
-        # browser can renew it. Nudge Chrome to load Buffer, then hand back
-        # the refreshed cookies. Runs only when a post has already hit 401.
+        # Buffer's browser login dies about hourly. Hand back whatever cookies
+        # Chrome holds now, and never open Buffer to renew them: that dropped
+        # a Buffer tab in Scott's Chrome after nearly every post (2026-11-23).
+        # Posting uploads images to our own bucket, so it rarely needs these.
         elif cmd == "buffer-refresh":
-            print("→ refreshing the Buffer session in Chrome")
-            args = ["bash", "-c",
-                    "open -g -a 'Google Chrome' 'https://publish.buffer.com/all-channels' >/dev/null 2>&1; "
-                    "sleep 10; "
-                    f"'{PYTHON}' '{TOOLS}/extract_buffer_cookies.py'"]
+            print("→ re-reading the Buffer cookies from Chrome (no tab opened)")
+            args = [PYTHON, str(TOOLS / "extract_buffer_cookies.py")]
         # Claude Code sorts the new export into posts (species, frames, crops).
         # The script backgrounds itself and returns at once, so this never
         # holds the Lightroom lock for the length of a sort.
