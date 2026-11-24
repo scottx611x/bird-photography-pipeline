@@ -1032,6 +1032,39 @@ def cmd_render_each(args):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def cmd_click_at(args):
+    """One click inside Lightroom's main window, at (fx, fy) as fractions of
+    its size — for the sidebar, which isn't in the accessibility tree (e.g.
+    "Recently Added > Yesterday 7:38 PM" to get back to an older batch). Waits
+    until the Mac is idle and refuses unless Lightroom is frontmost, so the
+    click can never land in another app."""
+    if not (0 < args.fx < 1 and 0 < args.fy < 1):
+        print("fx/fy must be fractions strictly between 0 and 1")
+        sys.exit(2)
+    ensure_lr_front()
+    out = run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    set w to window "Adobe Lightroom"
+    set p to position of w
+    set s to size of w
+    return ((item 1 of p) as string) & " " & ((item 2 of p) as string) & " " & ¬
+           ((item 1 of s) as string) & " " & ((item 2 of s) as string)
+  end tell
+end tell
+''').split()
+    if len(out) != 4:
+        print("Couldn't read Lightroom's window bounds")
+        sys.exit(1)
+    x, y, w, h = (int(float(v)) for v in out)
+    cx, cy = x + round(w * args.fx), y + round(h * args.fy)
+    if lr_frontmost() != "Adobe Lightroom":
+        print("Lightroom lost focus — not clicking.")
+        sys.exit(1)
+    subprocess.run([CLICLICK, f"c:{cx},{cy}"], check=True, timeout=10)
+    print(f"  Clicked {cx},{cy} ({args.fx:.3f}, {args.fy:.3f} of the window)")
+
+
 def main():
     p = argparse.ArgumentParser(description="Lightroom UI automation for bird photos")
     p.add_argument("--folder", help="Path to batch folder (for import command)")
@@ -1049,6 +1082,9 @@ def main():
     sub.add_parser("status",         help="Dump Lightroom windows/dialogs via accessibility")
     sub.add_parser("ai-resume",      help="Unstick and restart a stalled AI-settings render")
     sub.add_parser("render-each",    help="Render pending AI settings one photo at a time")
+    ck = sub.add_parser("click-at",  help="Click a spot in Lightroom's main window (fractions of its size)")
+    ck.add_argument("--fx", type=float, required=True)
+    ck.add_argument("--fy", type=float, required=True)
 
     args = p.parse_args()
     {
@@ -1060,6 +1096,7 @@ def main():
         "status":         cmd_status,
         "ai-resume":      cmd_ai_resume,
         "render-each":    cmd_render_each,
+        "click-at":       cmd_click_at,
     }[args.cmd](args)
 
 

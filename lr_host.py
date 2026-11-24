@@ -22,7 +22,7 @@ from pathlib import Path
 TOOLS  = Path(__file__).parent
 PYTHON = str(Path.home() / ".pyenv" / "versions" / "3.12.11" / "bin" / "python3")
 ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
-           "ai-resume", "render-each",
+           "ai-resume", "render-each", "lr-click",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
            "denoise-check", "denoise-probe", "denoise-spread",
            "dust-check", "dust-probe",
@@ -185,17 +185,28 @@ class Handler(BaseHTTPRequestHandler):
         import tempfile, time as _t
         from io import BytesIO
         from urllib.parse import urlparse, parse_qs
-        app = (parse_qs(urlparse(self.path).query).get("app") or [""])[0]
+        q = parse_qs(urlparse(self.path).query)
+        app = (q.get("app") or [""])[0]
+        # ?window=lr: just Lightroom's own window, captured by ID — nothing is
+        # brought forward and none of Scott's other windows are in the shot.
+        lr_only = (q.get("window") or [""])[0] == "lr"
         try:
-            if app:
+            if lr_only:
+                wid = subprocess.run(["osascript", "-l", "JavaScript", "-e", LR_WINDOW_JXA],
+                                     capture_output=True, text=True, timeout=10).stdout.strip()
+                if not wid or wid == "0":
+                    self._json({"ok": False, "error": "Lightroom has no window"}, 404)
+                    return
+            if app and not lr_only:
                 subprocess.run(["osascript", "-e",
                                 f'tell application "{app}" to activate'],
                                capture_output=True, timeout=15)
                 _t.sleep(0.8)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
                 raw = tf.name
-            subprocess.run(["/usr/sbin/screencapture", "-x", "-t", "png", raw],
-                           capture_output=True, timeout=30)
+            shot = (["/usr/sbin/screencapture", "-x", "-o", "-l", wid, "-t", "png", raw]
+                    if lr_only else ["/usr/sbin/screencapture", "-x", "-t", "png", raw])
+            subprocess.run(shot, capture_output=True, timeout=30)
             from PIL import Image
             with Image.open(raw) as im:
                 im = im.convert("RGB")
@@ -294,6 +305,11 @@ class Handler(BaseHTTPRequestHandler):
         elif cmd == "lr-dismiss":
             print("→ dismissing Lightroom dialog")
             args = [PYTHON, str(TOOLS / "lr_dismiss.py")]
+        elif cmd == "lr-click":
+            fx, fy = float(body.get("fx") or 0), float(body.get("fy") or 0)
+            print(f"→ lr_auto.py click-at {fx:.3f},{fy:.3f}")
+            args = [PYTHON, str(TOOLS / "lr_auto.py"), "click-at",
+                    "--fx", str(fx), "--fy", str(fy)]
         elif cmd == "lr-status":
             args = [PYTHON, str(TOOLS / "lr_auto.py"), "status"]
         # Opt-in beta: tick Denoise by sight. Must run here, not from a shell —

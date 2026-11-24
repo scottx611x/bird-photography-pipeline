@@ -1358,6 +1358,24 @@ def test_post_never_opens_buffer():
           "publish.buffer.com" not in host and "open -g -a 'Google Chrome'" not in host)
 
 
+def test_lr_click_stays_in_lightroom():
+    """2026-11-23: driving the sidebar (not in the a11y tree) back to an older
+    batch. The click must be guarded like keystrokes: idle wait, Lightroom in
+    front, and a look at LR's window must never raise it or capture other apps."""
+    auto = (ROOT / "lr_auto.py").read_text()
+    host = (ROOT / "lr_host.py").read_text()
+    body = auto[auto.index("def cmd_click_at"):auto.index("def main():")]
+    check("click-at: waits for idle with Lightroom in front", "ensure_lr_front()" in body)
+    check("click-at: re-checks Lightroom is frontmost right before clicking",
+          body.index('lr_frontmost() != "Adobe Lightroom"') < body.index("CLICLICK"))
+    check("click-at: only fractions inside the window", "0 < args.fx < 1" in body)
+    check("lr_host: lr-click is an allowed command", '"lr-click"' in host)
+    i = host.index("lr_only =")
+    scr = host[i:host.index("from PIL import Image", i)]
+    check("lr_host: ?window=lr captures by window id without activating",
+          '"-l", wid' in scr and "if app and not lr_only" in scr)
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1426,6 +1444,7 @@ def main():
     test_lr_verify_logic()
     test_post_never_opens_buffer()
     test_grain_guard()
+    test_lr_click_stays_in_lightroom()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:
