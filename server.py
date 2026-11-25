@@ -2442,9 +2442,20 @@ def recent_species():
                 add_sp(s)
             if len(blocks) >= 2:
                 add_loc(blocks[1])
-        return jsonify({"species": species, "locations": locations})
+        return jsonify({"species": species, "locations": _drop_truncated(locations)})
     except Exception as e:
         return jsonify({"species": [], "locations": [], "error": str(e)})
+
+
+def _drop_truncated(names: list) -> list:
+    """Drop a suggestion that is another one cut short by a letter or two —
+    "Weir Hil" beside "Weir Hill" (2026-11-24). The typo lives on in captions
+    already sent to Instagram, which can't be edited, and offering it again is
+    how it spread to more posts."""
+    full = set(names)
+    return [n for n in names
+            if not any(o != n and o.startswith(n) and len(o) - len(n) <= 2
+                       and o[len(n):].isalpha() for o in full)]
 
 
 @app.post("/api/scan")

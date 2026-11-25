@@ -1408,6 +1408,15 @@ def test_arrangement_keeps_new_birds_in_step():
           "_sync_new_birds(arrangement)" in srv.read_text())
 
 
+def test_location_typos_not_suggested():
+    """2026-11-24: "Weir Hil" kept being offered beside "Weir Hill" and spread."""
+    ns = _load_funcs(ROOT / "server.py", {"_drop_truncated"})
+    got = ns["_drop_truncated"](["Weir Hill", "Rea St.", "Weir Hil", "Rea St", "Mill Pond"])
+    check("locations: a truncated duplicate is dropped", "Weir Hil" not in got, str(got))
+    check("locations: distinct places stay", got[:2] == ["Weir Hill", "Rea St."] and "Mill Pond" in got,
+          str(got))
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1490,6 +1499,7 @@ def main():
     test_lr_click_stays_in_lightroom()
     test_render_each_counts_only_seen_renders()
     test_arrangement_keeps_new_birds_in_step()
+    test_location_typos_not_suggested()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:
