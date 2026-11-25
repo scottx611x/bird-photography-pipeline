@@ -1387,6 +1387,27 @@ def test_render_each_counts_only_seen_renders():
     check("render-each: says so when nothing rendered", "rendered == 0" in body)
 
 
+def test_arrangement_keeps_new_birds_in_step():
+    """2026-11-24: photos swapped into the arrangement under new names were
+    missing from new_birds, so the page rebuilt posts from the old, moved-away
+    files (all broken images). Saving an arrangement now syncs the list."""
+    import tempfile
+    from pathlib import Path as P
+    srv = ROOT / "server.py"
+    with tempfile.TemporaryDirectory() as d:
+        d = P(d)
+        for n in ("new.jpg", "kept.jpg", "x.jpg"):
+            (d / n).write_bytes(b"")
+        st = {"new_birds": ["old.jpg", "kept.jpg"]}
+        ns = _load_funcs(srv, {"_sync_new_birds"},
+                         env={"state": st, "bird_file": lambda n: d / n})
+        ns["_sync_new_birds"]({"lanes": [["new.jpg", "kept.jpg"]], "excluded": ["x.jpg", "gone.jpg"]})
+        check("arrangement: new names join new_birds, missing ones leave",
+              st["new_birds"] == ["kept.jpg", "new.jpg", "x.jpg"], str(st["new_birds"]))
+    check("arrangement: save syncs new_birds for the open batch",
+          "_sync_new_birds(arrangement)" in srv.read_text())
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1468,6 +1489,7 @@ def main():
     test_grain_guard()
     test_lr_click_stays_in_lightroom()
     test_render_each_counts_only_seen_renders()
+    test_arrangement_keeps_new_birds_in_step()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:

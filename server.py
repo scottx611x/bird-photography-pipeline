@@ -2889,6 +2889,21 @@ def _sync_parked(lanes, excluded, live_dir: Path = None, excl_dir: Path = None):
                 pass
 
 
+def _sync_new_birds(arrangement: dict) -> None:
+    """Keep the open batch's photo list in step with its arrangement (caller
+    holds the lock). The page builds posts from new_birds and drops any
+    arrangement name it doesn't list; on 2026-11-24 re-exported files were
+    swapped into the arrangement but new_birds still named the moved-away
+    originals, so every post rendered as broken old names. Files that exist
+    and are arranged join the list; listed files gone from disk leave it."""
+    names = [f for lane in arrangement.get("lanes") or [] for f in lane]
+    names += list(arrangement.get("excluded") or [])
+    cur = [f for f in state["new_birds"] if bird_file(f).exists()]
+    have = set(cur)
+    cur += [f for f in names if f not in have and bird_file(f).exists()]
+    state["new_birds"] = cur
+
+
 @app.post("/api/arrangement")
 def save_arrangement():
     """Persist the posting screen's layout — lane grouping/order, excluded photos,
@@ -2913,6 +2928,7 @@ def save_arrangement():
             return jsonify({"error": f"{folder} is neither open nor waiting for review"}), 404
         else:
             state["arrangement"] = arrangement
+            _sync_new_birds(arrangement)
     if rec is not None:
         _write_shelf(folder, rec)
     save_state()
