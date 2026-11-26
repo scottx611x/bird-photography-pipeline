@@ -1417,6 +1417,20 @@ def test_location_typos_not_suggested():
           str(got))
 
 
+def test_curate_has_loupe():
+    """2026-11-26: the curate page magnifies with the website's round loupe
+    (click/hold), not the old whole-image scale(2.4) zoom."""
+    html = CURATE.read_text()
+    check("curate: round loupe styled", ".loupe>i{" in html and "border-radius:50%" in html)
+    check("curate: old scale zoom gone", "#big.zoomed" not in html and "toggleZoom" not in html)
+    check("curate: loupe sharpens from the 1920 copy", "/curate-thumb/xl/" in html.split("const loupe=")[-1])
+    check("curate: a loupe hold is not a swipe", "if(loupe.claimed) return;" in html)
+    check("curate: Z toggles it, paging drops it", "loupe.toggle()" in html and "loupe.end();" in html)
+    # Served through Jinja: "{#" opens a comment and 500s the page (it did, on this change).
+    check("curate: no Jinja delimiters in the static page",
+          not any(t in html for t in ("{#", "{{", "{%")))
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1500,6 +1514,7 @@ def main():
     test_render_each_counts_only_seen_renders()
     test_arrangement_keeps_new_birds_in_step()
     test_location_typos_not_suggested()
+    test_curate_has_loupe()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:
@@ -1514,3 +1529,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
