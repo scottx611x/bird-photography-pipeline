@@ -876,7 +876,8 @@ def test_crank_and_review():
                            "_crank_groups", "_best_album_day", "_crank_left_out",
                            "CRANK_TARGET", "CRANK_SMALL", "CRANK_CAP", "SORT_TRIES",
                            "CRANK_HOLD_DAYS", "CRANK_MIN_FREE_GB", "SORT_START_GRACE",
-                           "SORT_RUN_CAP", "CRANK_GATES"}, env)
+                           "SORT_RUN_CAP", "CRANK_GATES", "_crank_site_groups", "_site_album",
+                           "_site_folder", "SITE_SINCE", "SITE_BY_HAND"}, env)
     tick = ns["_crank_tick"]
     fetches = lambda: [c for c in calls if c[0] in ("fetch", "process")]
 
@@ -1431,6 +1432,79 @@ def test_curate_has_loupe():
           not any(t in html for t in ("{#", "{{", "{%")))
 
 
+def test_wildlife_and_sadie_go_to_the_website():
+    """2026-11-27: Scott — -wildlife and -sadie albums go to the site's
+    /photography page. The crank runs them through Lightroom, then hands the
+    export to site_batch.sh instead of the Instagram sorter."""
+    from datetime import datetime
+    srv = ROOT / "server.py"
+    ns = _load_funcs(srv, {"_crank_site_groups", "_site_album", "_site_folder", "is_site_batch",
+                           "_site_kind", "SITE_SINCE", "SITE_BY_HAND", "CRANK_CAP"},
+                     {"datetime": datetime, "re": re,
+                      "_multi_name": lambda n: "2026-11-15-multi-11-8+11-15"})
+    alb = lambda n, c: {"name": n, "item_count": c}
+    albums = [alb("2026-10-17-wildlife", 1), alb("2026-10-24-wildlife", 2), alb("2026-10-25-sadie", 43),
+              alb("2026-11-08-wildlife", 1), alb("2026-11-15-wildlife", 3), alb("2026-11-11-family", 1),
+              alb("2026-11-12-best", 9), alb("2026-11-20-wildlife", 0)]
+    g = ns["_crank_site_groups"](albums, set())
+    names = [[a["name"] for a in grp] for grp in g]
+    check("site: wildlife and sadie albums are picked up, oldest first",
+          names == [["2026-10-25-sadie"], ["2026-11-08-wildlife", "2026-11-15-wildlife"]], str(names))
+    check("site: albums published by hand before (and empty ones) are left alone",
+          not any("10-17" in n or "10-24" in n or "11-20" in n for grp in names for n in grp))
+    check("site: kinds never mix in one batch, so the category is known",
+          all(len({ns["_site_album"](n)[1] for n in grp}) == 1 for grp in names))
+    check("site: done albums don't come back",
+          ns["_crank_site_groups"](albums, {"2026-10-25-sadie"})[0][0]["name"] == "2026-11-08-wildlife")
+    folder = ns["_site_folder"](["2026-11-08-wildlife", "2026-11-15-wildlife"])
+    check("site: a combined website batch is named so it's recognisable",
+          ns["is_site_batch"](folder) and ns["_site_kind"](folder) == "wildlife", folder)
+    check("site: -best and -multi batches are not website batches",
+          not ns["is_site_batch"]("2026-11-12-best")
+          and not ns["is_site_batch"]("2026-08-10-multi-8-9+8-10"))
+    src = srv.read_text()
+    landed = src[src.index("    if is_site_batch(folder):"):]
+    check("site: the export skips the Instagram review/sort and goes to the website",
+          landed.index("_site_handoff(folder, new)") < landed.index("rec = _shelve(folder, None"))
+    host = (ROOT / "lr_host.py").read_text()
+    check("site: lr_host runs site_batch.sh", '"site-batch"' in host and "site_batch.sh" in host)
+    sh = (ROOT / "site_batch.sh").read_text()
+    check("site: publishes only through the website's own entry point",
+          "make wildlife-publish" in sh and "push-curations" not in sh.split("set -u")[1]
+          and "make deploy" not in sh and "git " not in sh.split("set -u")[1])
+    check("site: naming runs on Scott's plan via claude -p, no API key",
+          '"$CLAUDE" -p' in sh and "ANTHROPIC_API_KEY" not in sh)
+
+    # site_batch.py turns names.json into the website's layout
+    import importlib.util, tempfile, json as _j
+    spec = importlib.util.spec_from_file_location("site_batch", ROOT / "site_batch.py")
+    sb = importlib.util.module_from_spec(spec); spec.loader.exec_module(sb)
+    with tempfile.TemporaryDirectory() as t:
+        t = Path(t); sb.SITE = t / "site"; sb.INBOX = t / "inbox"
+        d = sb.SITE / "2026-11-15-wildlife"; d.mkdir(parents=True)
+        for f in ("A.jpg", "B.jpg", "C.jpg"):
+            (d / f).write_bytes(b"x")
+        (d / "job.json").write_text(_j.dumps({"kind": "wildlife", "files": ["A.jpg", "B.jpg", "C.jpg"]}))
+        (d / "names.json").write_text(_j.dumps({
+            "A.jpg": {"category": "mammal", "name": "white-tailed-deer",
+                      "species": "White-tailed Deer (Odocoileus virginianus)", "tags": ["deer"]},
+            "B.jpg": {"category": "mammal", "name": "white-tailed-deer"},
+            "C.jpg": {"skip": True}}))
+        check("site: a complete names.json passes", sb.problems("2026-11-15-wildlife") == [])
+        sb.cmd_stage("2026-11-15-wildlife")
+        out = sb.INBOX / "2026-11-15-wildlife-auto"
+        got = sorted(str(p.relative_to(out)) for p in out.rglob("*.jpg"))
+        meta = _j.loads((out / "_meta.json").read_text())
+        check("site: staged as <category>/<name>.jpg, duplicates numbered, skips dropped",
+              got == ["mammal/white-tailed-deer-2.jpg", "mammal/white-tailed-deer.jpg"], str(got))
+        check("site: _meta.json carries species and tags by bare file name",
+              meta == {"white-tailed-deer.jpg": {"species": "White-tailed Deer (Odocoileus virginianus)",
+                                                 "tags": ["deer"]}}, str(meta))
+        (d / "names.json").write_text(_j.dumps({"A.jpg": {"category": "bird", "name": "Deer"}}))
+        errs = sb.problems("2026-11-15-wildlife")
+        check("site: bad category, bad name and missing photos are caught", len(errs) == 4, str(errs))
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1515,6 +1589,7 @@ def main():
     test_arrangement_keeps_new_birds_in_step()
     test_location_typos_not_suggested()
     test_curate_has_loupe()
+    test_wildlife_and_sadie_go_to_the_website()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:

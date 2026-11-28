@@ -1156,8 +1156,8 @@ function renderBatches(data) {
     // screen (active). They are never the same batch.
     const isRun    = data.run?.folder === b.folder;
     const isActive = isRun || (data.active?.folder === b.folder && data.proc_step === 'posting');
-    const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done", review:"badge-review" }[b.status] || "badge-pending";
-    const badgeTxt = { pending:"Pending", processing:"Active", done:"Done", review:"Review" }[b.status] || b.status;
+    const badge    = { pending:"badge-pending", processing:"badge-processing", done:"badge-done", review:"badge-review", site:"badge-processing" }[b.status] || "badge-pending";
+    const badgeTxt = { pending:"Pending", processing:"Active", done:"Done", review:"Review", site:"🌐 Website" }[b.status] || b.status;
     const shelf    = b.status === "review" ? (data.review || {})[b.folder] : null;
 
     let meta = `<span class="meta-pill">📅 ${b.cap_date}</span>`;
@@ -1179,8 +1179,18 @@ function renderBatches(data) {
       }
     }
 
+    // -wildlife / -sadie batches go to the website's /photography page, not Instagram.
+    const site = (data.site || {})[b.folder];
+    if (site) {
+      const st = { naming:"🌐 Claude is naming the photos", publishing:"🌐 publishing to the website",
+                   waiting:"🌐 waiting (usage limit)", done:"🌐 on the website", failed:"🌐 website publish failed" }[site.status] || "🌐 " + site.status;
+      meta += `<span class="meta-pill" title="${(site.text || "").replace(/"/g, "&quot;")}">${st}</span>`;
+    }
+
     let actions = "";
-    if (b.status === "pending")
+    if (site && site.status === "failed")
+      actions = `<button class="btn btn-primary btn-sm" onclick="doSiteRetry('${b.folder}')">↻ Retry website</button>`;
+    else if (b.status === "pending")
       actions = `<button class="btn btn-primary btn-sm" onclick="doProcess('${b.folder}')">▶ Process</button>
                  <button class="btn btn-neutral btn-sm" onclick="doProcess('${b.folder}', true)"
                          title="Run Lightroom + export, then finish — no Buffer/Instagram posting">▶ LR only</button>
@@ -1428,6 +1438,13 @@ async function doFinish(f) {
 async function doScan()      { await fetch("/api/scan", {method:"POST"}); refreshSyno(); }
 
 // ── Review shelf + crank ─────────────────────────────────────────────────────
+async function doSiteRetry(f) {
+  const r = await fetch("/api/site-retry", {method: "POST", headers: {"Content-Type": "application/json"},
+                                            body: JSON.stringify({folder: f})});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) alert(j.error || "Couldn't restart the website publish.");
+  poll();
+}
 async function doReviewOpen(f) {
   const r = await fetch(`/api/review/open/${enc(f)}`, {method: "POST"});
   const j = await r.json().catch(() => ({}));

@@ -63,6 +63,7 @@ state = {
     "review":          {},      # folder -> shelved posting state, waiting for Scott (see shelve_active)
     "crank":           {"on": False, "status": "", "batch": None},   # the queue runner (crank_loop)
     "sort":            {},      # the headless sort: {"folder", "state", "text", "at"}
+    "site":            {},      # website batches (-wildlife/-sadie): folder -> {status, files, kind, text, at}
 }
 
 # In-memory cache of the Synology album list (avoid hammering the NAS each load)
@@ -103,6 +104,7 @@ def save_state():
             "review":      state.get("review", {}),
             "crank":       {k: state["crank"].get(k) for k in ("on", "batch")},
             "sort":        state.get("sort", {}),
+            "site":        state.get("site", {}),
         }
         STATE_FILE.write_text(json.dumps(data))
     except Exception:
@@ -1042,6 +1044,13 @@ def _pick_export_post(trigger: bool = True):
         log(f"✓ Done — exported {len(new)} photo(s) to ~/Desktop/birbs. No posting (Lightroom-only run).")
         return
 
+    if is_site_batch(folder):
+        bad = _grainy(new)
+        if bad:
+            log("⚠ " + _grain_note(bad, len(new)) + " (publishing to the website anyway)")
+        _site_handoff(folder, new)
+        return
+
     # The batch is exported: its photos go to their own folder under .review
     # straight away, so Lightroom can start the next batch and the posting
     # screen stays Scott's. Claude sorts it there; 👀 Review opens it.
@@ -1806,6 +1815,7 @@ def get_state():
             "review":         {f: _review_summary(r) for f, r in state["review"].items()},
             "crank":          dict(state["crank"]),
             "sort":           dict(state.get("sort") or {}),
+            "site":           dict(state.get("site") or {}),
         }
         open_files = (_shelf_files(state.get("arrangement"), state["new_birds"])
                       if state["active"] else [])
@@ -3553,6 +3563,145 @@ def _crank_groups(albums, taken, today=None, left_out=None) -> list:
 _crank_left_out = set()   # stragglers already mentioned in the log
 
 
+# ── -wildlife / -sadie → the website's /photography page ─────────────────────
+# Scott (2026-11-27): wildlife and Sadie go to the site, not Instagram. The crank
+# runs those albums through Lightroom like -best, then hands the export to
+# site_batch.sh: Claude names each photo and publishes it with the website's
+# own `make wildlife`. Albums before SITE_SINCE went up by hand (the site's
+# manifest runs through 10/24); SITE_BY_HAND are later ones that did too.
+SITE_KINDS   = ("wildlife", "sadie")
+SITE_SINCE   = datetime(2026, 10, 21)
+SITE_BY_HAND = {"2026-10-24-wildlife"}
+SITE_DIR     = BIRDS_DIR / ".site"
+
+
+def _site_album(name: str):
+    """(day, kind) for a -wildlife/-sadie album, else None."""
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})-(wildlife|sadie)$", name or "", re.I)
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))), m.group(4).lower()
+    except ValueError:
+        return None
+
+
+def is_site_batch(folder: str) -> bool:
+    """A batch bound for the website: a -wildlife/-sadie album, or several
+    combined (named ...-site-<kind>-...)."""
+    return bool(re.search(r"-(wildlife|sadie|site)(-|$)", folder or ""))
+
+
+def _site_kind(folder: str) -> str:
+    m = re.search(r"-(wildlife|sadie)(-|$)", folder or "")
+    return m.group(1) if m else "wildlife"
+
+
+def _crank_site_groups(albums, taken) -> list:
+    """-wildlife/-sadie albums still to publish, oldest first. Each kind batches
+    on its own (the category rides on the folder name), small days combine up
+    to CRANK_TARGET, and nothing waits for more days to join."""
+    by_kind = {}
+    for a in albums or []:
+        name = a.get("name") or ""
+        hit = _site_album(name)
+        if (not hit or name in taken or name in SITE_BY_HAND or not a.get("item_count")
+                or hit[0] < SITE_SINCE):
+            continue
+        by_kind.setdefault(hit[1], []).append((hit[0], name, a))
+    groups = []
+    for kind, cands in by_kind.items():
+        cands.sort(key=lambda t: (t[0], t[1]))
+        cur, n = [], 0
+        for _, _, a in cands:
+            c = int(a["item_count"])
+            if cur and n + c > CRANK_CAP:
+                groups.append(cur)
+                cur, n = [], 0
+            cur.append(a)
+            n += c
+        if cur:
+            groups.append(cur)
+    groups.sort(key=lambda g: _site_album(g[0]["name"])[0])
+    return groups
+
+
+def _site_folder(names: list) -> str:
+    if len(names) == 1:
+        return names[0]
+    kind = _site_album(names[0])[1]
+    return _multi_name(names).replace("-multi", f"-site-{kind}", 1)
+
+
+def _site_handoff(folder: str, new: list):
+    """The export of a website batch: move it to .site/<folder>/ and start
+    site_batch.sh, which names the photos and publishes them."""
+    dest = SITE_DIR / folder
+    dest.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for f in new:
+        src = BIRDS_DIR / f
+        if src.is_file():
+            src.replace(dest / f)
+            moved.append(f)
+    (dest / "job.json").write_text(json.dumps(
+        {"folder": folder, "kind": _site_kind(folder), "files": moved}, indent=1))
+    with lock:
+        state.setdefault("site", {})[folder] = {
+            "status": "naming", "files": len(moved), "kind": _site_kind(folder),
+            "at": datetime.now().isoformat(timespec="minutes"), "text": ""}
+        b = state["batches"].get(folder)
+        if b:
+            b["status"] = "site"
+        state["run"], state["run_step"] = None, None
+    save_state()
+    log(f"🌐 {folder} exported ({len(moved)} photos) — Claude names them and puts them "
+        "on the website's photography page.")
+    _site_start(folder)
+
+
+def _site_start(folder: str):
+    r = call_host("site-batch", body={"folder": folder}, timeout=30)
+    if not r.get("ok"):
+        out = (r.get("output") or "").strip()
+        with lock:
+            rec = state.setdefault("site", {}).get(folder) or {}
+            rec.update(status="failed", text=f"couldn't start: {out[:160]}")
+        save_state()
+        log(f"(couldn't start the website publish for {folder}: {out[:120]})")
+
+
+@app.post("/api/site-status")
+def api_site_status():
+    """site_batch.sh reports here: 'naming …', 'publishing …', 'done …', 'failed …'."""
+    data = request.get_json(silent=True) or request.form
+    folder = (data.get("folder") or "").strip()
+    text = (data.get("text") or "").strip()
+    kind = next((k for k in ("done", "failed", "waiting", "publishing", "naming")
+                 if text.startswith(k)), "naming")
+    with lock:
+        rec = state.setdefault("site", {}).setdefault(folder, {})
+        rec.update(status=kind, text=text[:300], at=datetime.now().isoformat(timespec="minutes"))
+        if kind == "done":
+            b = state["batches"].get(folder)
+            if b:
+                b["status"] = "done"
+            state["done_albums"].update(state.get("multi_sources", {}).get(folder) or [folder])
+    save_state()
+    if kind in ("done", "failed"):
+        log(("🌐 " if kind == "done" else "✗ Website: ") + f"{folder} — {text}")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/site-retry")
+def api_site_retry():
+    folder = ((request.get_json(silent=True) or {}).get("folder") or "").strip()
+    if not (SITE_DIR / folder / "job.json").is_file():
+        return jsonify({"error": "no website job for that batch"}), 404
+    _site_start(folder)
+    return jsonify({"ok": True})
+
+
 def _crank_status(text: str):
     with lock:
         changed = state["crank"].get("status") != text
@@ -3658,20 +3807,28 @@ def _crank_tick() -> float:
         _crank_status("waiting — can't reach Synology")
         return 300
     left_out = []
-    groups = _crank_groups(albums, _crank_taken(), left_out=left_out)
+    taken = _crank_taken()
+    groups = _crank_groups(albums, taken, left_out=left_out)
+    site = _crank_site_groups(albums, taken)
     for name in left_out:
         if name not in _crank_left_out:
             _crank_left_out.add(name)
             log(f"⚙ Crank: leaving {name} alone — it's older than albums already run. "
                 "Fetch it by hand if you want it.")
-    if not groups:
+    if not groups and not site:
         _crank_status("all caught up — checking for new albums every 30 min")
         return 1800
 
-    group = groups[0]
+    # Oldest first across Instagram (-best) and website (-wildlife/-sadie) batches.
+    first = lambda g: (_best_album_day(g[0]["name"]) or _site_album(g[0]["name"])[0])
+    group = min(groups[:1] + site[:1], key=first)
     names = [a["name"] for a in group]
     total = sum(int(a.get("item_count") or 0) for a in group)
-    folder = names[0] if len(names) == 1 else _multi_name(names)
+    if group in site:
+        folder = _site_folder(names)
+    else:
+        folder = names[0] if len(names) == 1 else _multi_name(names)
+    groups = groups + site
     with lock:
         if len(names) > 1:
             state["multi_sources"][folder] = names
@@ -3853,6 +4010,7 @@ if __name__ == "__main__":
     state["review"] = _saved.get("review", {})
     state["crank"].update(_saved.get("crank") or {})
     state["sort"] = _saved.get("sort", {})
+    state["site"] = _saved.get("site", {})
     # Defer scanning to background so Flask starts immediately
     threading.Thread(target=scanner_loop, daemon=True).start()
     threading.Thread(target=crank_loop, daemon=True).start()

@@ -26,7 +26,7 @@ ALLOWED = {"import", "auto-tone", "ai-denoise", "copy-and-paste", "export",
            "syno-albums", "syno-fetch", "lr-busy", "lr-status",
            "denoise-check", "denoise-probe", "denoise-spread",
            "dust-check", "dust-probe",
-           "lr-dismiss", "buffer-refresh", "sort-batch"}
+           "lr-dismiss", "buffer-refresh", "sort-batch", "site-batch"}
 
 # One automation command at a time — concurrent Lightroom AppleScript runs (or
 # two fetches of the same album) would collide. Health checks skip the lock,
@@ -302,6 +302,14 @@ class Handler(BaseHTTPRequestHandler):
             args = [str(TOOLS / "sort_batch.sh")]
             if re.fullmatch(r"[\w.+-]+", folder):
                 args += ["--folder", folder]
+        # A -wildlife/-sadie export: Claude names it, the website publishes it.
+        # Backgrounds itself like sort-batch.
+        elif cmd == "site-batch":
+            folder = str(body.get("folder") or "")
+            if not re.fullmatch(r"[\w.+-]+", folder):
+                return self._json({"ok": False, "output": "bad folder"})
+            print(f"→ site_batch.sh {folder}")
+            args = [str(TOOLS / "site_batch.sh"), "--folder", folder]
         elif cmd == "lr-dismiss":
             print("→ dismissing Lightroom dialog")
             args = [PYTHON, str(TOOLS / "lr_dismiss.py")]
