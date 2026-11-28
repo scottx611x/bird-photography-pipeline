@@ -1432,6 +1432,20 @@ def test_curate_has_loupe():
           not any(t in html for t in ("{#", "{{", "{%")))
 
 
+def test_posting_screen_has_loupe():
+    """2026-11-28: the curate page's loupe on the posting screen too — hold a
+    post photo or the big preview; a hold neither opens the preview nor swipes."""
+    html = (ROOT / "templates/index.html").read_text()
+    js = html.split("const loupe = (function(){")[-1]
+    check("posting: round loupe styled", ".loupe > i {" in html and "border-radius: 50%" in html)
+    check("posting: on post photos and the big preview", "'.photo-card-img-row img, #modal-img'" in js)
+    check("posting: sharpens from the 1800 px preview", "previewUrl(f)" in js)
+    check("posting: a hold doesn't open the preview", "e.stopPropagation(); e.preventDefault();} },true)" in js)
+    check("posting: a hold isn't a carousel swipe", "if (loupe.claimed) { _mSwiped = true; return; }" in html)
+    check("posting: stays out of the crop box", "cropMode" in js.split("const target=")[1][:120])
+    check("posting: no Jinja comment opener", "{#" not in html)
+
+
 def test_wildlife_and_sadie_go_to_the_website():
     """2026-11-27: Scott — -wildlife and -sadie albums go to the site's
     /photography page. The crank runs them through Lightroom, then hands the
@@ -1613,6 +1627,7 @@ def main():
     test_arrangement_keeps_new_birds_in_step()
     test_location_typos_not_suggested()
     test_curate_has_loupe()
+    test_posting_screen_has_loupe()
     test_wildlife_and_sadie_go_to_the_website()
     test_paste_confirms_photos_affected()
     test_bridge_restart_spares_background_jobs()
