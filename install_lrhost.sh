@@ -25,6 +25,11 @@ cat > "$PLIST" << EOF
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <!-- sort_batch.sh / site_batch.sh background themselves from lr_host; without
+         this, every restart (./bird up kickstarts it) kills a sort or website
+         publish mid-run. -->
+    <key>AbandonProcessGroup</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>$LOG</string>
     <key>StandardErrorPath</key>

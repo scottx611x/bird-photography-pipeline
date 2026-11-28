@@ -1519,6 +1519,16 @@ def test_paste_confirms_photos_affected():
     check("paste: only when the count is this batch's", "!= expect" in helper)
 
 
+def test_bridge_restart_spares_background_jobs():
+    """./bird up kickstarts lr_host; launchd then kills its whole process group,
+    which took a running sort_batch.sh with it (10/25, 2026-11-28) and left the
+    sort 'running' for two hours. The agent must abandon its process group."""
+    src = (ROOT / "install_lrhost.sh").read_text()
+    key = "<key>AbandonProcessGroup</key>"
+    check("bridge: launchd leaves sorts and website publishes running on restart",
+          key in src and src.split(key, 1)[1].lstrip().startswith("<true/>"))
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1605,6 +1615,7 @@ def main():
     test_curate_has_loupe()
     test_wildlife_and_sadie_go_to_the_website()
     test_paste_confirms_photos_affected()
+    test_bridge_restart_spares_background_jobs()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:
