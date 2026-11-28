@@ -761,6 +761,8 @@ tell application "System Events"
 end tell
 ''')
 
+    _confirm_affected(args.expect or got)
+
     # The paste only sets the checkbox; this makes Lightroom actually
     # render it, which is the difference between a denoised export and
     # a noisy one that claimed to be denoised. On a big batch Lightroom shows
@@ -770,6 +772,43 @@ end tell
     render_ai_settings(expect=args.expect)
 
     print("Done — denoise + CA settings applied to all. Now pick your best shot.")
+
+
+def _confirm_affected(expect, wait=8.0):
+    """Lightroom asks "<N> Photos Will Be Affected — Are you sure you want to
+    continue?" before a big paste. Unanswered, nothing is pasted: on
+    2026-11-27 it sat there while the run reported Denoise done in 80s for
+    109 photos and the spot check found it off on every one. Click OK by name
+    (a click, not a keystroke, so it is safe with Lightroom in the
+    background) — but only when N is this batch's own count."""
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            out = run_applescript('''
+tell application "System Events"
+  tell process "Adobe Lightroom"
+    set ns to name of every window
+    repeat with n in ns
+      if (n as text) ends with "Photos Will Be Affected" then return n as text
+    end repeat
+  end tell
+end tell
+return ""
+''').strip()
+        except RuntimeError:
+            out = ""
+        if out:
+            m = re.match(r"(\d+) Photos Will Be Affected$", out)
+            if not m or int(m.group(1)) != expect:
+                print(f"  Lightroom asks: {out!r} — not this batch's {expect}, leaving it for you.")
+                return False
+            run_applescript(f'''
+tell application "System Events" to tell process "Adobe Lightroom" to click button "OK" of window "{out}"
+''')
+            print(f"  Confirmed Lightroom's \"{out}\" prompt (OK).")
+            return True
+        time.sleep(0.5)
+    return False
 
 
 LR_PREFS = (Path.home() / "Library/Containers/com.adobe.mas.lightroomCC/Data"

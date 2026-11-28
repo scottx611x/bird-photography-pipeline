@@ -1505,6 +1505,20 @@ def test_wildlife_and_sadie_go_to_the_website():
         check("site: bad category, bad name and missing photos are caught", len(errs) == 4, str(errs))
 
 
+def test_paste_confirms_photos_affected():
+    """2026-11-27: Lightroom's "109 Photos Will Be Affected — Are you sure?"
+    sat unanswered, nothing was pasted, and the run called Denoise done."""
+    src = (ROOT / "lr_auto.py").read_text()
+    body = src[src.index("def cmd_copy_and_paste"):src.index("def _confirm_affected")]
+    check("paste: answers the photos-affected prompt before rendering",
+          body.index("_confirm_affected(") < body.index("render_ai_settings(expect"))
+    helper = src[src.index("def _confirm_affected"):src.index("LR_PREFS = ")]
+    helper = helper[helper.index("end = time.time()"):]   # code only, not the docstring
+    check("paste: clicks OK by name, never with a keystroke",
+          'click button "OK"' in helper and "keystroke" not in helper and "key code" not in helper)
+    check("paste: only when the count is this batch's", "!= expect" in helper)
+
+
 def test_grain_guard():
     """2026-11-22: a batch exported un-denoised after the checkbox read-back saw
     Denoise on 0 of 4 photos and the run "continued anyway". The export's own
@@ -1590,6 +1604,7 @@ def main():
     test_location_typos_not_suggested()
     test_curate_has_loupe()
     test_wildlife_and_sadie_go_to_the_website()
+    test_paste_confirms_photos_affected()
     test_container_has_server_imports()
 
     if "--live" in sys.argv:
